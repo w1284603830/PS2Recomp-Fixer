@@ -1,0 +1,31 @@
+# Build output (build_all.ps1)
+/build/
+
+# Unmodified, version-pinned dependencies: fetch_deps.ps1 downloads them (THIRD_PARTY.md)
+/third_party/_downloads/
+/third_party/src/raylib/
+/third_party/src/SDL2-2.30.9/
+/third_party/src/elfio/
+/third_party/src/fmt/
+/third_party/src/rabbitizer/
+/third_party/src/toml11/
+/third_party/src/libdwarf/
+/third_party/src/nlohmann_json/
+
+# Code that ps2_recomp generates for a game: never part of this repository
+/third_party/src/PS2Recomp/ps2xRuntime/src/runner/*_0x*.cpp
+/third_party/src/PS2Recomp/ps2xRuntime/src/runner/zz_*_added_functions_*.cpp
+/third_party/src/PS2Recomp/ps2xRuntime/include/ps2_recompiled_functions.h
+/third_party/src/PS2Recomp/ps2xRuntime/include/ps2_recompiled_functions_added.h
+/third_party/src/PS2Recomp/ps2xRuntime/include/ps2_recompiled_stubs.h
+
+# Game files must never be committed
+*.iso
+*.ISO
+*.elf.bak
+/game/
+
+# Editors / tools
+.vs/
+__pycache__/
+*.pyc

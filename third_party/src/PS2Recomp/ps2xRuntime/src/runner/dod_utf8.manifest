@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- [DoD] 2026-10-27: dod.exe runs with UTF-8 as its ANSI code page (Windows 10 1903+). The runner and runtime open files
+     through narrow strings (argv[0], dod.ini values, std::filesystem string conversions), so a folder path with
+     characters outside the system code page (a Simplified Chinese folder on a Traditional Chinese Windows) failed to
+     find game\discA, the ISO and dod.ini. The launcher writes dod.ini in UTF-8 and PCSX2's GS treats its strings as
+     UTF-8; with this both sides agree. Older Windows ignores the element. Merged into the linker's manifest by CMake. -->
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

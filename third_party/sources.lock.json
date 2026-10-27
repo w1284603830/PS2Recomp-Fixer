@@ -1,0 +1,122 @@
+{
+  "schema": "onimusha-dod-recomp/sources-lock/1",
+  "updated": "2026-10-17",
+  "note": "Pinned inputs. fetch_deps.ps1 downloads the unmodified dependencies (SHA256-checked) into third_party/src; PS2Recomp, pcsx2gs and kzvu are in the repository. No game files are part of this repository.",
+  "third_party": [
+    {
+      "name": "PS2Recomp",
+      "repo": "https://github.com/ran-j/PS2Recomp",
+      "commit": "eb8688b2fd191129f103a39543002c005b33409c",
+      "license": "GPL-3.0",
+      "archive": "PS2Recomp-eb8688b.zip",
+      "size": 4391600,
+      "sha256": "b51241cc4581a929d93729a48b7b7d183e7c5f21f130a68a634edb023d194488"
+    },
+    {
+      "name": "raylib",
+      "repo": "https://github.com/raysan5/raylib",
+      "tag": "5.5",
+      "license": "Zlib",
+      "archive": "raylib-5.5.zip",
+      "size": 42775368,
+      "sha256": "00e8a7c85f7a5221e56ee8e4e1c6642b773eae73d29379a91c8ac5149e803f42"
+    },
+    {
+      "name": "ELFIO",
+      "repo": "https://github.com/serge1/ELFIO",
+      "tag": "Release_3.12",
+      "license": "MIT",
+      "archive": "ELFIO-Release_3.12.zip",
+      "size": 4245845,
+      "sha256": "07248db427d1962125cec75e8e79bfde7c7c1c0d0e5656d2d847709aebbfaa39"
+    },
+    {
+      "name": "toml11",
+      "repo": "https://github.com/ToruNiina/toml11",
+      "tag": "v4.4.0",
+      "license": "MIT",
+      "archive": "toml11-v4.4.0.zip",
+      "size": 467263,
+      "sha256": "075dd130a9f517c3eaed502ece6a2c1088b1d0dd4aa79882fd0ca7609325ffdc"
+    },
+    {
+      "name": "fmt",
+      "repo": "https://github.com/fmtlib/fmt",
+      "tag": "12.1.0",
+      "license": "MIT",
+      "archive": "fmt-12.1.0.zip",
+      "size": 764079,
+      "sha256": "e6a2b43c6ec4779fb53b15b705f7c20b4eb9d5ae35784d610ac6daec30737019"
+    },
+    {
+      "name": "libdwarf",
+      "repo": "https://github.com/davea42/libdwarf-code",
+      "tag": "v2.2.0",
+      "license": "LGPL-2.1",
+      "archive": "libdwarf-code-v2.2.0.zip",
+      "size": 3950119,
+      "sha256": "1a015b73b83036dd2ba234c54929f9f773200328df12a0b64d9e01d8c63d4c50"
+    },
+    {
+      "name": "rabbitizer",
+      "repo": "https://github.com/Decompollaborate/rabbitizer",
+      "tag": "1.14.3",
+      "license": "MIT",
+      "archive": "rabbitizer-1.14.3.zip",
+      "size": 572098,
+      "sha256": "a3ac4b5071a3673510515aa29833162b506c1ef0235a15cb614a02fe2f629892"
+    },
+    {
+      "name": "nlohmann_json",
+      "repo": "https://github.com/nlohmann/json",
+      "tag": "v3.11.3",
+      "license": "MIT",
+      "archive": "json-v3.11.3.zip",
+      "size": 8489998,
+      "sha256": "04022b05d806eb5ff73023c280b68697d12b93e1b7267a0b22a1a39ec7578069",
+      "note": "only needed to build ps2_analyzer (BUILD.md step 6)"
+    },
+    {
+      "name": "SDL2",
+      "repo": "https://github.com/libsdl-org/SDL",
+      "tag": "release-2.30.9",
+      "license": "Zlib",
+      "archive": "SDL2-devel-2.30.9-VC.zip",
+      "sha256": "8c91d91e5bcb997d062ec2b553c53832ebf95654d4aa35e8c02a954d4ce752ae"
+    },
+    {
+      "name": "PCSX2 (for kzvu)",
+      "repo": "https://github.com/PCSX2/pcsx2",
+      "commit": "646df006a4688063e56c0826e7ea4b8bb0c112c4",
+      "license": "GPL-3.0-or-later"
+    }
+  ],
+  "tools": [
+    {
+      "name": "Ghidra",
+      "version": "12.1.4",
+      "archive": "ghidra_12.1.4_PUBLIC_20260921.zip",
+      "sha256": "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db"
+    },
+    {
+      "name": "Temurin JDK",
+      "version": "21.0.12.1+1",
+      "archive": "OpenJDK21U-jdk_x64_windows_hotspot_21.0.12.1_1.zip",
+      "sha256": "f9d6e191ab098c0d416e7d588a24420a8621cd2f4720dab2459b8b7b2d2d8b4e"
+    },
+    {
+      "name": "ghidra-emotionengine-reloaded",
+      "version": "2.1.38",
+      "archive": "ghidra_12.1.4_PUBLIC_20261004_ghidra-emotionengine-reloaded.zip",
+      "sha256": "e389ff3e921d9f7d4db2ece9906f808545ce4ff519d9e25a019b72ea509f240b"
+    },
+    {
+      "name": "Visual Studio Build Tools 2022",
+      "version": "17.14.37806.7",
+      "msvc": "14.44.35207",
+      "cmake": "3.31.6-msvc6",
+      "windows_sdk": "10.0.26100.0",
+      "note": "already installed on the build machine"
+    }
+  ]
+}
