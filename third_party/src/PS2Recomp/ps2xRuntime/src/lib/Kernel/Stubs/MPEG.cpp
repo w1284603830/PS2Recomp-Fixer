@@ -538,6 +538,8 @@ namespace ps2_stubs
             bool dodDmaInput = false;
             bool dodRefillCompleted = false;
             uint32_t dodStartCodeWindow = 0xFFFFFFFFu;
+            std::string dodEsDump; // DOD_MPEG_ES_DUMP file of this playback
+            bool dodTestSeqEndDone = false; // DOD_CG_TEST_SEQEND_AT
         };
 
         struct MpegStreamCallbackEvent
@@ -1944,6 +1946,20 @@ namespace ps2_stubs
                 if (bytes.empty())
                     break;
                 drained += bytes.size();
+                // Diagnostics: DOD_MPEG_ES_DUMP=<folder> writes each playback's video stream as the decoder gets it
+                // (es_<n>.m2v), to compare with the movie file.
+                static const char *esDumpDir = std::getenv("DOD_MPEG_ES_DUMP");
+                if (esDumpDir && *esDumpDir)
+                {
+                    static unsigned esDumpCount = 0u;
+                    if (playback.dodEsDump.empty())
+                        playback.dodEsDump = std::string(esDumpDir) + "/es_" + std::to_string(esDumpCount++) + ".m2v";
+                    if (FILE *dump = std::fopen(playback.dodEsDump.c_str(), "ab"))
+                    {
+                        std::fwrite(bytes.data(), 1, bytes.size(), dump);
+                        std::fclose(dump);
+                    }
+                }
                 bool sequenceEnded = false;
                 for (uint8_t byte : bytes)
                 {
@@ -1955,6 +1971,30 @@ namespace ps2_stubs
 #if !PS2X_HAS_FFMPEG
                 playback.decoderFailed = true;
 #endif
+                // [DoD] 2026-10-28 (user: 第六章的CG卡住; "[cg-hd] COUNT MISMATCH movie=22 native=28 hd=1060"). On the HD
+                // route this queue takes CH4 data much faster than the IPU would, and near picture 26 of every movie it
+                // gets ring contents the CD stream has not refilled yet: 64 KB of whatever the ring held before (the
+                // previous movie) and the movie's first ~0.5 MB again, twice (DOD_MPEG_ES_DUMP of movies 22 and 102,
+                // work\cg-hang-20261028). When the previous movie ended there, its sequence end comes along and used
+                // to end this movie at about 28 pictures. On the HD route a sequence end never ends the movie: the
+                // game does, with its own sceMpegReset, as in every normal playback (this queue never reaches the
+                // movie's last sequence end before it). Ending here while the game still feeds the movie left the
+                // game waiting even near the end (test: DOD_CG_TEST_SEQEND_AT=1000).
+                // Test: DOD_CG_TEST_SEQEND_AT=<native picture> makes one such leftover sequence end arrive there.
+                static const long testSeqEndAt = [] { const char *v = std::getenv("DOD_CG_TEST_SEQEND_AT"); return v ? std::strtol(v, nullptr, 10) : -1L; }();
+                if (testSeqEndAt >= 0 && playback.hdDecoder && !playback.dodTestSeqEndDone &&
+                    playback.hdDecoder->pictures() >= static_cast<uint32_t>(testSeqEndAt))
+                {
+                    playback.dodTestSeqEndDone = true;
+                    sequenceEnded = true;
+                    std::fprintf(stderr, "[cg-hd] test: sequence end injected at native picture %u\n", playback.hdDecoder->pictures());
+                }
+                if (sequenceEnded && playback.hdDecoder)
+                {
+                    std::fprintf(stderr, "[cg-hd] movie=%d sequence end at native picture %u of %d ignored (the game ends the movie)\n",
+                                 playback.hdDecoder->info.id, playback.hdDecoder->pictures(), playback.hdDecoder->info.count);
+                    sequenceEnded = false;
+                }
                 if (sequenceEnded)
                 {
                     playback.sawSequenceEnd = true;

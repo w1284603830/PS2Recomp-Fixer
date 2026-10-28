@@ -8936,7 +8936,7 @@ index e851bd2..229248f 100644
      {
          if (!runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
-index 44eaef4..e01777b 100644
+index 44eaef4..cf92a63 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 @@ -1,6 +1,8 @@
@@ -9002,17 +9002,19 @@ index 44eaef4..e01777b 100644
              uint8_t frameRateCode = 0u;
              uint8_t frameRateExtensionN = 0u;
              uint8_t frameRateExtensionD = 0u;
-@@ -512,6 +535,9 @@ namespace ps2_stubs
+@@ -512,6 +535,11 @@ namespace ps2_stubs
              uint64_t presentationEndTickQ32 = std::numeric_limits<uint64_t>::max();
              int64_t firstPresentedPts90k = -1;
              uint64_t ptsPresentationBaseTickQ32 = 0u;
 +            bool dodDmaInput = false;
 +            bool dodRefillCompleted = false;
 +            uint32_t dodStartCodeWindow = 0xFFFFFFFFu;
++            std::string dodEsDump; // DOD_MPEG_ES_DUMP file of this playback
++            bool dodTestSeqEndDone = false; // DOD_CG_TEST_SEQEND_AT
          };
  
          struct MpegStreamCallbackEvent
-@@ -562,6 +588,129 @@ namespace ps2_stubs
+@@ -562,6 +590,129 @@ namespace ps2_stubs
          constexpr size_t kStartCodeNotFound = std::numeric_limits<size_t>::max();
          constexpr uint32_t kMpegCallbackDataSize = 0x20u;
  
@@ -9142,7 +9144,7 @@ index 44eaef4..e01777b 100644
          uint64_t mpegPictureIntervalQ32(uint8_t frameRateCode, uint8_t frameRateExtensionN = 0u, uint8_t frameRateExtensionD = 0u)
          {
              uint64_t frameRateNumerator = 0u;
-@@ -815,6 +964,7 @@ namespace ps2_stubs
+@@ -815,6 +966,7 @@ namespace ps2_stubs
              playback.imageBufferAddr = oldPlayback.imageBufferAddr;
              playback.width = oldPlayback.width;
              playback.height = oldPlayback.height;
@@ -9150,7 +9152,7 @@ index 44eaef4..e01777b 100644
              return playback;
          }
  
-@@ -1006,6 +1156,11 @@ namespace ps2_stubs
+@@ -1006,6 +1158,11 @@ namespace ps2_stubs
  
          void flushDecoderIfEnded(MpegPlaybackState &playback)
          {
@@ -9162,7 +9164,7 @@ index 44eaef4..e01777b 100644
              if (playback.streamEnded && playback.decoder)
              {
                  playback.decoder->flush(playback.decodedFrames);
-@@ -1092,6 +1247,13 @@ namespace ps2_stubs
+@@ -1092,6 +1249,13 @@ namespace ps2_stubs
                  playback.cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
              }
  
@@ -9176,7 +9178,7 @@ index 44eaef4..e01777b 100644
              if (!playback.decoder)
              {
                  playback.decoder = std::make_unique<MpegFfmpegDecoder>();
-@@ -1383,6 +1545,8 @@ namespace ps2_stubs
+@@ -1383,6 +1547,8 @@ namespace ps2_stubs
              g_mpeg_stub_state.currentCdStreamEofSeen = true;
              for (auto &[mpegAddr, playback] : g_mpeg_stub_state.playbackByMpeg)
              {
@@ -9185,7 +9187,7 @@ index 44eaef4..e01777b 100644
                  completedMpegIds.push_back(mpegAddr);
                  if (!playback.sawInput || playback.streamEnded)
                  {
-@@ -1744,6 +1908,7 @@ namespace ps2_stubs
+@@ -1744,6 +1910,7 @@ namespace ps2_stubs
  
          void resetMpegStubStateUnlocked()
          {
@@ -9193,7 +9195,7 @@ index 44eaef4..e01777b 100644
              g_mpeg_stub_state.initialized = false;
              g_mpeg_stub_state.nextCallbackHandle = 1u;
              g_mpeg_stub_state.cdStreamGeneration = 0u;
-@@ -1760,6 +1925,207 @@ namespace ps2_stubs
+@@ -1760,6 +1927,245 @@ namespace ps2_stubs
              g_mpeg_stub_state.callbacksByMpeg.clear();
              g_mpeg_stub_state.playbackByMpeg.clear();
          }
@@ -9216,6 +9218,20 @@ index 44eaef4..e01777b 100644
 +                if (bytes.empty())
 +                    break;
 +                drained += bytes.size();
++                // Diagnostics: DOD_MPEG_ES_DUMP=<folder> writes each playback's video stream as the decoder gets it
++                // (es_<n>.m2v), to compare with the movie file.
++                static const char *esDumpDir = std::getenv("DOD_MPEG_ES_DUMP");
++                if (esDumpDir && *esDumpDir)
++                {
++                    static unsigned esDumpCount = 0u;
++                    if (playback.dodEsDump.empty())
++                        playback.dodEsDump = std::string(esDumpDir) + "/es_" + std::to_string(esDumpCount++) + ".m2v";
++                    if (FILE *dump = std::fopen(playback.dodEsDump.c_str(), "ab"))
++                    {
++                        std::fwrite(bytes.data(), 1, bytes.size(), dump);
++                        std::fclose(dump);
++                    }
++                }
 +                bool sequenceEnded = false;
 +                for (uint8_t byte : bytes)
 +                {
@@ -9227,6 +9243,30 @@ index 44eaef4..e01777b 100644
 +#if !PS2X_HAS_FFMPEG
 +                playback.decoderFailed = true;
 +#endif
++                // [DoD] 2026-10-28 (user: 第六章的CG卡住; "[cg-hd] COUNT MISMATCH movie=22 native=28 hd=1060"). On the HD
++                // route this queue takes CH4 data much faster than the IPU would, and near picture 26 of every movie it
++                // gets ring contents the CD stream has not refilled yet: 64 KB of whatever the ring held before (the
++                // previous movie) and the movie's first ~0.5 MB again, twice (DOD_MPEG_ES_DUMP of movies 22 and 102,
++                // work\cg-hang-20261028). When the previous movie ended there, its sequence end comes along and used
++                // to end this movie at about 28 pictures. On the HD route a sequence end never ends the movie: the
++                // game does, with its own sceMpegReset, as in every normal playback (this queue never reaches the
++                // movie's last sequence end before it). Ending here while the game still feeds the movie left the
++                // game waiting even near the end (test: DOD_CG_TEST_SEQEND_AT=1000).
++                // Test: DOD_CG_TEST_SEQEND_AT=<native picture> makes one such leftover sequence end arrive there.
++                static const long testSeqEndAt = [] { const char *v = std::getenv("DOD_CG_TEST_SEQEND_AT"); return v ? std::strtol(v, nullptr, 10) : -1L; }();
++                if (testSeqEndAt >= 0 && playback.hdDecoder && !playback.dodTestSeqEndDone &&
++                    playback.hdDecoder->pictures() >= static_cast<uint32_t>(testSeqEndAt))
++                {
++                    playback.dodTestSeqEndDone = true;
++                    sequenceEnded = true;
++                    std::fprintf(stderr, "[cg-hd] test: sequence end injected at native picture %u\n", playback.hdDecoder->pictures());
++                }
++                if (sequenceEnded && playback.hdDecoder)
++                {
++                    std::fprintf(stderr, "[cg-hd] movie=%d sequence end at native picture %u of %d ignored (the game ends the movie)\n",
++                                 playback.hdDecoder->info.id, playback.hdDecoder->pictures(), playback.hdDecoder->info.count);
++                    sequenceEnded = false;
++                }
 +                if (sequenceEnded)
 +                {
 +                    playback.sawSequenceEnd = true;
@@ -9401,7 +9441,7 @@ index 44eaef4..e01777b 100644
      }
  
      void resetMpegStubState()
-@@ -1802,7 +2168,8 @@ namespace ps2_stubs
+@@ -1802,7 +2208,8 @@ namespace ps2_stubs
  
          for (auto &[mpegAddr, playback] : g_mpeg_stub_state.playbackByMpeg)
          {
@@ -9411,7 +9451,7 @@ index 44eaef4..e01777b 100644
          }
          PS2_IF_AGRESSIVE_LOGS({
              std::cerr << "[MPEG:CdStreamStart] generation=" << g_mpeg_stub_state.cdStreamGeneration
-@@ -1851,6 +2218,7 @@ namespace ps2_stubs
+@@ -1851,6 +2258,7 @@ namespace ps2_stubs
  
      void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9419,7 +9459,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
          bool wakePictureWaiter = false;
-@@ -1875,6 +2243,7 @@ namespace ps2_stubs
+@@ -1875,6 +2283,7 @@ namespace ps2_stubs
  
      void sceMpegAddBs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9427,7 +9467,7 @@ index 44eaef4..e01777b 100644
          const uint32_t mpegAddr = getRegU32(ctx, 4);
          const uint32_t dataAddr = getRegU32(ctx, 5);
          const uint32_t byteCount = getRegU32(ctx, 6);
-@@ -1905,11 +2274,13 @@ namespace ps2_stubs
+@@ -1905,11 +2314,13 @@ namespace ps2_stubs
          {
              runtime->eeScheduler().completeExternalWait(kMpegPictureWaitType, mpegAddr, KE_OK);
          }
@@ -9442,7 +9482,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
  
-@@ -1922,6 +2293,30 @@ namespace ps2_stubs
+@@ -1922,6 +2333,30 @@ namespace ps2_stubs
          g_mpeg_stub_state.initialized = true;
          (void)getPlaybackState(mpegAddr);
  
@@ -9473,7 +9513,7 @@ index 44eaef4..e01777b 100644
          const uint32_t handle = g_mpeg_stub_state.nextCallbackHandle++;
          g_mpeg_stub_state.callbacksByMpeg[mpegAddr].push_back(
              MpegRegisteredCallback{callbackType, 0u, callbackFunc, callbackData, handle, false});
-@@ -1931,6 +2326,7 @@ namespace ps2_stubs
+@@ -1931,6 +2366,7 @@ namespace ps2_stubs
  
      void sceMpegAddStrCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9481,7 +9521,7 @@ index 44eaef4..e01777b 100644
          (void)runtime;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
          const uint32_t streamType = getRegU32(ctx, 5);
-@@ -1949,8 +2345,21 @@ namespace ps2_stubs
+@@ -1949,8 +2385,21 @@ namespace ps2_stubs
  
      void sceMpegClearRefBuff(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9503,7 +9543,7 @@ index 44eaef4..e01777b 100644
          static const uint32_t kRefGlobalAddrs[] = {
              0x171800u, 0x17180Cu, 0x171818u, 0x171804u, 0x171810u, 0x17181Cu};
          for (uint32_t addr : kRefGlobalAddrs)
-@@ -1985,10 +2394,27 @@ namespace ps2_stubs
+@@ -1985,10 +2434,27 @@ namespace ps2_stubs
  
      void sceMpegCreate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9531,7 +9571,7 @@ index 44eaef4..e01777b 100644
          const uint32_t uVar3 = (param_2 + 3u) & 0xFFFFFFFCu;
          const int32_t iVar2_signed = static_cast<int32_t>(param_3) - static_cast<int32_t>(uVar3 - param_2);
  
-@@ -2064,20 +2490,27 @@ namespace ps2_stubs
+@@ -2064,20 +2530,27 @@ namespace ps2_stubs
  
      void sceMpegDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9561,7 +9601,7 @@ index 44eaef4..e01777b 100644
          const uint32_t mpegAddr = getRegU32(ctx, 4);
          const uint32_t dataAddr = getRegU32(ctx, 5);
          const uint32_t byteCount = getRegU32(ctx, 6);
-@@ -2147,6 +2580,7 @@ namespace ps2_stubs
+@@ -2147,6 +2620,7 @@ namespace ps2_stubs
  
      void sceMpegDemuxPssRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9569,7 +9609,7 @@ index 44eaef4..e01777b 100644
          static std::atomic<uint32_t> s_demuxRingEntryCount{0u};
          const uint32_t entryIdx = s_demuxRingEntryCount.fetch_add(1u, std::memory_order_relaxed);
          if (entryIdx < 4u)
-@@ -2241,6 +2675,7 @@ namespace ps2_stubs
+@@ -2241,6 +2715,7 @@ namespace ps2_stubs
  
      void sceMpegDispCenterOffX(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9577,7 +9617,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          setReturnS32(ctx, 0);
-@@ -2248,6 +2683,7 @@ namespace ps2_stubs
+@@ -2248,6 +2723,7 @@ namespace ps2_stubs
  
      void sceMpegDispCenterOffY(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9585,7 +9625,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          setReturnS32(ctx, 0);
-@@ -2255,6 +2691,7 @@ namespace ps2_stubs
+@@ -2255,6 +2731,7 @@ namespace ps2_stubs
  
      void sceMpegDispHeight(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9593,7 +9633,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
-@@ -2264,6 +2701,7 @@ namespace ps2_stubs
+@@ -2264,6 +2741,7 @@ namespace ps2_stubs
  
      void sceMpegDispWidth(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9601,7 +9641,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
-@@ -2273,22 +2711,54 @@ namespace ps2_stubs
+@@ -2273,22 +2751,54 @@ namespace ps2_stubs
  
      void sceMpegGetDecodeMode(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9656,7 +9696,7 @@ index 44eaef4..e01777b 100644
          {
              std::unique_lock<std::mutex> lock(g_mpeg_stub_mutex);
              MpegPlaybackState &playback = getPlaybackState(mpegAddr);
-@@ -2393,9 +2863,9 @@ namespace ps2_stubs
+@@ -2393,9 +2903,9 @@ namespace ps2_stubs
          mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
          mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
  
@@ -9668,7 +9708,7 @@ index 44eaef4..e01777b 100644
              if (uint8_t *inner = getMemPtr(rdram, iVar1))
              {
                  *reinterpret_cast<uint32_t *>(inner + 0xb0) = 1;
-@@ -2410,26 +2880,47 @@ namespace ps2_stubs
+@@ -2410,26 +2920,47 @@ namespace ps2_stubs
          {
              writeDecodedFrameToGuest(rdram, imageAddr, frame);
          }
@@ -9718,7 +9758,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
          const uint64_t cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
-@@ -2444,11 +2935,12 @@ namespace ps2_stubs
+@@ -2444,11 +2975,12 @@ namespace ps2_stubs
          g_mpeg_stub_state.cdStreamBytesDemuxed = cdStreamBytesDemuxed;
          g_mpeg_stub_state.cdStreamEofPending = cdStreamEofPending;
          g_mpeg_stub_state.currentCdStreamEofSeen = currentCdStreamEofSeen;
@@ -9732,7 +9772,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
  
-@@ -2491,6 +2983,7 @@ namespace ps2_stubs
+@@ -2491,6 +3023,7 @@ namespace ps2_stubs
  
      void sceMpegIsRefBuffEmpty(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9740,7 +9780,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
-@@ -2501,13 +2994,23 @@ namespace ps2_stubs
+@@ -2501,13 +3034,23 @@ namespace ps2_stubs
  
      void sceMpegReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9765,7 +9805,7 @@ index 44eaef4..e01777b 100644
              {
                  resetState.sawInput = true;
                  resetState.streamEnded = true;
-@@ -2523,6 +3026,15 @@ namespace ps2_stubs
+@@ -2523,6 +3066,15 @@ namespace ps2_stubs
          uint32_t inner = *reinterpret_cast<uint32_t *>(base + 0x40);
          if (inner == 0u)
              return;
@@ -9781,7 +9821,7 @@ index 44eaef4..e01777b 100644
          mpegGuestWrite32(rdram, param_1 + 0x00u, 0u);
          mpegGuestWrite32(rdram, param_1 + 0x04u, 0u);
          mpegGuestWrite32(rdram, param_1 + 0x08u, 0u);
-@@ -2537,6 +3049,7 @@ namespace ps2_stubs
+@@ -2537,6 +3089,7 @@ namespace ps2_stubs
  
      void sceMpegResetDefaultPtsGap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9789,7 +9829,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          setReturnS32(ctx, 0);
-@@ -2544,6 +3057,7 @@ namespace ps2_stubs
+@@ -2544,6 +3097,7 @@ namespace ps2_stubs
  
      void sceMpegSetDecodeMode(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -9797,7 +9837,7 @@ index 44eaef4..e01777b 100644
          (void)rdram;
          (void)runtime;
          const uint32_t mpegAddr = getRegU32(ctx, 4);
-@@ -2555,13 +3069,97 @@ namespace ps2_stubs
+@@ -2555,13 +3109,97 @@ namespace ps2_stubs
  
      void sceMpegSetDefaultPtsGap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -10151,10 +10191,10 @@ index b7840d4..87a3a3a 100644
  
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h b/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h
 new file mode 100644
-index 0000000..0c89ce4
+index 0000000..18676f4
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,276 @@
 +#pragma once
 +// Direct DoD movie replacement. The original MPEG is PARSED for the native
 +// Sofdec/audio refill protocol, never decoded after selecting this route.
@@ -10164,9 +10204,11 @@ index 0000000..0c89ce4
 +#include <algorithm>
 +#include <array>
 +#include <condition_variable>
++#include <cstdio>
 +#include <deque>
 +#include <memory>
 +#include <mutex>
++#include <string>
 +#include <thread>
 +#include <utility>
 +extern "C" {
@@ -10195,6 +10237,17 @@ index 0000000..0c89ce4
 +    int stream=-1;
 +    bool eof=false, parserFlushed=false;
 +    std::shared_ptr<Frame> first;
++    // [DoD] 2026-10-28 (user: 第六章的CG卡住; log "[cg-hd] COUNT MISMATCH movie=22 native=28 hd=1060"): when the native
++    // stream and the HD file disagree on the length, the route used to fail, getDodMpegPicture then returned -1 on every
++    // call and the game waited on the movie forever. Now the native stream decides, as on the original route: if it
++    // ends first, the movie ends there; if it outlasts the HD file, the last HD picture is shown until it ends.
++    std::shared_ptr<Frame> last;
++    bool ranOut=false;
++    // The native stream's first GOP time code, logged: 00:00:00:00 when the game plays the movie from its start
++    // (diagnosis of a mismatch: a stream that is not this movie, or not from its beginning).
++    uint32_t gopScan=0xFFFFFFFFu;
++    int gopBytes=-1;
++    uint8_t gopCode[4]={};
 +    std::vector<int64_t> pts;
 +    uint32_t decoded=0, served=0;
 +    // [DoD] 2026-10-27 (user: CG 偶爾卡一下、聲音跟著卡): the HD pictures are decoded ahead on this thread. read()
@@ -10340,11 +10393,47 @@ index 0000000..0c89ce4
 +        av_frame_unref(frame);
 +        return out;
 +    }
++    void noteFirstGop(const uint8_t* data,size_t size) {
++        for(size_t i=0;i<size && gopBytes<4;++i) {
++            if(gopBytes>=0) {
++                gopCode[gopBytes++]=data[i];
++                if(gopBytes==4) {
++                    const uint32_t v=(uint32_t(gopCode[0])<<24)|(uint32_t(gopCode[1])<<16)|(uint32_t(gopCode[2])<<8)|gopCode[3];
++                    std::fprintf(stderr,"[cg-hd] movie=%d native first GOP %s (00:00:00:00 = from the start of the movie)\n",
++                        info.id,gopText(v).c_str());
++                }
++                continue;
++            }
++            gopScan=(gopScan<<8)|data[i];
++            if(gopScan==0x000001B8u) gopBytes=0;
++        }
++    }
++    static std::string gopText(uint32_t v) {
++        char text[16];
++        std::snprintf(text,sizeof(text),"%02u:%02u:%02u:%02u",(v>>26)&31u,(v>>20)&63u,(v>>13)&63u,(v>>7)&63u);
++        return text;
++    }
++    std::string firstGop() const {
++        if(gopBytes<4) return "none";
++        return gopText((uint32_t(gopCode[0])<<24)|(uint32_t(gopCode[1])<<16)|(uint32_t(gopCode[2])<<8)|gopCode[3]);
++    }
++    uint32_t pictures() const { return served; }
 +    template<class Queue> bool append(Queue& queue) {
 +        auto hd=first?std::exchange(first,{}):take();
-+        if(!hd) return false;
++        if(!hd) {
++            if(!last) return false;
++            if(!ranOut) {
++                ranOut=true;
++                std::fprintf(stderr,"[cg-hd] HD pictures ran out movie=%d at native picture %u (hd=%d first_gop=%s): "
++                    "the last one stays until the native stream ends\n",info.id,served,info.count,firstGop().c_str());
++            }
++            hd=last;
++        }
++        last=hd;
 +        typename Queue::value_type out;
-+        out.width=info.w; out.height=info.h; out.pts90k=pts[served++]; out.hd=hd;
++        out.width=info.w; out.height=info.h; out.hd=hd;
++        out.pts90k=served<pts.size()?pts[served]:-1;
++        ++served;
 +        out.rgba.resize(info.w*info.h*4);
 +        const uint8_t* field=hd->wire.data()+64;
 +        // Both native fields refer to this same HD frame; retain the original uploader/cadence.
@@ -10356,6 +10445,7 @@ index 0000000..0c89ce4
 +        return true;
 +    }
 +    template<class Queue> bool feed(const uint8_t* data,size_t size,Queue& queue) {
++        noteFirstGop(data,size);
 +        std::vector<uint8_t> padded(data,data+size);
 +        padded.resize(size+AV_INPUT_BUFFER_PADDING_SIZE,0);
 +        const uint8_t* p=padded.data();
@@ -10374,10 +10464,9 @@ index 0000000..0c89ce4
 +        uint8_t* parsed=nullptr; int bytes=0;
 +        int r=av_parser_parse2(parser,parserContext,&parsed,&bytes,nullptr,0,AV_NOPTS_VALUE,AV_NOPTS_VALUE,0);
 +        if(r<0 || (bytes && !append(queue))) return false;
-+        if(served!=static_cast<uint32_t>(info.count)) {
-+            std::fprintf(stderr,"[cg-hd] COUNT MISMATCH movie=%d native=%u hd=%d\n",info.id,served,info.count);
-+            return false;
-+        }
++        if(served!=static_cast<uint32_t>(info.count))
++            std::fprintf(stderr,"[cg-hd] COUNT MISMATCH movie=%d native=%u hd=%d first_gop=%s: the movie ends with the native stream\n",
++                info.id,served,info.count,firstGop().c_str());
 +        return true;
 +    }
 +};

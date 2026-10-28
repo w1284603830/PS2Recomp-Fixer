@@ -1,6 +1,6 @@
 # 我們對 PS2Recomp 的改進（相對上游 ran-j/PS2Recomp eb8688b）
 
-完整差異：`patches/PS2Recomp_vs_upstream_eb8688b.diff`（97 個檔，+17,262／−494 行；在上游 eb8688b 原始碼裡 `git apply -p1` 可重現本資料夾的內容，只差換行符）。
+完整差異：`patches/PS2Recomp_vs_upstream_eb8688b.diff`（97 個檔，+17,351／−494 行；在上游 eb8688b 原始碼裡 `git apply -p1` 可重現本資料夾的內容，只差換行符）。
 每一項的來龍去脈、驗證方式都在 `docs/DoD_RUNTIME_PATCHES.md`（下表括號裡的數字是那份記錄的列號）。程式碼裡的修改多半標有 `[DoD]` 註解，**這只是歷史標記，不代表只適用新鬼**；真正只屬於新鬼的部分在最後一節。
 
 ## 一、重編譯器 ps2xRecomp（產生的 C++ 正確性）
@@ -55,6 +55,7 @@
 - sceIpuInit HLE 不再寫死別款遊戲位址（29）；libdma Recv 系列（31）
 - FFmpeg 解 MPEG 的 HLE 路徑（`PS2X_ENABLE_FFMPEG`）
 - 高清影片替換（`dod_hd_cg.h`）改由背景執行緒預先解碼最多 8 張：遊戲執行緒不再拿著 MPEG 鎖解 1080p HEVC，播放與聲音不再卡頓（149）
+- 高清影片路線不再讓影片卡死：它的 CH4 佇列遠比 IPU 超前，每段影片約第 26 張時會讀到 CD 還沒補上的環形緩衝區（上一段影片的殘留、再重送影片開頭）；殘留裡的序列結束碼以前會讓影片提前結束，遊戲就永遠等不到畫面。現在這條路線的序列結束碼不再結束影片（由遊戲自己的 sceMpegReset 結束），高清畫面用完就沿用最後一張。超前讀取本身（讓 CH4 依 IPU 速度送資料）尚未處理（151）
 
 ## 七、IOP（ps2xIOP，直接跑原版 IRX）
 
@@ -84,7 +85,7 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 
 ## 十一、診斷工具（環境變數，平常不設就不作用）
 
-`DOD_PERF`、`DOD_FPS`、`DOD_FRAME_CAPTURE_DIR`、`DOD_GS_CAPTURE`、`DOD_LAYER_LOG`、`DOD_VIF_EVENTS`、`DOD_ADMA_WATCH`、`DOD_SPU2_WAV`／`DOD_SPU2_STATS`、`DOD_RAM_DUMP`、`DOD_HANG_DUMP_AT`、`DOD_RNG_TRACE`、`DOD_PAD_SCRIPT`、`DOD_TEST_AUTOSTART`、`DOD_TEST_EXIT_AFTER`、`PS2X_PRESENT_STATS` 等。`DOD_LINE_CAPTURE_DIR`（按 F8 或 `DOD_LINE_CAPTURE_AT=<秒數,…>`）：存 GS 輸出、之後幾幀每次繪製的 PCSX2 傾印與逐筆記錄（`dod_draws.tsv`、`dod_sprites.tsv`，以及把繪製分成 3d／particle／world-sprite／hud／post／fill／cg 的摘要；`DOD_LINE_CAPTURE_MODE=light|ab`）（148）。`DOD_PRESENT_SHOT=<資料夾>:<第幾次呈現>:<每幾次>:<張數>`：含選單的最終畫面（150）。外部腳本在 `tools/`（反組譯、指令／HLE／IOP 匯入清點、GIF 解析、執行緒取樣剖析、和 PCSX2 對照、WAV 分析、GitHub issue 抓取）。
+`DOD_PERF`、`DOD_FPS`、`DOD_FRAME_CAPTURE_DIR`、`DOD_GS_CAPTURE`、`DOD_LAYER_LOG`、`DOD_VIF_EVENTS`、`DOD_ADMA_WATCH`、`DOD_SPU2_WAV`／`DOD_SPU2_STATS`、`DOD_RAM_DUMP`、`DOD_HANG_DUMP_AT`、`DOD_RNG_TRACE`、`DOD_PAD_SCRIPT`、`DOD_TEST_AUTOSTART`、`DOD_TEST_EXIT_AFTER`、`PS2X_PRESENT_STATS` 等。`DOD_LINE_CAPTURE_DIR`（按 F8 或 `DOD_LINE_CAPTURE_AT=<秒數,…>`）：存 GS 輸出、之後幾幀每次繪製的 PCSX2 傾印與逐筆記錄（`dod_draws.tsv`、`dod_sprites.tsv`，以及把繪製分成 3d／particle／world-sprite／hud／post／fill／cg 的摘要；`DOD_LINE_CAPTURE_MODE=light|ab`）（148）。`DOD_PRESENT_SHOT=<資料夾>:<第幾次呈現>:<每幾次>:<張數>`：含選單的最終畫面（150）。`DOD_MPEG_ES_DUMP=<資料夾>`：存下高清路線每段影片收到的視訊資料，用來和影片原檔比對；`DOD_CG_TEST_SEQEND_AT=<張數>`：在那一張插入序列結束碼（151）。外部腳本在 `tools/`（反組譯、指令／HLE／IOP 匯入清點、GIF 解析、執行緒取樣剖析、和 PCSX2 對照、WAV 分析、GitHub issue 抓取）。
 
 ## 十二、只屬於新鬼、換遊戲時要改或拿掉的地方
 

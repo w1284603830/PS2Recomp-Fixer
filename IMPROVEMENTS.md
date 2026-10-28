@@ -2,7 +2,7 @@
 
 [繁體中文](IMPROVEMENTS.zh-TW.md)
 
-Full diff: `patches/PS2Recomp_vs_upstream_eb8688b.diff` (97 files, +17,262 / −494 lines; `git apply -p1` on upstream
+Full diff: `patches/PS2Recomp_vs_upstream_eb8688b.diff` (97 files, +17,351 / −494 lines; `git apply -p1` on upstream
 `eb8688b` reproduces this tree apart from line endings). The cause and verification of every item are in
 `docs/DoD_RUNTIME_PATCHES.md` (Chinese); the numbers in parentheses are its row numbers. Most changes in the code carry
 a `[DoD]` comment. **That is only a history marker, not "specific to that game"**: the genuinely game-specific parts
@@ -80,6 +80,11 @@ are listed in the last section.
 - FFmpeg-backed HLE MPEG path (`PS2X_ENABLE_FFMPEG`)
 - HD movie replacement (`dod_hd_cg.h`) decodes up to 8 frames ahead on a background thread: the game thread no longer
   decodes 1080p HEVC while it holds the MPEG lock, so playback and sound no longer hitch (149)
+- HD movie replacement no longer hangs a movie: its CH4 queue reads far ahead of the IPU and, about 26 pictures into
+  every movie, gets ring areas the CD stream has not refilled (the previous movie's leftovers, then the movie's start
+  again); a leftover sequence end used to end the movie early and the game waited forever. A sequence end no longer
+  ends a movie on that route (the game's own sceMpegReset does), and if the HD pictures run out the last one stays.
+  The pacing itself (CH4 at the IPU's speed) is still open (151)
 
 ## 7. IOP (ps2xIOP, runs the original IRX modules)
 
@@ -120,7 +125,9 @@ UNPACK fast paths (121); scheduler fast hops (122).
 `DOD_LINE_CAPTURE_DIR` (F8 or `DOD_LINE_CAPTURE_AT=<seconds,…>`): the GS output plus PCSX2 dumps of every draw of the
 next frames and per-draw logs (`dod_draws.tsv`, `dod_sprites.tsv`, a summary that classes draws as 3d / particle /
 world-sprite / hud / post / fill / cg; `DOD_LINE_CAPTURE_MODE=light|ab`) (148). `DOD_PRESENT_SHOT=<dir>:<first>:<every>:<count>`:
-the final presented image, menus included (150). Scripts in `tools/`:
+the final presented image, menus included (150). `DOD_MPEG_ES_DUMP=<dir>`: the video stream each movie's HD route
+receives, to compare with the movie file; `DOD_CG_TEST_SEQEND_AT=<picture>`: inject a sequence end there (151).
+Scripts in `tools/`:
 disassemblers, instruction/HLE/IOP-import census, GIF parsing, thread profiling, WAV analysis, GitHub issue fetching.
 
 ## 12. Specific to the original game: change or remove when porting another one

@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <array>
 #include <condition_variable>
+#include <cstdio>
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <utility>
 extern "C" {
@@ -38,6 +40,17 @@ class Decoder {
     int stream=-1;
     bool eof=false, parserFlushed=false;
     std::shared_ptr<Frame> first;
+    // [DoD] 2026-10-28 (user: 第六章的CG卡住; log "[cg-hd] COUNT MISMATCH movie=22 native=28 hd=1060"): when the native
+    // stream and the HD file disagree on the length, the route used to fail, getDodMpegPicture then returned -1 on every
+    // call and the game waited on the movie forever. Now the native stream decides, as on the original route: if it
+    // ends first, the movie ends there; if it outlasts the HD file, the last HD picture is shown until it ends.
+    std::shared_ptr<Frame> last;
+    bool ranOut=false;
+    // The native stream's first GOP time code, logged: 00:00:00:00 when the game plays the movie from its start
+    // (diagnosis of a mismatch: a stream that is not this movie, or not from its beginning).
+    uint32_t gopScan=0xFFFFFFFFu;
+    int gopBytes=-1;
+    uint8_t gopCode[4]={};
     std::vector<int64_t> pts;
     uint32_t decoded=0, served=0;
     // [DoD] 2026-10-27 (user: CG 偶爾卡一下、聲音跟著卡): the HD pictures are decoded ahead on this thread. read()
@@ -183,11 +196,47 @@ public:
         av_frame_unref(frame);
         return out;
     }
+    void noteFirstGop(const uint8_t* data,size_t size) {
+        for(size_t i=0;i<size && gopBytes<4;++i) {
+            if(gopBytes>=0) {
+                gopCode[gopBytes++]=data[i];
+                if(gopBytes==4) {
+                    const uint32_t v=(uint32_t(gopCode[0])<<24)|(uint32_t(gopCode[1])<<16)|(uint32_t(gopCode[2])<<8)|gopCode[3];
+                    std::fprintf(stderr,"[cg-hd] movie=%d native first GOP %s (00:00:00:00 = from the start of the movie)\n",
+                        info.id,gopText(v).c_str());
+                }
+                continue;
+            }
+            gopScan=(gopScan<<8)|data[i];
+            if(gopScan==0x000001B8u) gopBytes=0;
+        }
+    }
+    static std::string gopText(uint32_t v) {
+        char text[16];
+        std::snprintf(text,sizeof(text),"%02u:%02u:%02u:%02u",(v>>26)&31u,(v>>20)&63u,(v>>13)&63u,(v>>7)&63u);
+        return text;
+    }
+    std::string firstGop() const {
+        if(gopBytes<4) return "none";
+        return gopText((uint32_t(gopCode[0])<<24)|(uint32_t(gopCode[1])<<16)|(uint32_t(gopCode[2])<<8)|gopCode[3]);
+    }
+    uint32_t pictures() const { return served; }
     template<class Queue> bool append(Queue& queue) {
         auto hd=first?std::exchange(first,{}):take();
-        if(!hd) return false;
+        if(!hd) {
+            if(!last) return false;
+            if(!ranOut) {
+                ranOut=true;
+                std::fprintf(stderr,"[cg-hd] HD pictures ran out movie=%d at native picture %u (hd=%d first_gop=%s): "
+                    "the last one stays until the native stream ends\n",info.id,served,info.count,firstGop().c_str());
+            }
+            hd=last;
+        }
+        last=hd;
         typename Queue::value_type out;
-        out.width=info.w; out.height=info.h; out.pts90k=pts[served++]; out.hd=hd;
+        out.width=info.w; out.height=info.h; out.hd=hd;
+        out.pts90k=served<pts.size()?pts[served]:-1;
+        ++served;
         out.rgba.resize(info.w*info.h*4);
         const uint8_t* field=hd->wire.data()+64;
         // Both native fields refer to this same HD frame; retain the original uploader/cadence.
@@ -199,6 +248,7 @@ public:
         return true;
     }
     template<class Queue> bool feed(const uint8_t* data,size_t size,Queue& queue) {
+        noteFirstGop(data,size);
         std::vector<uint8_t> padded(data,data+size);
         padded.resize(size+AV_INPUT_BUFFER_PADDING_SIZE,0);
         const uint8_t* p=padded.data();
@@ -217,10 +267,9 @@ public:
         uint8_t* parsed=nullptr; int bytes=0;
         int r=av_parser_parse2(parser,parserContext,&parsed,&bytes,nullptr,0,AV_NOPTS_VALUE,AV_NOPTS_VALUE,0);
         if(r<0 || (bytes && !append(queue))) return false;
-        if(served!=static_cast<uint32_t>(info.count)) {
-            std::fprintf(stderr,"[cg-hd] COUNT MISMATCH movie=%d native=%u hd=%d\n",info.id,served,info.count);
-            return false;
-        }
+        if(served!=static_cast<uint32_t>(info.count))
+            std::fprintf(stderr,"[cg-hd] COUNT MISMATCH movie=%d native=%u hd=%d first_gop=%s: the movie ends with the native stream\n",
+                info.id,served,info.count,firstGop().c_str());
         return true;
     }
 };

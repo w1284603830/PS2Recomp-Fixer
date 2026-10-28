@@ -46,11 +46,11 @@
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp                  |  217 ++++++----
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h       |  177 ++++++++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/IPU.cpp                 |   18 +-
- .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp                |  618 ++++++++++++++++++++++++++-
+ .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp                |  658 ++++++++++++++++++++++++++++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp          |   50 +++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp                 |   54 ++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/VU.cpp                  |   16 +
- /dev/null => ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h           |  227 ++++++++++
+ /dev/null => ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h           |  276 ++++++++++++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp              |  111 ++++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/Sync.cpp             |   13 +-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp           |   60 ++-
@@ -95,4 +95,4 @@
  {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xTest/gs_cache/CMakeLists.txt  |    1 +
  /dev/null => ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp             |    9 +
  {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp |   66 +++
- 97 files changed, 17262 insertions(+), 494 deletions(-)
+ 97 files changed, 17351 insertions(+), 494 deletions(-)
