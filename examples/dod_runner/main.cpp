@@ -48,6 +48,15 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode); // [DoD] ../lib/vu/d
 #undef DrawTextEx
 #undef LoadImage
 #undef PlaySound
+
+// [DoD] Hybrid-GPU PCs: the NVIDIA / AMD drivers treat dod.exe as a high-performance program (its driver profile and
+// the raylib window's OpenGL context), as most games ask; the GPU that renders is still the one the GS picks (launcher
+// 画面设置 → 显卡, gs_options adapter; a Windows graphics setting for dod.exe still wins over these exports).
+extern "C"
+{
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 #endif
 
 #include <algorithm>

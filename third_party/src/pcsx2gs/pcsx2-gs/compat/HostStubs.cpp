@@ -136,11 +136,46 @@ namespace
     void UiBeginDisabled(int disabled) { ImGui::BeginDisabled(disabled != 0); }
     void UiEndDisabled() { ImGui::EndDisabled(); }
 
-    const Pcsx2GsUi g_ui = {2u, UiBeginWindow, UiEndWindow, UiBeginTabBar, UiEndTabBar, UiBeginTab, UiEndTab, UiText,
+    // [DoD] A panel docked at the left or right edge (the F2 cheat menu): sized as UiBeginWindow (the window's height
+    // decides the scale, whatever the resolution, DPI or fullscreen mode), placed 2 % in from the edge and centered
+    // vertically when it appears; the user may still move it.
+    int UiBeginPanel(const char *title, int *open, float width, float height, uint32_t flags)
+    {
+        const ImVec2 display = ImGui::GetIO().DisplaySize;
+        const float scale = std::clamp(display.y / 900.0f, 0.7f, 1.8f);
+        ImGui::GetStyle().FontScaleMain = scale;
+        width = std::min(width * scale, display.x - 24.0f);
+        height = std::min(height * scale, display.y - 24.0f);
+        const bool left = (flags & PCSX2GS_PANEL_LEFT) != 0;
+        const float margin = std::max(12.0f, display.x * 0.02f);
+        ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Appearing);
+        ImGui::SetNextWindowPos(ImVec2(left ? margin : display.x - margin, display.y * 0.5f), ImGuiCond_Appearing,
+                                ImVec2(left ? 0.0f : 1.0f, 0.5f));
+        if (flags & PCSX2GS_PANEL_FOCUS)
+            ImGui::SetNextWindowFocus();
+        bool keep = open ? *open != 0 : true;
+        const bool visible = ImGui::Begin(title, open ? &keep : nullptr, ImGuiWindowFlags_NoCollapse);
+        if (open)
+            *open = keep ? 1 : 0;
+        return visible ? 1 : 0;
+    }
+    void UiTooltip(const char *text)
+    {
+        if (text && *text && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort | ImGuiHoveredFlags_ForTooltip) &&
+            ImGui::BeginTooltip())
+        {
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+            ImGui::TextUnformatted(text);
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+
+    const Pcsx2GsUi g_ui = {3u, UiBeginWindow, UiEndWindow, UiBeginTabBar, UiEndTabBar, UiBeginTab, UiEndTab, UiText,
                             UiTextWrapped, UiTextDisabled, UiTextColored, UiHeading, UiCheckbox, UiButton, UiSameLine,
                             UiSeparator, UiSpacing, UiBeginChild, UiEndChild, UiPushId, UiPopId, UiCombo, UiRadio,
                             UiSmallButton, UiSeparatorText, UiIndent, UiUnindent, UiSetNextWidth, UiBeginDisabled,
-                            UiEndDisabled};
+                            UiEndDisabled, UiBeginPanel, UiTooltip};
 
     // The menu's look: ImGui's dark style with the launcher's red.
     void ApplyMenuStyle()
@@ -527,6 +562,25 @@ bool ImGuiManager::Initialize()
         g_osdFont = GetFileAttributesA(roboto.c_str()) != INVALID_FILE_ATTRIBUTES ? io.Fonts->AddFontFromFileTTF(roboto.c_str(), 20.0f) : nullptr;
         if (!g_osdFont)
             g_osdFont = io.Fonts->AddFontDefault();
+        // [DoD] Chinese / Japanese text (the F2 cheat menu): the first CJK font Windows has, merged into the one above
+        // (glyphs are loaded when first drawn). Without any, those characters show as boxes.
+        wchar_t windows[MAX_PATH] = {};
+        if (GetWindowsDirectoryW(windows, MAX_PATH))
+        {
+            static const wchar_t *const kCjkFonts[] = {L"msyh.ttc", L"msjh.ttc", L"simhei.ttf", L"simsun.ttc", L"meiryo.ttc", L"msgothic.ttc"};
+            for (const wchar_t *name : kCjkFonts)
+            {
+                const std::filesystem::path path = std::filesystem::path(windows) / L"Fonts" / name;
+                std::error_code ec;
+                if (!std::filesystem::exists(path, ec))
+                    continue;
+                ImFontConfig config;
+                config.MergeMode = true;
+                const std::u8string utf8 = path.u8string();
+                if (io.Fonts->AddFontFromFileTTF(reinterpret_cast<const char *>(utf8.c_str()), 20.0f, &config))
+                    break;
+            }
+        }
     }
     WindowResized();
     NewFrame();
@@ -697,7 +751,10 @@ void GSCapture::Flush()
 }
 
 // [DoD] PCSX2's draw dumps (Bridge.cpp dump_dir) save through here: a 32-bit BMP (BGRA, the alpha kept in the
-// fourth byte) beside the requested name, whatever its extension; R8I one channel as grey.
+// fourth byte) beside the requested name, whatever its extension; R8I one channel as grey. g_dodDumpPng (the F8
+// capture, Bridge.cpp): a PNG instead (WIC), opaque unless the format keeps the alpha, about a quarter of the size.
+bool g_dodDumpPng = false;
+
 bool GSPng::Save(GSPng::Format fmt, const std::string &file, const u8 *image, int w, int h, int pitch, int compression, bool rb_swapped)
 {
     if (!image || w <= 0 || h <= 0)
@@ -706,6 +763,31 @@ bool GSPng::Save(GSPng::Format fmt, const std::string &file, const u8 *image, in
     const size_t dot = name.find_last_of('.');
     if (dot != std::string::npos && name.find_first_of("/\\", dot) == std::string::npos)
         name.resize(dot);
+    if (g_dodDumpPng)
+    {
+        std::vector<u8> rgba(static_cast<size_t>(w) * 4u * static_cast<size_t>(h));
+        for (int y = 0; y < h; ++y)
+        {
+            const u8 *src = image + static_cast<size_t>(y) * static_cast<size_t>(pitch);
+            u8 *d = &rgba[static_cast<size_t>(y) * static_cast<size_t>(w) * 4u];
+            for (int x = 0; x < w; ++x, d += 4)
+            {
+                if (fmt == R8I_PNG)
+                {
+                    d[0] = d[1] = d[2] = src[x];
+                    d[3] = 255;
+                    continue;
+                }
+                const u8 *s = src + static_cast<size_t>(x) * 4u;
+                d[0] = rb_swapped ? s[2] : s[0];
+                d[1] = s[1];
+                d[2] = rb_swapped ? s[0] : s[2];
+                d[3] = fmt == RGBA_PNG ? s[3] : 255;
+            }
+        }
+        return GSTextureReplacements::SavePNGImage(name + ".png", static_cast<u32>(w), static_cast<u32>(h), rgba.data(),
+                                                   static_cast<u32>(w) * 4u);
+    }
     name += ".bmp";
     FILE *f = std::fopen(name.c_str(), "wb");
     if (!f)

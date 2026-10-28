@@ -1,6 +1,6 @@
 # 我們對 PS2Recomp 的改進（相對上游 ran-j/PS2Recomp eb8688b）
 
-完整差異：`patches/PS2Recomp_vs_upstream_eb8688b.diff`（95 個檔，+16,702／−494 行；在上游 eb8688b 原始碼裡 `git apply -p1` 可重現本資料夾的內容，只差換行符）。
+完整差異：`patches/PS2Recomp_vs_upstream_eb8688b.diff`（97 個檔，+17,262／−494 行；在上游 eb8688b 原始碼裡 `git apply -p1` 可重現本資料夾的內容，只差換行符）。
 每一項的來龍去脈、驗證方式都在 `docs/DoD_RUNTIME_PATCHES.md`（下表括號裡的數字是那份記錄的列號）。程式碼裡的修改多半標有 `[DoD]` 註解，**這只是歷史標記，不代表只適用新鬼**；真正只屬於新鬼的部分在最後一節。
 
 ## 一、重編譯器 ps2xRecomp（產生的 C++ 正確性）
@@ -44,6 +44,9 @@
 - `third_party/src/pcsx2gs`：PCSX2 2954ebe 的 GS（DX11/DX12）包成 DLL，C 介面 `pcsx2gs_api.h`；runtime 端 `gs/dod_pcsx2_gs.cpp` 在獨立 GS 執行緒餵資料、子視窗呈現（36、37、67）
 - GS 修正：PACKED 續傳越界、Target::Update 崩潰、場偏移（60、90、100）；高清紋理替換的上傳預算、保留、多執行緒載入、場景預讀（129、140）；FXAA/SSAA（130）；關窗崩潰（131）
 - 全螢幕／無邊框：只由 D3D 子視窗呈現、父視窗不再交換黑色 OpenGL 畫面；獨佔全螢幕焦點判斷用主視窗（145）
+- 放大解析度：特效 sprite 周圍不再出現 1 像素細線（小數座標、雙線性、圖集取樣；與 PCSX2 #5851／#6396 同類）。場景粒子的貼圖範圍向內縮「實際讀到的最粗 mip 層」的半個 texel，有無 mipmap 都處理（`DoDNativeParticleEdges`；`DOD_PARTICLE_EDGES=0` 關閉）（146）
+- 顯卡選擇：`gs_options` 的 `adapter=<名稱>`；未指定時照 Windows「圖形設定」對該執行檔的選擇，否則用高效能硬體顯卡（以前 D3D11 固定用 adapter 0，很多筆電因此跑在內顯）；實際使用的顯卡寫到 `logs\gpu.txt`（147）
+- 主機端選單 API v3（`pcsx2gs_api.h`）：靠左面板（`begin_panel`）、提示文字（tooltip）、ImGui 字型合併系統中文字型（150）
 - `third_party/src/kzvu`：PCSX2 microVU（646df006a4）做成靜態庫取代上游 VU1Interpreter（50）；後備直譯器 65536 週期截斷修正（138）
 
 ## 六、IPU／MPEG 影片
@@ -51,6 +54,7 @@
 - 完整 IPU（AC5 的 `ps2_ipu.c`，Apache-2.0，經 Urban Reign）：IDEC/BDEC/VDEC/CSC，快照重跑不丟資料（24、40、54、55）
 - sceIpuInit HLE 不再寫死別款遊戲位址（29）；libdma Recv 系列（31）
 - FFmpeg 解 MPEG 的 HLE 路徑（`PS2X_ENABLE_FFMPEG`）
+- 高清影片替換（`dod_hd_cg.h`）改由背景執行緒預先解碼最多 8 張：遊戲執行緒不再拿著 MPEG 鎖解 1080p HEVC，播放與聲音不再卡頓（149）
 
 ## 七、IOP（ps2xIOP，直接跑原版 IRX）
 
@@ -72,6 +76,7 @@
 - 限幀：單一 deadline pacer，VSync 關閉，遊戲時鐘不受影響（128、`dod_host_pacer`）
 - UTF-8 程序代碼頁 manifest：任何字元的資料夾都能執行（144）
 - 主機音量（`dod_audio_settings.h`）、按鍵設定解析（`dod_input_settings.h`）
+- 雙顯卡筆電：範例 runner 匯出 `NvOptimusEnablement`／`AmdPowerXpressRequestHighPerformance`（自己的 runner `main.cpp` 照抄即可）（147）
 
 ## 十、效能
 
@@ -79,7 +84,7 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 
 ## 十一、診斷工具（環境變數，平常不設就不作用）
 
-`DOD_PERF`、`DOD_FPS`、`DOD_FRAME_CAPTURE_DIR`、`DOD_GS_CAPTURE`、`DOD_LAYER_LOG`、`DOD_VIF_EVENTS`、`DOD_ADMA_WATCH`、`DOD_SPU2_WAV`／`DOD_SPU2_STATS`、`DOD_RAM_DUMP`、`DOD_HANG_DUMP_AT`、`DOD_RNG_TRACE`、`DOD_PAD_SCRIPT`、`DOD_TEST_AUTOSTART`、`DOD_TEST_EXIT_AFTER`、`PS2X_PRESENT_STATS` 等；外部腳本在 `tools/`（反組譯、指令／HLE／IOP 匯入清點、GIF 解析、執行緒取樣剖析、和 PCSX2 對照、WAV 分析、GitHub issue 抓取）。
+`DOD_PERF`、`DOD_FPS`、`DOD_FRAME_CAPTURE_DIR`、`DOD_GS_CAPTURE`、`DOD_LAYER_LOG`、`DOD_VIF_EVENTS`、`DOD_ADMA_WATCH`、`DOD_SPU2_WAV`／`DOD_SPU2_STATS`、`DOD_RAM_DUMP`、`DOD_HANG_DUMP_AT`、`DOD_RNG_TRACE`、`DOD_PAD_SCRIPT`、`DOD_TEST_AUTOSTART`、`DOD_TEST_EXIT_AFTER`、`PS2X_PRESENT_STATS` 等。`DOD_LINE_CAPTURE_DIR`（按 F8 或 `DOD_LINE_CAPTURE_AT=<秒數,…>`）：存 GS 輸出、之後幾幀每次繪製的 PCSX2 傾印與逐筆記錄（`dod_draws.tsv`、`dod_sprites.tsv`，以及把繪製分成 3d／particle／world-sprite／hud／post／fill／cg 的摘要；`DOD_LINE_CAPTURE_MODE=light|ab`）（148）。`DOD_PRESENT_SHOT=<資料夾>:<第幾次呈現>:<每幾次>:<張數>`：含選單的最終畫面（150）。外部腳本在 `tools/`（反組譯、指令／HLE／IOP 匯入清點、GIF 解析、執行緒取樣剖析、和 PCSX2 對照、WAV 分析、GitHub issue 抓取）。
 
 ## 十二、只屬於新鬼、換遊戲時要改或拿掉的地方
 
@@ -92,5 +97,6 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRuntime/src/lib/gs/dod_widescreen.h`＋pcsx2gs `GS/DoDWidescreen.h`、`GSState.cpp` 寬螢幕區塊 | 新鬼的 16:9（世界投影常數在新鬼產生碼裡） | runner 只在 `aspect=16:9` 時送 `widescreen=1`；新遊戲不要開 |
 | pcsx2gs `GS/DoDHdStatic.h`、`DoDHdCg.h` | 新鬼高清靜態頁、CG 的 GS 端 | 依新鬼紋理／影片資料；新遊戲沒有對應資源 |
 | `ps2xRuntime/CMakeLists.txt` | `dod_branding.rc.in`（圖示資源，現在沒有就略過）、`dod_utf8.manifest`（通用，建議保留） | 自己的圖示放 `src/runner/dod_branding.rc.in` |
+| `ps2xRuntime/src/lib/dod_cheats.[h,cpp]`（`ps2_runtime.cpp`、`ps2_pad.cpp` 呼叫；滑鼠輸入在 `gs/dod_pcsx2_gs.cpp`） | 新鬼的 F2 遊戲內金手指選單：道具數量每幀寫入新鬼的 RAM 位址；改指令的金手指是 `g_dodCheats[n]` 開關，由腳本插進新鬼的產生碼（不在本倉庫）。每次啟動全部關閉 | 選單本身通用（靠左面板、滑鼠／鍵盤／手把、跟著畫面大小縮放）：換成該遊戲的項目與位址，或刪掉這個檔與兩處呼叫 |
 
 另外 `[DoD]` 修正裡有一些是「新鬼先踩到、但依 PCSX2／實機行為修」的（例如 SPU2、IOP 臨界區、VIF1），對其他遊戲同樣有效；若新遊戲出現行為差異，先查 `docs/DoD_RUNTIME_PATCHES.md` 對應列的說明與環境變數開關。

@@ -42,7 +42,7 @@ inline State state = [] {
         char* tail = nullptr;
         s.first = std::strtoull(v, &tail, 10);
         if (tail && *tail == ':')
-            s.end = s.first + std::min<uint64_t>(3600, std::strtoull(tail + 1, nullptr, 10));
+            s.end = s.first + std::min<uint64_t>(72000, std::strtoull(tail + 1, nullptr, 10)); // up to 20 min: whole movies
     }
     return s;
 }();

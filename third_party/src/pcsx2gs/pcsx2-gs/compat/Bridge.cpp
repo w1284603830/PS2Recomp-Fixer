@@ -10,6 +10,7 @@
 #include "GS/GSPerfMon.h"
 #include "GS/Renderers/Common/GSRenderer.h"
 #include "GS/Renderers/DX11/GSDevice11.h"
+#include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/Renderers/HW/GSTextureCache.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "common/ScopedGuard.h"
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,8 +27,15 @@
 
 extern Pcsx2Config EmuConfig;
 extern bool g_dodExclusiveFullscreen; // HostStubs.cpp
+extern bool g_dodDumpPng;             // HostStubs.cpp
 bool g_dodWidescreen = false;
 unsigned long long g_dodGsField = 0;
+// [DoD] pcsx2gs_dod_capture's request, applied on the GS thread at the next vsync.
+static std::mutex g_dodDumpMutex;
+static std::string g_dodDumpDir;
+static int g_dodDumpFrames = 1;
+static uint32_t g_dodDumpFlags = 0;
+static bool g_dodDumpPending = false;
 
 namespace
 {
@@ -166,6 +175,11 @@ namespace
                 options.UserHacks_TCOffsetY = value;
             else if (key == "autoflush")
                 options.UserHacks_AutoFlush = static_cast<GSHWAutoFlushLevel>(std::clamp(value, 0, 2));
+            // [DoD] adapter: the GPU that renders, by its DXGI name ("Name (2)" for a second identical card), written by
+            // the launcher (画面设置 → 显卡); empty or auto, or a GPU that is gone = auto: the Windows graphics setting
+            // for dod.exe if any, else the high-performance GPU (D3D::GetAdapterByName).
+            else if (key == "adapter")
+                options.Adapter = text == "auto" ? std::string() : text;
             // [DoD] exclusive_fullscreen=1: DXGI exclusive fullscreen in the desktop's current mode (HostStubs.cpp).
             else if (key == "exclusive_fullscreen")
                 g_dodExclusiveFullscreen = value != 0;
@@ -335,6 +349,34 @@ namespace
         std::memcpy(g_regs + 0x1010, &regs->imr, 8);
         std::memcpy(g_regs + 0x1040, &regs->busdir, 8);
         std::memcpy(g_regs + 0x1080, &regs->siglblid, 8);
+        std::string dodDrawLog;
+        int dodDrawLogLast = 0, dodDrawLogAbOff = -1;
+        {
+            std::lock_guard<std::mutex> lock(g_dodDumpMutex);
+            if (g_dodDumpPending)
+            {
+                // Full: PCSX2's per-draw info (registers, vertices: SaveInfo) and each frame's output; light: the
+                // frame output only. Both: images as PNG, and the draw table (GSRendererHW::DoDDrawLogOpen).
+                const bool light = (g_dodDumpFlags & PCSX2GS_DOD_CAPTURE_LIGHT) != 0;
+                g_dodDumpPending = false;
+                g_dodDumpPng = true;
+                GSConfig.HWDumpDirectory = g_dodDumpDir;
+                GSConfig.SWDumpDirectory = g_dodDumpDir;
+                GSConfig.DumpGSData = true;
+                GSConfig.SaveInfo = !light;
+                GSConfig.SaveFrame = true;
+                GSConfig.SaveDrawStart = 0;
+                GSConfig.SaveDrawCount = -1;
+                GSConfig.SaveFrameStart = g_perfmon.GetFrame();
+                GSConfig.SaveFrameCount = g_dodDumpFrames + 1;
+                dodDrawLog = g_dodDumpDir + "/dod_draws.tsv";
+                dodDrawLogLast = GSConfig.SaveFrameStart + g_dodDumpFrames;
+                if ((g_dodDumpFlags & PCSX2GS_DOD_CAPTURE_AB) != 0 && g_dodDumpFrames >= 2)
+                    dodDrawLogAbOff = dodDrawLogLast; // the last frame: the one before it has the fix
+                std::fprintf(stderr, "[pcsx2-gs] line capture (%s): PCSX2 frames %d..%d to %s\n", light ? "light" : "full",
+                             GSConfig.SaveFrameStart, GSConfig.SaveFrameStart + g_dodDumpFrames, g_dodDumpDir.c_str());
+            }
+        }
         if (g_dumpField >= 0 && ++g_fields == g_dumpField)
         {
             // PCSX2 counts the frame at this vsync's present (or not, when it skips presenting it): one more covers both
@@ -346,6 +388,11 @@ namespace
         // As PCSX2's MTGS: CSR.FIELD (bit 13) picks the field.
         ++g_dodGsField;
         GSvsync((regs->csr & 0x2000u) ? 0u : 1u, true);
+        // The draw table after GSvsync (which flushes the last draws and saves the frame): it holds the draws of the
+        // frames whose images follow (frame N's draws -> *_fNNNNN_fr*), the first image (frame SaveFrameStart) excepted.
+        GSRendererHW::DoDDrawLogVsync(g_perfmon.GetFrame());
+        if (!dodDrawLog.empty())
+            GSRendererHW::DoDDrawLogOpen(dodDrawLog, dodDrawLogLast, dodDrawLogAbOff);
         WritePresentStats();
         WriteAaProfile();
     }
@@ -430,6 +477,13 @@ namespace
         std::vector<u32> pixels;
         if (!g_open || !path || !GSSaveSnapshotToMemory(0, 0, false, false, &width, &height, &pixels) || !width || !height)
             return 0;
+        const std::string_view name(path);
+        if (name.size() > 4 && name.substr(name.size() - 4) == ".png")
+        {
+            for (u32 &c : pixels)
+                c |= 0xFF000000u; // R in the low byte: RGBA rows
+            return GSTextureReplacements::SavePNGImage(path, width, height, reinterpret_cast<const u8 *>(pixels.data()), width * 4u) ? 1 : 0;
+        }
         std::FILE *file = std::fopen(path, "wb");
         if (!file)
             return 0;
@@ -500,6 +554,27 @@ extern "C" __declspec(dllexport) void pcsx2gs_dod_hd_cg_v1(const void* data,uint
 extern "C" __declspec(dllexport) void pcsx2gs_dod_prefetch_scene(uint32_t scene)
 {
     GSTextureReplacements::DodRequestScenePrefetch(scene);
+}
+
+// [DoD] Diagnostics (the host's DOD_LINE_CAPTURE_DIR hotkey): the draw table (dod_draws.tsv + summary), the frame
+// output and, unless PCSX2GS_DOD_CAPTURE_LIGHT, PCSX2's per-draw info (registers, vertices, transfers: SaveInfo) of
+// the next `frames` frames, into dir. Only stores the request, so it may come from any thread; the GS thread starts
+// the dump at its next vsync (Vsync). Images are PNG; Snapshot writes one when its path ends in .png.
+extern "C" __declspec(dllexport) void pcsx2gs_dod_capture(const char *dir, uint32_t frames, uint32_t flags)
+{
+    if (!dir || !*dir)
+        return;
+    std::lock_guard<std::mutex> lock(g_dodDumpMutex);
+    g_dodDumpDir = dir;
+    g_dodDumpFrames = static_cast<int>(std::clamp<uint32_t>(frames, 1u, 8u));
+    g_dodDumpFlags = flags;
+    g_dodDumpPending = true;
+}
+
+// The first version's export (hosts built before pcsx2gs_dod_capture): a full capture.
+extern "C" __declspec(dllexport) void pcsx2gs_dod_dump_now(const char *dir, uint32_t frames)
+{
+    pcsx2gs_dod_capture(dir, frames, 0u);
 }
 
 // [DoD] GIF data of one path (1 = VU1 XGKICK, 2 = VIF1 DIRECT, 3 = GIF DMA), whole qwords, in stream order. Each path

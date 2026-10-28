@@ -211,6 +211,10 @@ private:
 
 	template <bool linear>
 	void RoundSpriteOffset();
+	const char* DoDNativeParticleEdges(const GSTextureCache::Source* tex, float rtscale);
+	void DoDLogDraw(const GSTextureCache::Target* rt, const GSTextureCache::Source* tex, const GSVector4i& rect_before,
+		const char* edges);
+	GSVector4 DoDSpriteTexels(const GSVertex& v0, const GSVertex& v1) const;
 
 	void DrawPrims(GSTextureCache::Target* rt, GSTextureCache::Target* ds, GSTextureCache::Source* tex, const TextureMinMaxResult& tmm);
 
@@ -351,6 +355,10 @@ public:
 	virtual ~GSRendererHW() override;
 
 	__fi static GSRendererHW* GetInstance() { return static_cast<GSRendererHW*>(g_gs_renderer.get()); }
+	// [DoD] F8 capture's draw table (Bridge.cpp; GS thread): one line per draw of PCSX2 frames up to last_frame into
+	// path, then a per-frame summary beside it; frame ab_off_frame (the A/B capture) draws without the particle fix.
+	static void DoDDrawLogOpen(const std::string& path, int last_frame, int ab_off_frame = -1);
+	static void DoDDrawLogVsync(int frame);
 	__fi HWCachedCtx* GetCachedCtx() { return &m_cached_ctx; }
 	__fi u32 GetLastChannelShuffleFBP() { return m_last_channel_shuffle_fbp; }
 	void Destroy() override;

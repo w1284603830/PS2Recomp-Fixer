@@ -19,7 +19,9 @@
 #include "IconsFontAwesome.h"
 
 #include <array>
+#include <cstdio>
 #include <d3d11.h>
+#include <dxgi1_6.h>
 #include <directx/d3d12.h>
 #include <d3dcompiler.h>
 #include <dxcapi.h>
@@ -197,30 +199,84 @@ bool D3D::GetRequestedExclusiveFullscreenModeDesc(IDXGIFactory5* factory, HWND w
 	return true;
 }
 
-wil::com_ptr_nothrow<IDXGIAdapter1> D3D::GetAdapterByName(IDXGIFactory5* factory, const std::string_view name)
+// [DoD] GPU choice (launcher 画面设置 → 显卡, gs_options adapter). Without a choice, or when the chosen GPU is gone, "auto":
+// the Windows graphics setting for this exe if the player made one (Settings → Display → Graphics: power saving or
+// high performance), otherwise the hardware GPU Windows ranks first for high performance (the discrete GPU of a PC
+// that also has an integrated one) instead of adapter 0, the GPU driving the main display, often the integrated one.
+// The launcher (GpuSettings) follows the same rules to show which GPU "auto" means.
+
+// Windows' per-app graphics setting: HKCU\Software\Microsoft\DirectX\UserGpuPreferences, value named by the exe's full
+// path, data "GpuPreference=N;" (1 power saving, 2 high performance, 0 or none: Windows decides). Only read.
+static int WindowsGpuPreference()
 {
+	wchar_t exe[1024];
+	const DWORD length = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+	if (length == 0 || length >= std::size(exe))
+		return 0;
+	wchar_t data[256] = {};
+	DWORD size = sizeof(data);
+	if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\DirectX\\UserGpuPreferences", exe, RRF_RT_REG_SZ, nullptr,
+			data, &size) != ERROR_SUCCESS)
+		return 0;
+	const wchar_t* setting = wcsstr(data, L"GpuPreference=");
+	return setting ? _wtoi(setting + 14) : 0;
+}
+
+// Adapters in the high-performance order (external, discrete, integrated): it does not change with the per-app
+// setting, so the launcher and the game number identical cards ("Name (2)") the same way. EnumAdapters1 order before
+// Windows 10 1803.
+static wil::com_ptr_nothrow<IDXGIAdapter1> EnumAdapterStable(IDXGIFactory5* factory, u32 index)
+{
+	wil::com_ptr_nothrow<IDXGIAdapter1> adapter;
+	wil::com_ptr_nothrow<IDXGIFactory6> factory6;
+	if (SUCCEEDED(factory->QueryInterface(IID_PPV_ARGS(factory6.put()))))
+	{
+		if (FAILED(factory6->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(adapter.put()))))
+			adapter.reset();
+	}
+	else if (FAILED(factory->EnumAdapters1(index, adapter.put())))
+		adapter.reset();
+	return adapter;
+}
+
+static wil::com_ptr_nothrow<IDXGIAdapter1> GetAutoAdapter(IDXGIFactory5* factory)
+{
+	wil::com_ptr_nothrow<IDXGIFactory6> factory6;
+	if (FAILED(factory->QueryInterface(IID_PPV_ARGS(factory6.put()))))
+		return {}; // before Windows 10 1803: the system default
+	const DXGI_GPU_PREFERENCE preference =
+		WindowsGpuPreference() == 1 ? DXGI_GPU_PREFERENCE_MINIMUM_POWER : DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+	for (u32 index = 0;; index++)
+	{
+		wil::com_ptr_nothrow<IDXGIAdapter1> adapter;
+		if (FAILED(factory6->EnumAdapterByGpuPreference(index, preference, IID_PPV_ARGS(adapter.put()))))
+			return {};
+		DXGI_ADAPTER_DESC1 desc;
+		if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
+			return adapter;
+	}
+}
+
+wil::com_ptr_nothrow<IDXGIAdapter1> D3D::GetAdapterByName(IDXGIFactory5* factory, std::string_view name)
+{
+	// [DoD] names without surrounding spaces on both sides: dod.ini's reader trims values, so a DXGI name ending in a
+	// space would otherwise never match.
+	name = StringUtil::StripWhitespace(name);
 	if (name.empty() || name == GetDefaultAdapter())
-		return {};
+		return GetAutoAdapter(factory);
 
 	// This might seem a bit odd to cache the names.. but there's a method to the madness.
 	// We might have two GPUs with the same name... :)
 	std::vector<GSAdapterInfo> adapter_names;
 
-	wil::com_ptr_nothrow<IDXGIAdapter1> adapter;
 	for (u32 index = 0;; index++)
 	{
-		const HRESULT hr = factory->EnumAdapters1(index, adapter.put());
-		if (hr == DXGI_ERROR_NOT_FOUND)
+		wil::com_ptr_nothrow<IDXGIAdapter1> adapter = EnumAdapterStable(factory, index);
+		if (!adapter)
 			break;
 
-		if (FAILED(hr))
-		{
-			ERROR_LOG("IDXGIFactory2::EnumAdapters() returned {:08X}", static_cast<unsigned>(hr));
-			continue;
-		}
-
 		GSAdapterInfo ai;
-		ai.name = FixupDuplicateAdapterNames(adapter_names, GetAdapterName(adapter.get()));
+		ai.name = FixupDuplicateAdapterNames(adapter_names, std::string(StringUtil::StripWhitespace(GetAdapterName(adapter.get()))));
 		if (ai.name == name)
 		{
 			INFO_LOG("D3D: Found adapter '{}'", ai.name);
@@ -231,7 +287,8 @@ wil::com_ptr_nothrow<IDXGIAdapter1> D3D::GetAdapterByName(IDXGIFactory5* factory
 	}
 
 	Console.Warning(fmt::format("Adapter '{}' not found.", name));
-	return {};
+	std::fprintf(stderr, "[pcsx2-gs] GPU '%.*s' not found, using auto\n", static_cast<int>(name.size()), name.data());
+	return GetAutoAdapter(factory);
 }
 
 wil::com_ptr_nothrow<IDXGIAdapter1> D3D::GetFirstAdapter(IDXGIFactory5* factory)

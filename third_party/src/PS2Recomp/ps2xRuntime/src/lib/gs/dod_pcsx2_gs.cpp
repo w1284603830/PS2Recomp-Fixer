@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cfloat>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
@@ -94,6 +95,20 @@ namespace
 
     std::mutex g_snapshotMutex;
     std::string g_snapshotPath;
+
+    // [DoD] requestLineCapture: a burst of GS output snapshots (every kBurstStep-th field, kBurstShots of them; light:
+    // one) and the GS's dump of the next frames (pcsx2gs_dod_capture: draw table, PNG images; a DLL with only
+    // pcsx2gs_dod_dump_now: per-draw info and BMP images; nothing with a DLL that lacks both).
+    using DumpNowFn = void(__cdecl *)(const char *dir, uint32_t frames);
+    std::atomic<DumpNowFn> g_dumpNow{nullptr};
+    std::atomic<Pcsx2GsDodCaptureFn> g_dodCapture{nullptr};
+    constexpr uint64_t kBurstStep = 3u, kBurstShots = 10u;
+    std::string g_burstDir;      // under g_snapshotMutex
+    uint64_t g_burstFirst = 0u;  // 0: starts at the next vsync
+    uint64_t g_burstLast = 0u;
+    uint64_t g_burstShots = kBurstShots;
+    const char *g_burstExt = ".bmp";
+    std::atomic<uint32_t> g_lastScene{0xFFFFu};
 
     std::filesystem::path exeDirectory()
     {
@@ -215,6 +230,10 @@ namespace dodpcsx2
         g_hdCg.store(reinterpret_cast<HdCgFn>(GetProcAddress(module, "pcsx2gs_dod_hd_cg_v1")), std::memory_order_release);
         g_prefetchScene.store(reinterpret_cast<PrefetchSceneFn>(GetProcAddress(module, "pcsx2gs_dod_prefetch_scene")),
                               std::memory_order_release);
+        g_dumpNow.store(reinterpret_cast<DumpNowFn>(GetProcAddress(module, "pcsx2gs_dod_dump_now")),
+                        std::memory_order_release);
+        g_dodCapture.store(reinterpret_cast<Pcsx2GsDodCaptureFn>(GetProcAddress(module, "pcsx2gs_dod_capture")),
+                           std::memory_order_release);
         if (!g_api || !g_gifPath)
         {
             std::fprintf(stderr, "[pcsx2-gs] pcsx2gs.dll lacks pcsx2gs_get_api v%u / pcsx2gs_gif_path; using the CPU raster\n",
@@ -402,6 +421,15 @@ namespace dodpcsx2
         {
             std::lock_guard<std::mutex> lock(g_snapshotMutex);
             snapshot.swap(g_snapshotPath);
+            if (snapshot.empty() && !g_burstDir.empty())
+            {
+                if (g_burstFirst == 0u)
+                    g_burstFirst = fields, g_burstLast = fields + kBurstStep * g_burstShots;
+                if (fields >= g_burstLast)
+                    g_burstDir.clear();
+                else if ((fields - g_burstFirst) % kBurstStep == 0u)
+                    snapshot = g_burstDir + "/field_" + std::to_string(fields) + g_burstExt;
+            }
         }
         {
             // [DoD] DOD_PCSX2_FIELDS=<dir>:<first field>:<count>: every field in the window, its display registers on
@@ -886,8 +914,54 @@ namespace dodpcsx2
         return g_presents.load(std::memory_order_relaxed);
     }
 
+    void requestLineCapture(const char *dir, bool light, bool ab, const char *gameInfo)
+    {
+        if (!dir || !*dir)
+            return;
+        const Pcsx2GsDodCaptureFn capture = g_dodCapture.load(std::memory_order_acquire);
+        const DumpNowFn dumpNow = g_dumpNow.load(std::memory_order_acquire);
+        {
+            std::lock_guard<std::mutex> lock(g_snapshotMutex);
+            g_burstDir = dir;
+            g_burstFirst = g_burstLast = 0u;
+            g_burstShots = light ? 1u : kBurstShots;
+            g_burstExt = capture ? ".png" : ".bmp";
+        }
+        const std::string draws = std::string(dir) + "/draws";
+        if (capture)
+            capture(draws.c_str(), light && !ab ? 1u : 2u,
+                    (light ? PCSX2GS_DOD_CAPTURE_LIGHT : 0u) | (ab ? PCSX2GS_DOD_CAPTURE_AB : 0u));
+        else if (dumpNow)
+            dumpNow(draws.c_str(), 2u);
+        if (FILE *f = std::fopen((std::string(dir) + "/info.txt").c_str(), "w"))
+        {
+            const char *edges = std::getenv("DOD_PARTICLE_EDGES");
+            std::fprintf(f, "%sscene prefetched 0x%X\nfields presented %llu\nscale %d\noptions %s\ncapture %s\n"
+                            "particle edge fix %s\ndraw dump %s\n",
+                         gameInfo ? gameInfo : "", g_lastScene.load(), static_cast<unsigned long long>(g_presents.load()),
+                         g_scale, g_options.c_str(),
+                         ab ? "A/B (1 snapshot; frame output of two frames: the first with the particle fix, the second without)"
+                         : light ? "light (1 snapshot, frame output)" : "full",
+                         edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "on",
+                         capture ? "draws\\: dod_draws_summary.txt (each frame's draws by effect kind), dod_draws.tsv (one line per draw), frame PNGs"
+                         : dumpNow ? "draws\\ (old pcsx2gs.dll: per-draw info, BMP; no draw table)"
+                                   : "no (pcsx2gs.dll lacks pcsx2gs_dod_capture)");
+            // The GPU the GS picked (GSDevice11 writes logs\gpu.txt at the start)
+            if (FILE *gpu = std::fopen("logs\\gpu.txt", "r"))
+            {
+                std::fprintf(f, "gpu.txt:\n");
+                char line[512];
+                while (std::fgets(line, sizeof(line), gpu))
+                    std::fprintf(f, "  %s", line);
+                std::fclose(gpu);
+            }
+            std::fclose(f);
+        }
+    }
+
     void prefetchScene(uint32_t scene)
     {
+        g_lastScene.store(scene, std::memory_order_relaxed);
         if (const PrefetchSceneFn fn = g_prefetchScene.load(std::memory_order_acquire))
             fn(scene);
     }
@@ -895,6 +969,43 @@ namespace dodpcsx2
     uint64_t queuedVsyncs()
     {
         return g_queuedVsyncs.load(std::memory_order_relaxed);
+    }
+
+    void setMenu(void (*draw)(const ::Pcsx2GsUi *ui, void *user), void *user)
+    {
+        if (g_api && g_api->set_menu)
+            g_api->set_menu(draw, user);
+    }
+
+    // The cursor from Win32 in the GS child window's client area, scaled to the size given to the GS (the image's
+    // pixels): the same numbers ImGui lays out with, whatever the DPI awareness, Windows scaling, window size or
+    // fullscreen mode. GetAsyncKeyState reads physical buttons, so swapped mouse buttons are swapped back.
+    void menuInput(uint32_t keys, uint32_t pad, float wheel)
+    {
+        if (!g_api || !g_api->menu_input || !g_child)
+            return;
+        Pcsx2GsMenuInput input{-FLT_MAX, -FLT_MAX, 0u, wheel, keys, pad};
+        POINT cursor{};
+        RECT client{};
+        const HWND foreground = GetForegroundWindow();
+        if ((foreground == g_parent || foreground == g_child) && GetCursorPos(&cursor) && ScreenToClient(g_child, &cursor) &&
+            GetClientRect(g_child, &client) && client.right > 0 && client.bottom > 0 && cursor.x >= 0 && cursor.y >= 0 &&
+            cursor.x < client.right && cursor.y < client.bottom)
+        {
+            const float sx = static_cast<float>(g_clientWidth.load(std::memory_order_relaxed)) / static_cast<float>(client.right);
+            const float sy = static_cast<float>(g_clientHeight.load(std::memory_order_relaxed)) / static_cast<float>(client.bottom);
+            input.mouse_x = (static_cast<float>(cursor.x) + 0.5f) * sx;
+            input.mouse_y = (static_cast<float>(cursor.y) + 0.5f) * sy;
+            const bool swapped = GetSystemMetrics(SM_SWAPBUTTON) != 0;
+            const auto down = [](int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; };
+            if (down(swapped ? VK_RBUTTON : VK_LBUTTON))
+                input.mouse_buttons |= 1u;
+            if (down(swapped ? VK_LBUTTON : VK_RBUTTON))
+                input.mouse_buttons |= 2u;
+            if (down(VK_MBUTTON))
+                input.mouse_buttons |= 4u;
+        }
+        g_api->menu_input(&input);
     }
 }
 
@@ -915,10 +1026,13 @@ namespace dodpcsx2
     void reset() {}
     void readFifo(uint8_t *, uint32_t) {}
     void requestSnapshot(const char *) {}
+    void requestLineCapture(const char *, bool, bool, const char *) {}
     uint64_t presents() { return 0u; }
     void prefetchScene(uint32_t) {}
     uint64_t queuedVsyncs() { return 0u; }
     void cgSubmit(uint32_t, bool) {}
+    void setMenu(void (*)(const ::Pcsx2GsUi *, void *), void *) {}
+    void menuInput(uint32_t, uint32_t, float) {}
 }
 
 #endif

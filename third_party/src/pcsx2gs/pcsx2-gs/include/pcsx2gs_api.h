@@ -82,7 +82,20 @@ typedef struct Pcsx2GsUi
     void (*set_next_width)(float width); // width of the next item (0 = default)
     void (*begin_disabled)(int disabled);
     void (*end_disabled)(void);
+    // version 3
+    // A panel at the left (flags PCSX2GS_PANEL_LEFT) or right edge, vertically centered; sized like begin_window
+    // (scaled with the image height, never larger than the image); PCSX2GS_PANEL_FOCUS gives it the keyboard /
+    // controller focus when it appears, so it can be used without the mouse. end_window closes it.
+    int (*begin_panel)(const char *title, int *open, float width, float height, uint32_t flags);
+    // Hover help for the item just drawn (wrapped, ~30 characters per line).
+    void (*tooltip)(const char *text);
 } Pcsx2GsUi;
+
+enum
+{
+    PCSX2GS_PANEL_LEFT = 1u << 0,
+    PCSX2GS_PANEL_FOCUS = 1u << 1,
+};
 
 typedef void (*Pcsx2GsMenuFn)(const Pcsx2GsUi *ui, void *user);
 
@@ -138,7 +151,8 @@ typedef struct Pcsx2GsApi
     // left (top_rgba = its background color, R in the low byte; top_alpha fades it), bottom = a line at the bottom left
     // (the FPS counter). Unlike the other calls, any thread may call it.
     void (*set_osd)(const char *top, uint32_t top_rgba, float top_alpha, const char *bottom);
-    // Debug: writes the image the GS shows now (internal resolution, before window scaling) as a 24-bit .bmp.
+    // Debug: writes the image the GS shows now (internal resolution, before window scaling) as a 24-bit .bmp, or
+    // an opaque PNG when path ends in .png (a DLL with pcsx2gs_dod_capture).
     int (*snapshot)(const char *path);
     // In-game menu: draw = NULL hides it. Any thread.
     void (*set_menu)(Pcsx2GsMenuFn draw, void *user);
@@ -146,6 +160,14 @@ typedef struct Pcsx2GsApi
 } Pcsx2GsApi;
 
 typedef const Pcsx2GsApi *(*Pcsx2GsGetApiFn)(uint32_t version);
+
+// [DoD] Separate export (diagnostics, the F8 capture; the table above stays the same): into dir, the draw table
+// (dod_draws.tsv + dod_draws_summary.txt), each frame's output and, without PCSX2GS_DOD_CAPTURE_LIGHT, PCSX2's
+// per-draw info of the next `frames` frames (1-8), started at the next vsync; images as PNG. Any thread.
+#define PCSX2GS_DOD_CAPTURE_LIGHT 1u
+// A/B (with frames = 2): the second frame draws without the particle fix (same moment, fix on / off).
+#define PCSX2GS_DOD_CAPTURE_AB 2u
+typedef void (*Pcsx2GsDodCaptureFn)(const char *dir, uint32_t frames, uint32_t flags);
 
 #ifdef __cplusplus
 }

@@ -4,7 +4,7 @@
 
 A fork of [ran-j/PS2Recomp](https://github.com/ran-j/PS2Recomp) (commit `eb8688b`), the PlayStation 2 static
 recompiler, hardened while building a full PC port of a commercial PS2 game (*Shin Onimusha: Dawn of Dreams*: two
-discs, 3D, CRI Sofdec/ADX movies, IOP sound drivers; every room and movie run by automated sweeps). About 145 runtime,
+discs, 3D, CRI Sofdec/ADX movies, IOP sound drivers; every room and movie run by automated sweeps). About 150 runtime,
 recompiler and IOP fixes were made, most of them by following PCSX2's behaviour, and the hardware emulation pieces
 the upstream runtime lacked were added.
 

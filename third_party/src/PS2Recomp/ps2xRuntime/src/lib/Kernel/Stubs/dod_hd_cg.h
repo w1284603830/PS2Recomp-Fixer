@@ -6,6 +6,11 @@
 #include <sstream>
 #include <algorithm>
 #include <array>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <utility>
 extern "C" {
 #include <libavformat/avformat.h>
@@ -35,9 +40,50 @@ class Decoder {
     std::shared_ptr<Frame> first;
     std::vector<int64_t> pts;
     uint32_t decoded=0, served=0;
+    // [DoD] 2026-10-27 (user: CG 偶爾卡一下、聲音跟著卡): the HD pictures are decoded ahead on this thread. read()
+    // (HEVC decode, RGBA conversion, native preview: 10-30 ms a picture) used to run in append(), on the game thread
+    // inside sceMpegGetPicture with g_mpeg_stub_mutex held, so a heavy picture or a refill of several delayed the game
+    // frame and the Sofdec audio refill with it. The pictures do not depend on the native stream (it only counts
+    // them), so the worker reads the MP4 in order; append() only takes a finished one. After open() only the worker
+    // touches the FFmpeg contexts and `decoded`; the destructor stops and joins it before freeing them.
+    static constexpr size_t kAhead=8; // pictures decoded ahead (about 8 MB each), as many as the native queue holds
+    std::thread worker;
+    std::mutex readyMutex;
+    std::condition_variable readyCv;
+    std::deque<std::shared_ptr<Frame>> ready;
+    bool stopWorker=false, workerDone=false;
+    void work() {
+        for(;;) {
+            {
+                std::unique_lock<std::mutex> lock(readyMutex);
+                readyCv.wait(lock,[&]{ return stopWorker || ready.size()<kAhead; });
+                if(stopWorker) return;
+            }
+            auto picture=read();
+            std::lock_guard<std::mutex> lock(readyMutex);
+            if(!picture) { workerDone=true; readyCv.notify_all(); return; }
+            ready.push_back(std::move(picture));
+            readyCv.notify_all();
+        }
+    }
+    std::shared_ptr<Frame> take() {
+        std::unique_lock<std::mutex> lock(readyMutex);
+        readyCv.wait(lock,[&]{ return !ready.empty() || workerDone || stopWorker; });
+        if(ready.empty()) return {};
+        auto picture=std::move(ready.front());
+        ready.pop_front();
+        readyCv.notify_all();
+        return picture;
+    }
 public:
     Info info;
     ~Decoder() {
+        {
+            std::lock_guard<std::mutex> lock(readyMutex);
+            stopWorker=true;
+        }
+        readyCv.notify_all();
+        if(worker.joinable()) worker.join();
         std::fprintf(stderr,"[cg-hd] close movie=%d decoded=%u handed=%u original_video_decodes=0\n",info.id,decoded,served);
         sws_freeContext(color); sws_freeContext(previewScale);
         av_frame_free(&frame); av_packet_free(&packet);
@@ -93,7 +139,9 @@ public:
         parserContext->codec_id=AV_CODEC_ID_MPEG2VIDEO;
         // Establish compatibility and decode the first HD picture BEFORE choosing the route.
         first=read();
-        return first!=nullptr;
+        if(!first) return false;
+        worker=std::thread([this]{ work(); });
+        return true;
     }
     std::shared_ptr<Frame> read() {
         if(decoded>=static_cast<uint32_t>(info.count)) return {};
@@ -136,7 +184,7 @@ public:
         return out;
     }
     template<class Queue> bool append(Queue& queue) {
-        auto hd=first?std::exchange(first,{}):read();
+        auto hd=first?std::exchange(first,{}):take();
         if(!hd) return false;
         typename Queue::value_type out;
         out.width=info.w; out.height=info.h; out.pts90k=pts[served++]; out.hd=hd;

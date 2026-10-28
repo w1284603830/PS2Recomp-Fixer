@@ -5,6 +5,7 @@
 #include "GS/GSGL.h"
 #include "GSDevice11.h"
 #include "GS/Renderers/DX11/D3D.h"
+#include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/GSExtra.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
@@ -21,6 +22,8 @@
 
 #include <bit>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <VersionHelpers.h>
@@ -140,6 +143,28 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 				TRANSLATE_FS("GS", "Failed to create D3D11 device: 0x{:08X}. A GPU which supports Direct3D Feature Level 10.0 is required."),
 				hr));
 		return false;
+	}
+
+	// [DoD] which GPU renders (launcher: 画面设置 → 显卡; gs_options adapter, empty = auto, D3D::GetAdapterByName), on stderr and in
+	// logs\gpu.txt next to dod.exe: normal play has no console, and players can send the file (Windows 11 report).
+	{
+		const std::string used = dxgi_adapter ? D3D::GetAdapterName(dxgi_adapter.get()) : std::string("system default");
+		const std::string setting = GSConfig.Adapter.empty() ? std::string("auto") : GSConfig.Adapter;
+		std::fprintf(stderr, "[pcsx2-gs] GPU: %s (setting: %s)\n", used.c_str(), setting.c_str());
+		CreateDirectoryW(L"logs", nullptr);
+		if (std::FILE* f = std::fopen("logs\\gpu.txt", "w"))
+		{
+			std::fprintf(f, "setting: %s\nused: %s\nadapters (DXGI order):\n", setting.c_str(), used.c_str());
+			wil::com_ptr_nothrow<IDXGIAdapter1> each;
+			for (u32 index = 0; SUCCEEDED(m_dxgi_factory->EnumAdapters1(index, each.put())); index++)
+			{
+				DXGI_ADAPTER_DESC1 desc;
+				if (SUCCEEDED(each->GetDesc1(&desc)))
+					std::fprintf(f, "  %u: %s, %llu MB%s\n", index, StringUtil::WideStringToUTF8String(desc.Description).c_str(),
+						static_cast<unsigned long long>(desc.DedicatedVideoMemory >> 20), (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ", software" : "");
+			}
+			std::fclose(f);
+		}
 	}
 
 	// we re-grab these later, see below
@@ -1165,9 +1190,76 @@ GSDevice::PresentResult GSDevice11::BeginPresent(bool frame_skip)
 	return PresentResult::OK;
 }
 
+// [DoD] DOD_PRESENT_SHOT=<dir>:<first present>:<every n presents>:<count> (tests of the F2 cheat menu and the OSD): the
+// frame exactly as presented (the image plus ImGui) as <dir>\present_<k>.png; the GS's own snapshots stop before
+// ImGui. Unset = nothing.
+static void DoDPresentShot(ID3D11Device* dev, ID3D11DeviceContext* ctx, IDXGISwapChain1* swap_chain)
+{
+	struct Config
+	{
+		std::string dir;
+		u64 first = 0, every = 1, count = 0;
+	};
+	static const Config config = [] {
+		Config c;
+		if (const char* v = std::getenv("DOD_PRESENT_SHOT"))
+		{
+			std::string text(v);
+			u64 fields[3] = {};
+			for (int i = 2; i >= 0; i--)
+			{
+				const size_t colon = text.rfind(':');
+				if (colon == std::string::npos || colon == 0)
+					return Config{};
+				fields[i] = std::strtoull(text.c_str() + colon + 1, nullptr, 10);
+				text.resize(colon);
+			}
+			c.dir = text;
+			c.first = fields[0];
+			c.every = std::max<u64>(1, fields[1]);
+			c.count = fields[2];
+		}
+		return c;
+	}();
+	static u64 presents = 0, saved = 0;
+	const u64 present = presents++;
+	if (config.dir.empty() || saved >= config.count || present < config.first || ((present - config.first) % config.every) != 0 ||
+		!swap_chain)
+		return;
+	wil::com_ptr_nothrow<ID3D11Texture2D> back, staging;
+	if (FAILED(swap_chain->GetBuffer(0, IID_PPV_ARGS(back.put()))))
+		return;
+	D3D11_TEXTURE2D_DESC desc;
+	back->GetDesc(&desc);
+	if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM || desc.SampleDesc.Count != 1)
+		return;
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	desc.MiscFlags = 0;
+	D3D11_MAPPED_SUBRESOURCE map;
+	if (FAILED(dev->CreateTexture2D(&desc, nullptr, staging.put())))
+		return;
+	ctx->CopyResource(staging.get(), back.get());
+	if (FAILED(ctx->Map(staging.get(), 0, D3D11_MAP_READ, 0, &map)))
+		return;
+	std::vector<u8> rgba(static_cast<size_t>(desc.Width) * desc.Height * 4);
+	for (u32 y = 0; y < desc.Height; y++)
+	{
+		std::memcpy(&rgba[static_cast<size_t>(y) * desc.Width * 4], static_cast<const u8*>(map.pData) + static_cast<size_t>(y) * map.RowPitch, desc.Width * 4);
+		for (u32 x = 0; x < desc.Width; x++)
+			rgba[(static_cast<size_t>(y) * desc.Width + x) * 4 + 3] = 255;
+	}
+	ctx->Unmap(staging.get(), 0);
+	char name[64];
+	std::snprintf(name, sizeof(name), "present_%llu.png", static_cast<unsigned long long>(saved++));
+	GSTextureReplacements::SavePNGImage(config.dir + "\\" + name, desc.Width, desc.Height, rgba.data(), desc.Width * 4);
+}
+
 void GSDevice11::EndPresent()
 {
 	RenderImGui();
+	DoDPresentShot(m_dev.get(), m_ctx.get(), m_swap_chain.get());
 
 	// See note in BeginPresent() for why it's conditional on vsync-off.
 	if (m_vsync_mode != GSVSyncMode::FIFO && m_gpu_timing_enabled)

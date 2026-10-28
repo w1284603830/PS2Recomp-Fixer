@@ -35,7 +35,7 @@
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRecomp/src/lib/special_translator.cpp                |    4 +-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRecomp/src/lib/vu_translation_helpers.cpp            |   81 ++--
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRecomp/src/lib/vu_translator.cpp                     |   87 +++-
- {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/CMakeLists.txt        |   51 ++-
+ {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/CMakeLists.txt        |   57 ++-
  /dev/null => ps2xRuntime/include/dod_host_pacer.h                   |   51 +++
  {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/include/ps2_log.h     |   16 +
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/include/ps2_runtime_macros.h                 |  115 ++++-
@@ -50,12 +50,14 @@
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp          |   50 +++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp                 |   54 ++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Stubs/VU.cpp                  |   16 +
- /dev/null => ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h           |  179 ++++++++
+ /dev/null => ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h           |  227 ++++++++++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/RPC.cpp              |  111 ++++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/Sync.cpp             |   13 +-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/System.cpp           |   60 ++-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/Kernel/Syscalls/Thread.cpp           |   36 +-
  /dev/null => ps2xRuntime/src/lib/dod_audio_settings.h               |   23 +
+ /dev/null => ps2xRuntime/src/lib/dod_cheats.cpp                     |  237 +++++++++++
+ /dev/null => ps2xRuntime/src/lib/dod_cheats.h                       |   37 ++
  /dev/null => ps2xRuntime/src/lib/dod_gamepad.cpp                    |  185 ++++++++
  /dev/null => ps2xRuntime/src/lib/dod_gamepad.h                      |   10 +
  /dev/null => ps2xRuntime/src/lib/dod_host_pacer.cpp                 |   52 +++
@@ -64,13 +66,13 @@
  /dev/null => ps2xRuntime/src/lib/dod_to_ipu_dma.h                   |  154 +++++++
  /dev/null => ps2xRuntime/src/lib/dod_vif1_unpack.h                  |  180 ++++++++
  /dev/null => ps2xRuntime/src/lib/gs/dod_cg_cadence.h                |  225 ++++++++++
- /dev/null => ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp                |  924 ++++++++++++++++++++++++++++++++++++++++
- /dev/null => ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h                  |   64 +++
+ /dev/null => ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp                | 1038 +++++++++++++++++++++++++++++++++++++++++++++
+ /dev/null => ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h                  |   77 ++++
  /dev/null => ps2xRuntime/src/lib/gs/dod_perf.h                      |  104 +++++
  /dev/null => ps2xRuntime/src/lib/gs/dod_widescreen.h                |    8 +
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp                |   42 +-
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/gs/gs_frontend.cpp                   |   91 +++-
- /dev/null => ps2xRuntime/src/lib/gs/pcsx2gs_api.h                   |  152 +++++++
+ /dev/null => ps2xRuntime/src/lib/gs/pcsx2gs_api.h                   |  174 ++++++++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp               |   83 +++-
  /dev/null => ps2xRuntime/src/lib/ipu/ps2_ipu.c                      | 1245 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
  /dev/null => ps2xRuntime/src/lib/ipu/ps2_ipu_compat.h               |   63 +++
@@ -84,8 +86,8 @@
  /dev/null => ps2xRuntime/src/lib/ps2_ipu.h                          |   38 ++
  /dev/null => ps2xRuntime/src/lib/ps2_ipu_vlc.h                      |  469 +++++++++++++++++++++
  .../recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_memory.cpp  | 1496 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++--
- {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_pad.cpp   |  365 ++++++++++++++--
- .../recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp |  643 ++++++++++++++++++++++++++--
+ {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_pad.cpp   |  376 +++++++++++++++--
+ .../recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_runtime.cpp |  715 +++++++++++++++++++++++++++++--
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp             |  389 +++++++++++++++--
  /dev/null => ps2xRuntime/src/lib/vu/dod_kzvu.cpp                    |  103 +++++
  .../up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp                  |   15 +
@@ -93,4 +95,4 @@
  {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xTest/gs_cache/CMakeLists.txt  |    1 +
  /dev/null => ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp             |    9 +
  {work/recomp-base-20261027/up => Release/PS2Recomp_Base_20261027/third_party/src}/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp |   66 +++
- 95 files changed, 16702 insertions(+), 494 deletions(-)
+ 97 files changed, 17262 insertions(+), 494 deletions(-)

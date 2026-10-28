@@ -397,6 +397,7 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
     src/lib/dod_gamepad.cpp
+    src/lib/dod_cheats.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
@@ -440,6 +441,11 @@ endif()
 target_compile_definitions(ps2_runtime PRIVATE
     PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
 )
+
+# [DoD] The F2 cheat menu's Chinese labels are UTF-8 literals (the rest of the runtime writes \x escapes).
+if(MSVC)
+    set_source_files_properties(src/lib/dod_cheats.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
+endif()
 
 file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"

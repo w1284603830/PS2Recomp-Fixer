@@ -2,7 +2,7 @@
 
 [繁體中文](IMPROVEMENTS.zh-TW.md)
 
-Full diff: `patches/PS2Recomp_vs_upstream_eb8688b.diff` (95 files, +16,702 / −494 lines; `git apply -p1` on upstream
+Full diff: `patches/PS2Recomp_vs_upstream_eb8688b.diff` (97 files, +17,262 / −494 lines; `git apply -p1` on upstream
 `eb8688b` reproduces this tree apart from line endings). The cause and verification of every item are in
 `docs/DoD_RUNTIME_PATCHES.md` (Chinese); the numbers in parentheses are its row numbers. Most changes in the code carry
 a `[DoD]` comment. **That is only a history marker, not "specific to that game"**: the genuinely game-specific parts
@@ -60,6 +60,15 @@ are listed in the last section.
   window close (131)
 - Fullscreen/borderless: only the D3D child window presents (the parent no longer swaps black OpenGL frames);
   exclusive-fullscreen focus checks use the top-level window (145)
+- Upscaling: no more 1-pixel lines around effect sprites (fractional coordinates, bilinear, texture atlases; the
+  same family as PCSX2 #5851 / #6396). For scene particles the sprite's texture rectangle is pulled in by half a texel
+  of the coarsest mip level it actually reads, with or without mipmaps (`DoDNativeParticleEdges`;
+  `DOD_PARTICLE_EDGES=0` turns it off) (146)
+- GPU choice: `gs_options` `adapter=<name>`; otherwise the Windows graphics preference for the executable, otherwise
+  the high-performance hardware adapter (D3D11 used to take adapter 0, the integrated GPU on many laptops); the GPU in
+  use is written to `logs\gpu.txt` (147)
+- Menu API v3 for the host (`pcsx2gs_api.h`): a panel docked at the left (`begin_panel`), tooltips, the system's
+  CJK font merged into the ImGui font (150)
 - `third_party/src/kzvu`: PCSX2 microVU (646df006a4) as a static library replacing upstream's VU1Interpreter (50);
   the fallback interpreter no longer cuts programs off at 65536 cycles (138)
 
@@ -69,6 +78,8 @@ are listed in the last section.
   longer drops data (24, 40, 54, 55)
 - sceIpuInit HLE no longer hard-codes another game's addresses (29); libdma Recv family (31)
 - FFmpeg-backed HLE MPEG path (`PS2X_ENABLE_FFMPEG`)
+- HD movie replacement (`dod_hd_cg.h`) decodes up to 8 frames ahead on a background thread: the game thread no longer
+  decodes 1080p HEVC while it holds the MPEG lock, so playback and sound no longer hitch (149)
 
 ## 7. IOP (ps2xIOP, runs the original IRX modules)
 
@@ -93,6 +104,8 @@ are listed in the last section.
 - Frame pacing: one deadline pacer, VSync off, game clocks untouched (128, `dod_host_pacer`)
 - UTF-8 process code page manifest: runs from folders with any characters (144)
 - Master volume (`dod_audio_settings.h`), key binding parser (`dod_input_settings.h`)
+- Hybrid-GPU laptops: the example runner exports `NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`
+  (copy them into your own runner's `main.cpp`) (147)
 
 ## 10. Performance
 
@@ -103,7 +116,11 @@ UNPACK fast paths (121); scheduler fast hops (122).
 
 `DOD_PERF`, `DOD_FPS`, `DOD_FRAME_CAPTURE_DIR`, `DOD_GS_CAPTURE`, `DOD_LAYER_LOG`, `DOD_VIF_EVENTS`,
 `DOD_ADMA_WATCH`, `DOD_SPU2_WAV` / `DOD_SPU2_STATS`, `DOD_RAM_DUMP`, `DOD_HANG_DUMP_AT`, `DOD_RNG_TRACE`,
-`DOD_PAD_SCRIPT`, `DOD_TEST_AUTOSTART`, `DOD_TEST_EXIT_AFTER`, `PS2X_PRESENT_STATS` and more. Scripts in `tools/`:
+`DOD_PAD_SCRIPT`, `DOD_TEST_AUTOSTART`, `DOD_TEST_EXIT_AFTER`, `PS2X_PRESENT_STATS` and more.
+`DOD_LINE_CAPTURE_DIR` (F8 or `DOD_LINE_CAPTURE_AT=<seconds,…>`): the GS output plus PCSX2 dumps of every draw of the
+next frames and per-draw logs (`dod_draws.tsv`, `dod_sprites.tsv`, a summary that classes draws as 3d / particle /
+world-sprite / hud / post / fill / cg; `DOD_LINE_CAPTURE_MODE=light|ab`) (148). `DOD_PRESENT_SHOT=<dir>:<first>:<every>:<count>`:
+the final presented image, menus included (150). Scripts in `tools/`:
 disassemblers, instruction/HLE/IOP-import census, GIF parsing, thread profiling, WAV analysis, GitHub issue fetching.
 
 ## 12. Specific to the original game: change or remove when porting another one
@@ -117,6 +134,7 @@ disassemblers, instruction/HLE/IOP-import census, GIF parsing, thread profiling,
 | `ps2xRuntime/src/lib/gs/dod_widescreen.h`, pcsx2gs `GS/DoDWidescreen.h` and the widescreen block in `GSState.cpp` | The original game's 16:9 (projection constants live in its generated code) | Only on when the runner passes `widescreen=1`; leave it off |
 | pcsx2gs `GS/DoDHdStatic.h`, `DoDHdCg.h` | GS side of that game's HD static pages and movies | Depend on that game's textures/movies |
 | `ps2xRuntime/CMakeLists.txt` | `dod_branding.rc.in` (icon resource, skipped when absent), `dod_utf8.manifest` (generic, keep) | Put your icon resource at `src/runner/dod_branding.rc.in` |
+| `ps2xRuntime/src/lib/dod_cheats.[h,cpp]` (called from `ps2_runtime.cpp` and `ps2_pad.cpp`; mouse input in `gs/dod_pcsx2_gs.cpp`) | F2 in-game cheat menu for the original game: item counts written to its RAM addresses each frame; instruction cheats are `g_dodCheats[n]` switches that a script inserts into that game's generated code (not part of this repository). Everything starts off | The menu itself is generic (left panel, mouse / keyboard / controller, follows the image size): replace the entries and addresses with your game's, or remove the file and its two calls |
 
 Many `[DoD]` fixes were found with that game but follow PCSX2 or hardware behaviour (SPU2, IOP critical sections,
 VIF1…) and apply to other games as well. If a new game behaves differently, check the matching row of

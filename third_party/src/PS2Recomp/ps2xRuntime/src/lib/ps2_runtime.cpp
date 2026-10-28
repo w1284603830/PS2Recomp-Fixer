@@ -7,6 +7,7 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "gs/dod_pcsx2_gs.h"
+#include "dod_cheats.h"
 #include "gs/dod_perf.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
@@ -25,8 +26,12 @@
 #include <array>
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
+#include <functional>
+#include <vector>
 #include <limits>
 #include <chrono>
+#include <filesystem>
 #include <atomic>
 #include <thread>
 #include <unordered_map>
@@ -2949,6 +2954,7 @@ void PS2Runtime::run()
         hostPacer.wait();
         dodperf::end(dodperf::EndDrawing, endDrawingStart);
         dodPollHostPadInput();
+        dodCheatsHostTick(m_memory.getRDRAM()); // [DoD] F2 cheat menu, RAM cheats (dod_cheats.cpp)
 
         // [DoD] Test launcher audio trace: F9 saves the last 60 s of sound and events (ps2_iop_host.cpp); the title
         // shows "已保存声音追踪：<folder>" for 5 s.
@@ -2970,6 +2976,72 @@ void PS2Runtime::run()
             {
                 SetWindowTitle(g_dodWindowTitle.c_str());
                 titleResetAt = 0.0;
+            }
+        }
+
+        // [DoD] DOD_LINE_CAPTURE_DIR=<dir> (diagnostics, the upscaling-lines hunt): F8 saves, into a new
+        // <dir>\capture_<n>, a burst of GS output snapshots, the draw table (each draw's effect kind and the particle
+        // fix's decision) and PCSX2's dump of the next frames, and info.txt (room, movie, game frame, scale, options,
+        // GPU); the title shows the folder for 5 s.
+        if (static const char *lineCaptureDir = std::getenv("DOD_LINE_CAPTURE_DIR"); lineCaptureDir && *lineCaptureDir)
+        {
+            static unsigned lineCaptures = 0u;
+            static double lineTitleResetAt = 0.0;
+            // DOD_LINE_CAPTURE_AT=<seconds>[,<seconds>...]: a capture at each time, as F8 would (tests);
+            // DOD_LINE_CAPTURE_MODE=light: one snapshot and the frame output only (about 10 MB instead of 100).
+            static std::vector<double> lineAutoAt = []() {
+                std::vector<double> at;
+                if (const char *v = std::getenv("DOD_LINE_CAPTURE_AT"))
+                    for (const char *p = v; *p;)
+                    {
+                        char *end = nullptr;
+                        const double t = std::strtod(p, &end);
+                        if (end == p)
+                            break;
+                        if (t > 0.0)
+                            at.push_back(t);
+                        p = *end == ',' ? end + 1 : end;
+                    }
+                std::sort(at.begin(), at.end(), std::greater<double>()); // the next one last
+                return at;
+            }();
+            // DOD_LINE_CAPTURE_MODE=ab: light, and of two frames the second without the particle fix (A/B at one moment).
+            static const char *lineMode = std::getenv("DOD_LINE_CAPTURE_MODE");
+            static const bool lineAb = lineMode && std::strcmp(lineMode, "ab") == 0;
+            static const bool lineLight = lineAb || (lineMode && std::strcmp(lineMode, "light") == 0);
+            const bool lineAuto = !lineAutoAt.empty() && GetTime() >= lineAutoAt.back();
+            while (!lineAutoAt.empty() && GetTime() >= lineAutoAt.back())
+                lineAutoAt.pop_back();
+            if (IsKeyPressed(KEY_F8) || lineAuto)
+            {
+                std::string dir;
+                do
+                    dir = std::string(lineCaptureDir) + "/capture_" + std::to_string(++lineCaptures);
+                while (std::filesystem::exists(dir));
+                std::error_code ec;
+                std::filesystem::create_directories(dir + "/draws", ec);
+                // The game's state (memory dod-game-structure): scene load task 0x7E1340 (+4 room, +8 movie / event
+                // "area"), game frame counter 0x817730.
+                char gameInfo[256] = {};
+                if (const uint8_t *ram = m_memory.getRDRAM())
+                {
+                    uint32_t scene = 0, area = 0, frame = 0;
+                    std::memcpy(&scene, ram + 0x7E1344u, 4);
+                    std::memcpy(&area, ram + 0x7E1348u, 4);
+                    std::memcpy(&frame, ram + 0x817730u, 4);
+                    std::snprintf(gameInfo, sizeof(gameInfo), "room (scene) 0x%X\narea (movie) %u\ngame frame %u\ntime %.1f s\n",
+                                  scene & 0xFFFFu, area & 0xFFu, frame, GetTime());
+                }
+                dodpcsx2::requestLineCapture(dir.c_str(), lineLight, lineAb, gameInfo);
+                std::fprintf(stderr, "[line-capture] %s -> %s (field %llu)\n", lineAuto ? "auto" : "F8", dir.c_str(),
+                             static_cast<unsigned long long>(dodpcsx2::presents()));
+                SetWindowTitle((g_dodWindowTitle + "  \xc2\xb7  F8 " + dir).c_str());
+                lineTitleResetAt = GetTime() + 5.0;
+            }
+            else if (lineTitleResetAt > 0.0 && GetTime() >= lineTitleResetAt)
+            {
+                SetWindowTitle(g_dodWindowTitle.c_str());
+                lineTitleResetAt = 0.0;
             }
         }
 

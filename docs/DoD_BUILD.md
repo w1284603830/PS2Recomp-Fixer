@@ -12,7 +12,10 @@
 python -I tools/scripts/apply_cg_progressive.py third_party/src/PS2Recomp/ps2xRuntime/src/runner
 python -I tools/scripts/apply_widescreen.py
 python -I tools/scripts/apply_cg_subtitles.py
+python -I tools/scripts/apply_dod_cheats.py third_party/src/PS2Recomp/ps2xRuntime/src/runner
 ```
+
+2026-10-28 起：F2 金手指選單（RUNTIME_PATCHES 第 150 列）在 22 個產生碼檔的 18 條指令加了開關（讀 `g_dodCheats[n]`，定義在 `src/lib/dod_cheats.cpp`）；重新產生 runner 後必須跑上面最後一行，否則選單裡的指令型金手指會沒有作用（資料型的「道具數量」仍有效）。腳本只接受它認得的原始指令文字，產生碼改了會直接報錯。
 
 腳本可重複執行；不認得指令文字就拒絕修補，並可從 293 的 hook 升級。不要只還原產生碼而漏套這一步，否則劇情 CG 的選行／換幀修正會遺失。`DOD_CG_FIELD=keep` 回復舊選行，`DOD_CG_CADENCE=keep` 只關閉 295 的換幀；平常都不設定。295 實跑與限制見 `work/cg-cadence-20261021/RESULTS.md`。
 
@@ -72,7 +75,7 @@ python -I tools/scripts/apply_cg_subtitles.py
 9. 建 runtime 與執行檔（**在 PowerShell 執行**，Git Bash 會把 `/DWIN32` 之類旗標改寫成路徑）：
    `cmake -S third_party/src/PS2Recomp -B build/runtime -G "Visual Studio 17 2022" -A x64 -DPS2X_BUILD_RECOMP=OFF -DPS2X_BUILD_ANALYZER=OFF -DPS2X_BUILD_TEST=OFF -DPS2X_BUILD_STUDIO=OFF -DPS2X_ENABLE_FFMPEG=ON -DPS2X_ENABLE_DEBUG_UI=OFF -DPS2X_ENABLE_SCCACHE=OFF -DPS2X_ENABLE_AGRESSIVE_LOGS=OFF -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DFETCHCONTENT_SOURCE_DIR_RAYLIB=third_party/src/raylib "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /MP /bigobj /utf-8" "-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /MP /utf-8"`
    `cmake --build build/runtime --config Release --target ps2EntryRunner --parallel`
-10. 啟動器：`launcher/Build.ps1`（Windows 內建 .NET 4 `csc.exe`，不需安裝）。
+10. 啟動器：`launcher/Build.ps1`（Windows 內建 .NET 4 `csc.exe`，不需安裝）。存檔轉換工具：`launcher/converter/Build.ps1 -OutputDirectory <資料夾>`（同樣用內建 csc，產生 `DodSaveConverter.exe`；測試見 `work/saveconv-20261028/run_tests.py`）。
 
 ### 2026-10-26：一行建置＋測試副本（只改 runtime／GS 時）
 

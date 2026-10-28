@@ -2,6 +2,7 @@
 #include "ps2_host_backend.h"
 #include "dod_input_settings.h"
 #include "dod_gamepad.h"
+#include "dod_cheats.h"
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -326,6 +327,16 @@ void dodPollHostPadInput()
                          snapshot.sampledAt, key, static_cast<unsigned>(mapped), snapshot.gamepad);
             ++keyTraceCount;
         }
+    }
+
+    // [DoD] The F2 cheat menu (dod_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
+    // released pad (sticks centred, no queued presses).
+    dodCheatsSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
+    if (dodCheatsMenuOpen())
+    {
+        btns = 0xFFFFu;
+        queuedPresses = 0u;
+        data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
     }
 
     // A queued down/up remains visible for this complete host publication,
