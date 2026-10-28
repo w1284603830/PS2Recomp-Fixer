@@ -1,4 +1,11 @@
-# Build verification (2026-10-27)
+# Build verification (2026-10-27, repeated 2026-10-28)
+
+**2026-10-28 update (rows 146–150):** the commit was cloned into an empty folder, `fetch_deps.ps1` extracted the same
+pinned zips (all SHA256 matched; PCSX2 `646df006a4` reused), and `build_all.ps1` from an empty build folder built
+`kzvu.lib`, `pcsx2gs.dll` and all of PS2Recomp. Results are unchanged from 2026-10-27: IOP tests all pass, GS cache
+45 / 45, `ps2x_tests` 421 / 446 with the same 25 known differences (section 3, same test names). The new code
+(particle edges, GPU choice, background HD movie decoding, capture, menu API v3, cheat menu) was tested in the original
+game's port, not by these tests.
 
 Environment: Windows 10 Pro 22H2 (19045) x64, Visual Studio 2022 Build Tools (MSVC 19.44.35229), CMake 3.31.6,
 Windows PowerShell 5.1.
