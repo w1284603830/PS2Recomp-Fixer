@@ -241,7 +241,14 @@ namespace ps2x::iop::detail
         }
 
         // [DoD] DOD_SPU2_REVERB_STEMS=<file>: raw 4-channel 16-bit 48 kHz: core 1 reverb input (the wet sum,
-        // saturated) L/R and core 1 reverb return after EVOL L/R.
+        // saturated) L/R and core 1 reverb return after EVOL L/R. DOD_SPU2_REVERB_CORE=0 selects core 0 instead (a game
+        // that puts its effects there). Selection never changes routing, effect registers or the audio mix.
+        int reverbStemsCore()
+        {
+            static const int core = []() { const char *v = std::getenv("DOD_SPU2_REVERB_CORE"); return v && std::strcmp(v, "0") == 0 ? 0 : 1; }();
+            return core;
+        }
+
         std::FILE *reverbStemsFile()
         {
             static std::FILE *const file = []() -> std::FILE * {
@@ -309,15 +316,25 @@ namespace ps2x::iop::detail
             return std::clamp(value, -32768, 32767);
         }
 
-        // PCSX2 ReverbDownsample / ReverbUpsample (the reference versions; PCSX2 runs SIMD versions of the same
-        // filter, which round each tap): the 39 samples before `pos` of a doubled 64-sample ring.
+        // PCSX2 ReverbDownsample / ReverbUpsample as PCSX2 runs them (SPU2/ReverbResample.cpp, SSE path; the reference
+        // versions sum in one wide accumulator and differ near saturation and in tails): each product is rounded, then
+        // the eight lanes and the horizontal sums saturate in order. The 39 samples before `pos` of a doubled
+        // 64-sample ring. This scalar form gives non-x86 hosts the same deterministic result.
+        // Adapted from PCSX2, SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team, SPDX-License-Identifier: GPL-3.0+
         int32_t reverbFir(const std::array<int16_t, 128> &buffer, uint32_t pos, const std::array<int16_t, 39> &coefs)
         {
             const uint32_t index = (pos - 39u) & 63u;
-            int64_t sum = 0;
+            std::array<int32_t, 8> lanes{};
             for (uint32_t i = 0; i < 39u; ++i)
-                sum += static_cast<int32_t>(buffer[index + i]) * coefs[i];
-            return clamp16(static_cast<int32_t>(sum >> 15));
+            {
+                const int32_t product = static_cast<int32_t>(buffer[index + i]) * coefs[i];
+                const int32_t rounded = static_cast<int16_t>((product + 0x4000) >> 15);
+                lanes[i & 7u] = clamp16(lanes[i & 7u] + rounded);
+            }
+            for (uint32_t width = 8; width > 1; width >>= 1)
+                for (uint32_t i = 0; i < width / 2; ++i)
+                    lanes[i] = clamp16(lanes[i * 2] + lanes[i * 2 + 1]);
+            return lanes[0];
         }
 
         // [DoD] DOD_ADMA_WATCH=1: see g_dodAdmaLastWrite. lastPull is the SPU2 sample (+1) at which each IOP RAM
@@ -1214,7 +1231,7 @@ namespace ps2x::iop::detail
                 revR = (revR * core.evolR) >> 15;
                 mixL += revL;
                 mixR += revR;
-                if (c == 1 && reverbStemsFile())
+                if (c == reverbStemsCore() && reverbStemsFile())
                 {
                     const int16_t rs[4] = {static_cast<int16_t>(clamp16(revInL)), static_cast<int16_t>(clamp16(revInR)),
                                            static_cast<int16_t>(clamp16(revL)), static_cast<int16_t>(clamp16(revR))};

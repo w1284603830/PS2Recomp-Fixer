@@ -1220,10 +1220,10 @@ index 0000000..05a3b8f
 +}
 diff --git a/b/ps2xIOP/src/emulator/core/iop_spu2.cpp b/ps2xIOP/src/emulator/core/iop_spu2.cpp
 new file mode 100644
-index 0000000..1c9f625
+index 0000000..6f24adc
 --- /dev/null
 +++ b/ps2xIOP/src/emulator/core/iop_spu2.cpp
-@@ -0,0 +1,1498 @@
+@@ -0,0 +1,1515 @@
 +#include "iop_spu2.h"
 +#include "iop_spu2_gauss.h"
 +
@@ -1467,7 +1467,14 @@ index 0000000..1c9f625
 +        }
 +
 +        // [DoD] DOD_SPU2_REVERB_STEMS=<file>: raw 4-channel 16-bit 48 kHz: core 1 reverb input (the wet sum,
-+        // saturated) L/R and core 1 reverb return after EVOL L/R.
++        // saturated) L/R and core 1 reverb return after EVOL L/R. DOD_SPU2_REVERB_CORE=0 selects core 0 instead (a game
++        // that puts its effects there). Selection never changes routing, effect registers or the audio mix.
++        int reverbStemsCore()
++        {
++            static const int core = []() { const char *v = std::getenv("DOD_SPU2_REVERB_CORE"); return v && std::strcmp(v, "0") == 0 ? 0 : 1; }();
++            return core;
++        }
++
 +        std::FILE *reverbStemsFile()
 +        {
 +            static std::FILE *const file = []() -> std::FILE * {
@@ -1535,15 +1542,25 @@ index 0000000..1c9f625
 +            return std::clamp(value, -32768, 32767);
 +        }
 +
-+        // PCSX2 ReverbDownsample / ReverbUpsample (the reference versions; PCSX2 runs SIMD versions of the same
-+        // filter, which round each tap): the 39 samples before `pos` of a doubled 64-sample ring.
++        // PCSX2 ReverbDownsample / ReverbUpsample as PCSX2 runs them (SPU2/ReverbResample.cpp, SSE path; the reference
++        // versions sum in one wide accumulator and differ near saturation and in tails): each product is rounded, then
++        // the eight lanes and the horizontal sums saturate in order. The 39 samples before `pos` of a doubled
++        // 64-sample ring. This scalar form gives non-x86 hosts the same deterministic result.
++        // Adapted from PCSX2, SPDX-FileCopyrightText: 2002-2026 PCSX2 Dev Team, SPDX-License-Identifier: GPL-3.0+
 +        int32_t reverbFir(const std::array<int16_t, 128> &buffer, uint32_t pos, const std::array<int16_t, 39> &coefs)
 +        {
 +            const uint32_t index = (pos - 39u) & 63u;
-+            int64_t sum = 0;
++            std::array<int32_t, 8> lanes{};
 +            for (uint32_t i = 0; i < 39u; ++i)
-+                sum += static_cast<int32_t>(buffer[index + i]) * coefs[i];
-+            return clamp16(static_cast<int32_t>(sum >> 15));
++            {
++                const int32_t product = static_cast<int32_t>(buffer[index + i]) * coefs[i];
++                const int32_t rounded = static_cast<int16_t>((product + 0x4000) >> 15);
++                lanes[i & 7u] = clamp16(lanes[i & 7u] + rounded);
++            }
++            for (uint32_t width = 8; width > 1; width >>= 1)
++                for (uint32_t i = 0; i < width / 2; ++i)
++                    lanes[i] = clamp16(lanes[i * 2] + lanes[i * 2 + 1]);
++            return lanes[0];
 +        }
 +
 +        // [DoD] DOD_ADMA_WATCH=1: see g_dodAdmaLastWrite. lastPull is the SPU2 sample (+1) at which each IOP RAM
@@ -2440,7 +2457,7 @@ index 0000000..1c9f625
 +                revR = (revR * core.evolR) >> 15;
 +                mixL += revL;
 +                mixR += revR;
-+                if (c == 1 && reverbStemsFile())
++                if (c == reverbStemsCore() && reverbStemsFile())
 +                {
 +                    const int16_t rs[4] = {static_cast<int16_t>(clamp16(revInL)), static_cast<int16_t>(clamp16(revInR)),
 +                                           static_cast<int16_t>(clamp16(revL)), static_cast<int16_t>(clamp16(revR))};
@@ -16030,7 +16047,7 @@ index 0000000..45c1e69
 +// also drops the EE-side file table of the old disc.
 +void ps2ChangeCdImage(const std::filesystem::path &image);
 diff --git a/ps2xRuntime/src/lib/ps2_iop_host.cpp b/ps2xRuntime/src/lib/ps2_iop_host.cpp
-index 8d46e03..920aa2d 100644
+index 8d46e03..c22610d 100644
 --- a/ps2xRuntime/src/lib/ps2_iop_host.cpp
 +++ b/ps2xRuntime/src/lib/ps2_iop_host.cpp
 @@ -1,4 +1,6 @@
@@ -16040,11 +16057,12 @@ index 8d46e03..920aa2d 100644
  
  #include "ps2_runtime.h"
  #include "ps2_stubs.h"
-@@ -6,8 +8,21 @@
+@@ -6,8 +8,22 @@
  #include "runtime/ps2_memory.h"
  #include "Kernel/Stubs/MemoryCard.h"
  #include "Kernel/Syscalls/Common.h"
 +#include "ps2_host_backend.h"
++#include "ps2_output_resampler.h"
  
  #include <algorithm>
 +#include <atomic>
@@ -16062,7 +16080,7 @@ index 8d46e03..920aa2d 100644
  #include <cstring>
  #include <filesystem>
  #include <iostream>
-@@ -76,6 +91,606 @@ void PS2IopHostAdapter::CallScope::release()
+@@ -76,6 +92,615 @@ void PS2IopHostAdapter::CallScope::release()
      }
  }
  
@@ -16356,15 +16374,23 @@ index 8d46e03..920aa2d 100644
 +            }
 +            std::lock_guard<std::mutex> lock(m_mutex);
 +            // Drift: the game's clock and the sound card's never run at exactly the same rate (with the vsync lock the
-+            // game runs 0.1 % fast). The output is resampled by linear interpolation at a rate that follows the queue
-+            // (+-0.5 % at most, 0.2 % for 20 ms off the 100 ms target), so the waveform stays continuous. Skipping one
-+            // frame in 256 instead, as before, put a tiny click in sustained music about a minute in (user report).
++            // game runs 0.1 % fast). The output is resampled at a rate that follows the queue (+-0.5 % at most, 0.2 %
++            // for 20 ms off the 100 ms target), so the waveform stays continuous. Skipping one frame in 256 instead, as
++            // before, put a tiny click in sustained music about a minute in (user report). The reconstruction is a
++            // 64-tap windowed sinc (ps2_output_resampler.h; a fixed 31 sample = 0.646 ms delay, no change to the queue
++            // control or the game's clock); DOD_AUDIO_LINEAR=1 (PS2_AUDIO_LINEAR=1) returns to linear interpolation.
 +            double step = 1.0;
 +            if (m_primed)
 +            {
 +                const double off = (static_cast<double>(m_queued) - static_cast<double>(kPrimeFrames)) / kRate;
 +                step = 1.0 + std::clamp(off * 0.1, -0.005, 0.005);
 +            }
++            static const bool linearOutput = []() { const char *v = std::getenv("DOD_AUDIO_LINEAR"); return v && v[0] == '1'; }();
++            if (!linearOutput)
++                for (size_t i = 0; i < frames; ++i)
++                    m_resampler.push(samples[i * 2u], samples[i * 2u + 1u], step,
++                                     [this](int16_t left, int16_t right) { pushFrame(left, right); });
++            else
 +            for (size_t i = 0; i < frames; ++i)
 +            {
 +                const int32_t left = samples[i * 2u];
@@ -16627,7 +16653,8 @@ index 8d46e03..920aa2d 100644
 +        bool m_primed = false;
 +        bool m_opened = false;
 +        uint32_t m_fadeIn = 0u;
-+        double m_resamplePos = 0.0;  // position between the previous input frame and the next one
++        ps2audio::OutputResampler m_resampler;
++        double m_resamplePos = 0.0;  // linear output (DOD_AUDIO_LINEAR): position between the previous input frame and the next one
 +        int32_t m_prevLeft = 0;
 +        int32_t m_prevRight = 0;
 +        int32_t m_lastLeft = 0;
@@ -16669,7 +16696,7 @@ index 8d46e03..920aa2d 100644
  PS2IopHostAdapter::PS2IopHostAdapter(PS2Runtime &runtime)
      : m_runtime(runtime)
  {
-@@ -83,6 +698,7 @@ PS2IopHostAdapter::PS2IopHostAdapter(PS2Runtime &runtime)
+@@ -83,6 +708,7 @@ PS2IopHostAdapter::PS2IopHostAdapter(PS2Runtime &runtime)
  
  PS2IopHostAdapter::~PS2IopHostAdapter()
  {
@@ -16677,7 +16704,7 @@ index 8d46e03..920aa2d 100644
      std::lock_guard<std::mutex> lock(m_hostFileMutex);
      for (auto &[handle, file] : m_hostFiles)
      {
-@@ -103,7 +719,8 @@ PS2IopHostAdapter::CallScope PS2IopHostAdapter::enterCall(R5900Context *context,
+@@ -103,7 +729,8 @@ PS2IopHostAdapter::CallScope PS2IopHostAdapter::enterCall(R5900Context *context,
  bool PS2IopHostAdapter::guestRange(uint32_t address, size_t size, uint8_t *&begin) const
  {
      begin = nullptr;
@@ -16687,7 +16714,7 @@ index 8d46e03..920aa2d 100644
                                 ? m_activeRdram
                                 : m_runtime.memory().getRDRAM();
      if (!rdram)
-@@ -244,6 +861,11 @@ void PS2IopHostAdapter::freeGuest(uint32_t address)
+@@ -244,6 +871,11 @@ void PS2IopHostAdapter::freeGuest(uint32_t address)
      m_runtime.guestFree(address);
  }
  
@@ -16699,7 +16726,7 @@ index 8d46e03..920aa2d 100644
  void PS2IopHostAdapter::audioCommand(uint32_t sid,
                                       uint32_t function,
                                       ps2x::iop::GuestBuffer send,
-@@ -503,10 +1125,78 @@ bool PS2IopHostAdapter::invokeGuestFunction(uint64_t callToken,
+@@ -503,10 +1135,78 @@ bool PS2IopHostAdapter::invokeGuestFunction(uint64_t callToken,
      return false;
  }
  
@@ -20260,6 +20287,95 @@ index 37b6a4d..250e444 100644
                  uint32_t channelStatus = m_ioRegisters[address] & ~0x100u;
                  m_ioRegisters[address] = channelStatus;
                  return channelStatus;
+diff --git a/ps2xRuntime/src/lib/ps2_output_resampler.h b/ps2xRuntime/src/lib/ps2_output_resampler.h
+new file mode 100644
+index 0000000..0b2f7ae
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_output_resampler.h
+@@ -0,0 +1,83 @@
++#pragma once
++// Output-only, small-drift fractional delay filter (64-tap windowed sinc, 1024 phases), the host audio output's resampler. Does not advance guest time,
++// change SPU2 mixing, or control the host queue. 48 kHz stereo PCM in/out.
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstdint>
++
++namespace ps2audio {
++class OutputResampler {
++public:
++    static constexpr unsigned Taps = 64;
++    static constexpr unsigned Phases = 1024;
++    // Relative to the previous linear interpolation of input[n-1]..input[n].
++    static constexpr unsigned AddedDelay = Taps / 2 - 1;
++    static constexpr double Cutoff = 0.94; // Nyquist fraction; safe for step <= 1.005.
++
++    OutputResampler() { (void)table(); }
++
++    template<class Emit>
++    void push(int16_t left, int16_t right, double step, Emit&& emit) {
++        // Bound the API to the same +/-0.5% drift as the existing host controller.
++        step = std::isfinite(step) ? std::clamp(step, 0.995, 1.005) : 1.0;
++        m_write = (m_write + 1u) & (Taps - 1u);
++        m_history[m_write] = {left, right};
++        while (m_phase < 1.0) {
++            const double position = m_phase * Phases;
++            const unsigned phase = std::min(static_cast<unsigned>(position), Phases - 1u);
++            const double blend = position - phase;
++            const auto& a = table()[phase];
++            const auto& b = table()[phase + 1u];
++            double l = 0.0, r = 0.0;
++            for (unsigned k = 0; k < Taps; ++k) {
++                const double coefficient = a[k] + (b[k] - a[k]) * blend;
++                const auto& sample = m_history[(m_write - k) & (Taps - 1u)];
++                l += sample[0] * coefficient;
++                r += sample[1] * coefficient;
++            }
++            emit(pcm(l), pcm(r));
++            m_phase += step;
++        }
++        m_phase -= 1.0;
++    }
++
++private:
++    using Row = std::array<double, Taps>;
++    using Table = std::array<Row, Phases + 1>;
++    static const Table& table() {
++        // Construct directly in static storage: a by-value lambda return can put a 512 KiB
++        // temporary on the startup thread's stack when named return-value optimization is disabled.
++        // Construct once, before opening the audio device; no heap or callback allocations.
++        struct Coefficients {
++            Table value{};
++            Coefficients() {
++                constexpr double pi = 3.1415926535897932384626433832795;
++                constexpr double radius = Taps / 2.0;
++                for (unsigned p = 0; p <= Phases; ++p) {
++                    const double fraction = static_cast<double>(p) / Phases;
++                    double sum = 0.0;
++                    for (unsigned k = 0; k < Taps; ++k) {
++                        const double x = k - radius + fraction;
++                        const double sinc = std::abs(x) < 1e-12 ? Cutoff : std::sin(pi * Cutoff * x) / (pi * x);
++                        const double window = 0.42 + 0.5 * std::cos(pi * x / radius) + 0.08 * std::cos(2.0 * pi * x / radius);
++                        value[p][k] = sinc * window;
++                        sum += value[p][k];
++                    }
++                    for (double& c : value[p]) c /= sum; // exact DC gain, no loudness enhancement.
++                }
++            }
++        };
++        static const Coefficients coefficients;
++        return coefficients.value;
++    }
++    static int16_t pcm(double sample) {
++        // A band-limited reconstruction can overshoot on full-scale transients.
++        // Saturate, never wrap. No extra gain, compressor, or EQ is applied.
++        return static_cast<int16_t>(std::clamp(std::lround(sample), -32768l, 32767l));
++    }
++    std::array<std::array<int16_t, 2>, Taps> m_history{};
++    unsigned m_write = Taps - 1u;
++    double m_phase = 0.0;
++};
++} // namespace ps2audio
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
 index 8590f14..d17bf4c 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp

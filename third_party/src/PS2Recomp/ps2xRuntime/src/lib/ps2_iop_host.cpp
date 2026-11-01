@@ -9,6 +9,7 @@
 #include "Kernel/Stubs/MemoryCard.h"
 #include "Kernel/Syscalls/Common.h"
 #include "ps2_host_backend.h"
+#include "ps2_output_resampler.h"
 
 #include <algorithm>
 #include <atomic>
@@ -381,15 +382,23 @@ namespace
             }
             std::lock_guard<std::mutex> lock(m_mutex);
             // Drift: the game's clock and the sound card's never run at exactly the same rate (with the vsync lock the
-            // game runs 0.1 % fast). The output is resampled by linear interpolation at a rate that follows the queue
-            // (+-0.5 % at most, 0.2 % for 20 ms off the 100 ms target), so the waveform stays continuous. Skipping one
-            // frame in 256 instead, as before, put a tiny click in sustained music about a minute in (user report).
+            // game runs 0.1 % fast). The output is resampled at a rate that follows the queue (+-0.5 % at most, 0.2 %
+            // for 20 ms off the 100 ms target), so the waveform stays continuous. Skipping one frame in 256 instead, as
+            // before, put a tiny click in sustained music about a minute in (user report). The reconstruction is a
+            // 64-tap windowed sinc (ps2_output_resampler.h; a fixed 31 sample = 0.646 ms delay, no change to the queue
+            // control or the game's clock); DOD_AUDIO_LINEAR=1 (PS2_AUDIO_LINEAR=1) returns to linear interpolation.
             double step = 1.0;
             if (m_primed)
             {
                 const double off = (static_cast<double>(m_queued) - static_cast<double>(kPrimeFrames)) / kRate;
                 step = 1.0 + std::clamp(off * 0.1, -0.005, 0.005);
             }
+            static const bool linearOutput = []() { const char *v = std::getenv("DOD_AUDIO_LINEAR"); return v && v[0] == '1'; }();
+            if (!linearOutput)
+                for (size_t i = 0; i < frames; ++i)
+                    m_resampler.push(samples[i * 2u], samples[i * 2u + 1u], step,
+                                     [this](int16_t left, int16_t right) { pushFrame(left, right); });
+            else
             for (size_t i = 0; i < frames; ++i)
             {
                 const int32_t left = samples[i * 2u];
@@ -652,7 +661,8 @@ namespace
         bool m_primed = false;
         bool m_opened = false;
         uint32_t m_fadeIn = 0u;
-        double m_resamplePos = 0.0;  // position between the previous input frame and the next one
+        ps2audio::OutputResampler m_resampler;
+        double m_resamplePos = 0.0;  // linear output (DOD_AUDIO_LINEAR): position between the previous input frame and the next one
         int32_t m_prevLeft = 0;
         int32_t m_prevRight = 0;
         int32_t m_lastLeft = 0;
