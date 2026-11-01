@@ -49,15 +49,12 @@ namespace
     long long g_fields = 0;
     int g_dumpFrames = 1;
 
-    // [DoD] Shin Onimusha: Dawn of Dreams' entry in PCSX2's GameIndex.yaml (SLPM-66275 / SLPM-66276, same as
-    // SLUS-21180 / SLUS-21362): recommendedBlendingLevel 2, halfPixelOffset 5, nativeScaling 2, bilinearUpscale 2.
-    // PCSX2 applies them through its game database; here they are fixed. (Urban Reign's port had its own set.)
-    void ApplyGameFixes(Pcsx2Config::GSOptions &options)
+    // PCSX2 applies per-game fixes (blending level, half pixel offset, native scaling, bilinear upscale...) from its
+    // game database, GameIndex.yaml. The GS has no serial to look up, so a port passes its game's entry through the
+    // options string ("blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2", see ApplyOptions); with
+    // none, PCSX2's defaults apply. Nothing game specific is fixed here.
+    void ApplyGameFixes(Pcsx2Config::GSOptions &)
     {
-        options.AccurateBlendingUnit = AccBlendLevel::Medium;
-        options.UserHacks_HalfPixelOffset = GSHalfPixelOffset::NativeWTexOffset;
-        options.UserHacks_NativeScaling = GSNativeScaling::Aggressive;
-        options.UserHacks_BilinearHack = GSBilinearDirtyMode::ForceNearest;
     }
 
     // Pcsx2GsOpenParams::options: "key=value;key=value".

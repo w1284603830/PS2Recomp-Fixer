@@ -58,7 +58,7 @@ namespace dodpcsx2
     // Any thread: the game's scene changed (0x7E1344); the GS loads and uploads that room's HD textures ahead
     // (pcsx2gs_dod_prefetch_scene; nothing with a DLL that lacks it).
     void prefetchScene(uint32_t scene);
-    // [DoD] The GS's in-game menu (pcsx2gs_api.h set_menu; the F2 cheat panel, dod_cheats.cpp): draw runs on the GS
+    // The GS's in-game menu (pcsx2gs_api.h set_menu; the F2 cheat panel, ps2_cheats.cpp): draw runs on the GS
     // thread at every present, null hides it. Any thread.
     void setMenu(void (*draw)(const ::Pcsx2GsUi *ui, void *user), void *user);
     // Window thread, while a menu is shown: its input. keys / pad are PCSX2GS_KEY_* / PCSX2GS_PAD_* bits held, wheel the

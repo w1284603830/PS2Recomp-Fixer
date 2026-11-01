@@ -101,6 +101,7 @@ namespace ps2_stubs
     bool dodChangeDisc(size_t index);
     void dodCdSelfTest(const std::string &paths);
     void sceCdGetDiskType(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+    void setGsGParamAddress(uint32_t address); // Kernel/Stubs/GS.cpp
 }
 static PS2Runtime *g_dodRuntime = nullptr;
 extern std::atomic<int64_t> g_dodVBlankPeriodNs; // Kernel/EeScheduler.cpp: host time of a field
@@ -906,7 +907,13 @@ int main(int argc, char *argv[])
             const std::string renderer = rendererEnv && *rendererEnv ? rendererEnv
                                          : ini.count("renderer")   ? ini["renderer"]
                                                                    : "pcsx2";
-            std::string gsOptions = ini.count("gs_options") ? ini["gs_options"] : "";
+            // [DoD] This game's entry in PCSX2's GameIndex.yaml (SLPM-66275 / SLPM-66276): the GS no longer fixes them
+            // (Bridge.cpp ApplyGameFixes); dod.ini's gs_options and the tests' overrides still come after and win.
+            std::string gsOptions = "blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2";
+            if (ini.count("gs_options") && !ini["gs_options"].empty())
+                gsOptions += ";" + ini["gs_options"];
+            // [DoD] The libgraph GParam record this game's native sceGsGetGParam (0x102848) returns.
+            ps2_stubs::setGsGParamAddress(0x003FD4A0u);
             const char* aspectEnv = std::getenv("DOD_ASPECT");
             const std::string aspect = aspectEnv && *aspectEnv ? aspectEnv : ini.count("aspect") ? ini["aspect"] : "4:3";
             dodwide::enabled = renderer == "pcsx2" && aspect == "16:9";

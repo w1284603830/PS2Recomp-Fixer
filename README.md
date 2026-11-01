@@ -27,7 +27,8 @@ modules, tools and tests. To port a game you need your own legally obtained copy
 - Recompiler fixes for MMI/FPU/VU0 macro semantics, 64-bit branch compares, VU0 random number instructions
 - CD/DVD: real ISO9660 LBNs, dual-layer DVD9, disc swapping
 - Host: one deadline frame pacer, UTF-8 process code page (runs from any folder name)
-- Many opt-in diagnostics (`DOD_*` environment variables) and offline analysis tools
+- Many opt-in diagnostics (`PS2_*` environment variables; the original `DOD_*` names still work) and offline analysis tools
+- A generic F2 cheat panel driven by your game's own `cheats.ini` (no game's cheats are shipped)
 
 Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line: `patches/PS2Recomp_vs_upstream_eb8688b.diff`
 (applies with `git apply -p1` to upstream `eb8688b`).
@@ -42,8 +43,10 @@ Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line: `pa
 | `fetch_deps.ps1` | Downloads the unmodified, version-pinned dependencies (SHA256-checked) |
 | `build_all.ps1` | Builds everything and runs the tests |
 | `tools/` | Recompilation pipeline scripts (function map fixes, jump tables, generated-code sync, ISO extraction); `tools/diag/` analysis tools |
-| `examples/dod_runner/main.cpp` | The game entry of the port this came from, as a reference for writing your own (not built) |
+| `examples/generic_runner/main.cpp` | A game-agnostic host entry driven by `game.ini`: copy it as your `main.cpp` |
+| `examples/dod_runner/main.cpp` | The game entry of the port this came from (two discs, HD movies, test hooks), as a reference (not built) |
 | `patches/` | Diff against upstream `eb8688b` |
+| `docs/GAME_PORTING.md`, `docs/CHEATS.md` | Where each game-specific value goes; the `cheats.ini` format |
 | `docs/` | Development notes from the original port (Chinese): every patch's cause and verification, build notes, upstream test review |
 
 The sources reference each other through relative paths, so keep the `third_party/src/<module>` layout.
@@ -82,14 +85,17 @@ that the runtime links. A game needs its own generated code and entry point (bel
 4. Identify SDK functions: `ps2_analyzer <elf> analyzer.toml`, then `merge_stubs.py`
 5. Recompile: `ps2_recomp <config.toml>`; copy the output into `ps2xRuntime/src/runner/` and
    `ps2xRuntime/include/` (`sync_generated*.py` copy only changed files to avoid full rebuilds)
-6. Write the game's `ps2xRuntime/src/runner/main.cpp`, starting from upstream's `src/main.cpp` or
+6. Write the game's `ps2xRuntime/src/runner/main.cpp`: copy `examples/generic_runner/main.cpp` (settings come from
+   `game.ini`, see [docs/GAME_PORTING.md](docs/GAME_PORTING.md)), or start from upstream's `src/main.cpp` or
    `examples/dod_runner/main.cpp`. To use this base's additions:
    - `dodKzvuInstall(runtime, "microvu")` — VU1 on PCSX2 microVU (otherwise the built-in VU1 interpreter runs)
    - `dodpcsx2::configure("pcsx2", scale, 0, "gs options")` — PCSX2 GS scale and options (the PCSX2 GS is used by
      default when `pcsx2gs.dll` is present)
    - `runtime.replaceFunction(address, …)` to replace or wrap game functions
-7. Review the game-specific spots listed at the end of [IMPROVEMENTS.md](IMPROVEMENTS.md). **`sceGsSyncV` in
-   `Kernel/Stubs/GS.cpp` reads the original game's libgraph record at a fixed address and must be changed.**
+7. Pass the game-specific values ([docs/GAME_PORTING.md](docs/GAME_PORTING.md)): PCSX2's per-game GS fixes in
+   `gs_options`, and the address of the game's libgraph GParam record (`gparam`, used by `sceGsSyncV`) when its libgraph
+   runs natively. Nothing game-specific is fixed in the GS bridge any more; review the remaining spots listed at the end
+   of [IMPROVEMENTS.md](IMPROVEMENTS.md).
 8. Next to the executable: `pcsx2gs.dll`, `resources\` (from `pcsx2gs/pcsx2-gs/resources`), `SDL2.dll`
    (`third_party/src/SDL2-2.30.9/lib/x64`), the FFmpeg DLLs (copied by the build) and your game files
 

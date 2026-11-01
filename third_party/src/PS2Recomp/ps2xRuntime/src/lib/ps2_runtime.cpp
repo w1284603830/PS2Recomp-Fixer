@@ -7,7 +7,7 @@
 #include "ps2_runtime_macros.h"
 #include "runtime/gs/gs_frontend.h"
 #include "gs/dod_pcsx2_gs.h"
-#include "dod_cheats.h"
+#include "ps2_cheats.h"
 #include "gs/dod_perf.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
@@ -591,8 +591,11 @@ namespace
     EeStallWatchdog g_dodEeStallWatchdog;
 }
 
+void ps2EnvAliasesInstall(); // ps2_env.cpp: PS2_<name> environment variables are also DOD_<name>
+
 PS2Runtime::PS2Runtime()
 {
+    ps2EnvAliasesInstall();
     m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
     m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
     g_dodDiscIop = m_iopSubsystem.get();
@@ -1739,10 +1742,22 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
 
     RecompiledFunction targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
-    // [DoD] DOD_VU0_TRACE=<n>: the first n calls to each libvu0 function (0x105050..0x105D94) with their register
-    // arguments, the 64 bytes at a1/a2/a3 before and at a0 after.
+    // PS2_VU0_TRACE=<n>: the first n calls to each function in PS2_VU0_TRACE_RANGE=<first>-<last> (the game's libvu0,
+    // e.g. 0x105050-0x105D94; without a range nothing is traced) with their register arguments, the 64 bytes at
+    // a1/a2/a3 before and at a0 after.
     static const int vu0Trace = []() { const char *v = std::getenv("DOD_VU0_TRACE"); return v ? std::atoi(v) : 0; }();
-    if (vu0Trace > 0 && targetPc >= 0x105050u && targetPc < 0x105D94u)
+    static const std::pair<uint32_t, uint32_t> vu0TraceRange = []() {
+        uint32_t first = 0u, last = 0u;
+        if (const char *v = std::getenv("DOD_VU0_TRACE_RANGE"))
+        {
+            char *end = nullptr;
+            first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
+            if (*end == '-')
+                last = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
+        }
+        return std::make_pair(first, last);
+    }();
+    if (vu0Trace > 0 && targetPc >= vu0TraceRange.first && targetPc < vu0TraceRange.second)
     {
         static std::unordered_map<uint32_t, int> counts;
         if (counts[targetPc]++ < vu0Trace)
@@ -2954,7 +2969,7 @@ void PS2Runtime::run()
         hostPacer.wait();
         dodperf::end(dodperf::EndDrawing, endDrawingStart);
         dodPollHostPadInput();
-        dodCheatsHostTick(m_memory.getRDRAM()); // [DoD] F2 cheat menu, RAM cheats (dod_cheats.cpp)
+        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
 
         // [DoD] Test launcher audio trace: F9 saves the last 60 s of sound and events (ps2_iop_host.cpp); the title
         // shows "已保存声音追踪：<folder>" for 5 s.

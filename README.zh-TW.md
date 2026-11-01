@@ -27,7 +27,8 @@
 - 重編譯器：MMI／FPU／VU0 巨集指令語義、64 位元分支比較、VU0 亂數指令。
 - 光碟：真實 ISO9660 LBN、雙層 DVD9、換盤。
 - 主機端：單一 deadline 限幀器；UTF-8 代碼頁，資料夾用任何文字命名都能執行。
-- 大量可選診斷（`DOD_*` 環境變數）與離線分析工具。
+- 大量可選診斷（`PS2_*` 環境變數，原本的 `DOD_*` 名稱仍可用）與離線分析工具。
+- 通用的 F2 金手指面板：項目由各遊戲自己的 `cheats.ini` 提供，本倉庫不附任何遊戲的金手指。
 
 完整清單：[IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md)（英文 [IMPROVEMENTS.md](IMPROVEMENTS.md)）。逐行差異在 `patches/PS2Recomp_vs_upstream_eb8688b.diff`，可在上游 `eb8688b` 用 `git apply -p1` 套用。
 
@@ -41,8 +42,10 @@
 | `fetch_deps.ps1` | 下載沒有修改、鎖定版本的相依（檢查 SHA256） |
 | `build_all.ps1` | 建置全部並跑測試 |
 | `tools/` | 重編譯流程腳本（函式表修正、跳轉表、同步產生碼、ISO 抽檔）；`tools/diag/` 是分析工具 |
-| `examples/dod_runner/main.cpp` | 原移植專案的遊戲入口，寫自己的入口時參考（不在建置內） |
+| `examples/generic_runner/main.cpp` | 不綁任何遊戲、由 `game.ini` 設定的通用入口：複製成你的 `main.cpp` 即可 |
+| `examples/dod_runner/main.cpp` | 原移植專案的遊戲入口（雙碟、高清影片、測試掛鉤），寫自己的入口時參考（不在建置內） |
 | `patches/` | 與上游 `eb8688b` 的差異 |
+| `docs/GAME_PORTING.md`、`docs/CHEATS.md` | 各遊戲專用的值放在哪裡；`cheats.ini` 格式（英文） |
 | `docs/` | 原移植專案的開發記錄：每項修補的原因與驗證、建置筆記、上游測試判讀 |
 
 原始碼之間用相對路徑互相引用，請保持 `third_party/src/<模組>` 的結構。
@@ -83,11 +86,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
    4. 執行時出現 `[guest-branch:missing-target]`，再用 `find_missing_function_starts.py` 補。
 4. 辨識 SDK 函式：`ps2_analyzer <elf> analyzer.toml`，再用 `merge_stubs.py` 合併。
 5. 重編譯：`ps2_recomp <設定.toml>`，把輸出放進 `ps2xRuntime/src/runner/` 與 `ps2xRuntime/include/`。`sync_generated*.py` 只複製有變的檔，避免全部重編。
-6. 寫該遊戲的 `ps2xRuntime/src/runner/main.cpp`，從上游 `src/main.cpp` 或 `examples/dod_runner/main.cpp` 開始。要用這個基底的新增功能：
+6. 寫該遊戲的 `ps2xRuntime/src/runner/main.cpp`：複製 `examples/generic_runner/main.cpp`（設定來自 `game.ini`，見 [docs/GAME_PORTING.md](docs/GAME_PORTING.md)），或從上游 `src/main.cpp`、`examples/dod_runner/main.cpp` 開始。要用這個基底的新增功能：
    - `dodKzvuInstall(runtime, "microvu")`：VU1 用 PCSX2 microVU（不呼叫就用內建 VU1 直譯器）
    - `dodpcsx2::configure("pcsx2", 倍率, 0, "gs 選項")`：PCSX2 GS 的倍率與選項。有 `pcsx2gs.dll` 時預設就用 PCSX2 GS。
    - `runtime.replaceFunction(位址, …)`：替換或包裝遊戲函式
-7. 檢查 [IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md) 最後一節列出的原遊戲專用處。**`Kernel/Stubs/GS.cpp` 的 `sceGsSyncV` 讀原遊戲 libgraph 的固定位址，一定要改。**
+7. 傳入該遊戲專用的值（[docs/GAME_PORTING.md](docs/GAME_PORTING.md)）：PCSX2 的逐遊戲 GS 修正放在 `gs_options`；遊戲的 libgraph 是原生執行時，再給 libgraph GParam 紀錄的位址（`gparam`，`sceGsSyncV` 使用）。GS 橋接層已不再寫死任何遊戲的設定；其餘專用處見 [IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md) 最後一節。
 8. 執行檔旁要放：
    - `pcsx2gs.dll`
    - `resources\`（從 `pcsx2gs/pcsx2-gs/resources` 複製）

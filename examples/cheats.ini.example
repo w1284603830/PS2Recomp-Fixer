@@ -1,0 +1,13 @@
+; Copy to cheats.ini next to your game's executable and replace the addresses with ones from YOUR game
+; (find them with a memory search in any PS2 emulator). Format: docs/CHEATS.md.
+
+[section:Example]
+
+[Example: keep a counter at 99]
+help=Writes 99 into one byte of guest RAM every frame while this is checked.
+note=The address below is a placeholder, not a real cheat.
+write=0x00100000,u8,99
+
+[Example: fill an inventory table]
+help=Ten slots, 8 bytes apart; empty slots stay empty.
+write=0x00100100,u8,99,count=10,stride=8,skip_zero

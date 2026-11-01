@@ -669,7 +669,7 @@ index a932a5d..0bf17ff 100644
 +        IopSpu2 m_spu2;          // ran-j/PS2Recomp#308
      };
  }
-diff --git a/ps2xIOP/src/emulator/core/iop_sio2.cpp b/ps2xIOP/src/emulator/core/iop_sio2.cpp
+diff --git a/b/ps2xIOP/src/emulator/core/iop_sio2.cpp b/ps2xIOP/src/emulator/core/iop_sio2.cpp
 new file mode 100644
 index 0000000..ea894c4
 --- /dev/null
@@ -1138,7 +1138,7 @@ index 0000000..ea894c4
 +        }
 +    }
 +}
-diff --git a/ps2xIOP/src/emulator/core/iop_sio2.h b/ps2xIOP/src/emulator/core/iop_sio2.h
+diff --git a/b/ps2xIOP/src/emulator/core/iop_sio2.h b/ps2xIOP/src/emulator/core/iop_sio2.h
 new file mode 100644
 index 0000000..05a3b8f
 --- /dev/null
@@ -1218,7 +1218,7 @@ index 0000000..05a3b8f
 +        Pad m_pads[2];
 +    };
 +}
-diff --git a/ps2xIOP/src/emulator/core/iop_spu2.cpp b/ps2xIOP/src/emulator/core/iop_spu2.cpp
+diff --git a/b/ps2xIOP/src/emulator/core/iop_spu2.cpp b/ps2xIOP/src/emulator/core/iop_spu2.cpp
 new file mode 100644
 index 0000000..1c9f625
 --- /dev/null
@@ -2722,7 +2722,7 @@ index 0000000..1c9f625
 +    }
 +}
 +
-diff --git a/ps2xIOP/src/emulator/core/iop_spu2.h b/ps2xIOP/src/emulator/core/iop_spu2.h
+diff --git a/b/ps2xIOP/src/emulator/core/iop_spu2.h b/ps2xIOP/src/emulator/core/iop_spu2.h
 new file mode 100644
 index 0000000..89a7a1b
 --- /dev/null
@@ -2961,7 +2961,7 @@ index 0000000..89a7a1b
 +        uint32_t m_sampleCounter = 0u;                                                    // [DoD] diagnostics
 +    };
 +}
-diff --git a/ps2xIOP/src/emulator/core/iop_spu2_gauss.h b/ps2xIOP/src/emulator/core/iop_spu2_gauss.h
+diff --git a/b/ps2xIOP/src/emulator/core/iop_spu2_gauss.h b/ps2xIOP/src/emulator/core/iop_spu2_gauss.h
 new file mode 100644
 index 0000000..dddecec
 --- /dev/null
@@ -5205,7 +5205,7 @@ index b498155..595b0a1 100644
 +            m_impl->startThread();
 +    }
  }
-diff --git a/ps2xIOP/tests/iop_sif_dma_intr_tests.cpp b/ps2xIOP/tests/iop_sif_dma_intr_tests.cpp
+diff --git a/b/ps2xIOP/tests/iop_sif_dma_intr_tests.cpp b/ps2xIOP/tests/iop_sif_dma_intr_tests.cpp
 new file mode 100644
 index 0000000..473b5e1
 --- /dev/null
@@ -5417,7 +5417,7 @@ index 0000000..473b5e1
 +    };
 +    return iop_test::run(tests);
 +}
-diff --git a/ps2xIOP/tests/iop_spu2_tests.cpp b/ps2xIOP/tests/iop_spu2_tests.cpp
+diff --git a/b/ps2xIOP/tests/iop_spu2_tests.cpp b/ps2xIOP/tests/iop_spu2_tests.cpp
 new file mode 100644
 index 0000000..c2d00fd
 --- /dev/null
@@ -6237,7 +6237,7 @@ index d0fc95d..7c85ee8 100644
                          inst.rd, inst.rt, inst.rt, shuffle_pattern);
                  }
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..ef3267b 100644
+index 589d768..6e4c09a 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
 @@ -259,6 +259,11 @@ elseif(WIN32)
@@ -6252,7 +6252,7 @@ index 589d768..ef3267b 100644
  
      set(FFMPEG_PREFIX_DIR "${CMAKE_BINARY_DIR}/ThirdParty/ffmpeg-prefix")
      set(FFMPEG_SOURCE_DIR "${FFMPEG_PREFIX_DIR}/src/ffmpeg_external")
-@@ -383,12 +388,20 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +388,21 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -6265,7 +6265,8 @@ index 589d768..ef3267b 100644
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
 +    src/lib/dod_gamepad.cpp
-+    src/lib/dod_cheats.cpp
++    src/lib/ps2_cheats.cpp
++    src/lib/ps2_env.cpp
      src/lib/ps2_rom_device.cpp
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
@@ -6273,19 +6274,7 @@ index 589d768..ef3267b 100644
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -429,6 +442,11 @@ target_compile_definitions(ps2_runtime PRIVATE
-     PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
- )
- 
-+# [DoD] The F2 cheat menu's Chinese labels are UTF-8 literals (the rest of the runtime writes \x escapes).
-+if(MSVC)
-+    set_source_files_properties(src/lib/dod_cheats.cpp PROPERTIES COMPILE_OPTIONS "/utf-8")
-+endif()
-+
- file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
- )
-@@ -462,6 +480,19 @@ else()
+@@ -462,6 +476,19 @@ else()
      )
  endif()
  
@@ -6305,7 +6294,7 @@ index 589d768..ef3267b 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -499,6 +530,21 @@ endif()
+@@ -499,6 +526,21 @@ endif()
  
  if(MSVC)
      target_compile_options(ps2EntryRunner PRIVATE /FS)
@@ -6327,7 +6316,7 @@ index 589d768..ef3267b 100644
  endif()
  
  target_include_directories(ps2_runtime PUBLIC
-@@ -506,7 +552,16 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -506,7 +548,16 @@ target_include_directories(ps2_runtime PUBLIC
      ${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel
  )
  
@@ -6345,7 +6334,7 @@ index 589d768..ef3267b 100644
  target_link_libraries(ps2EntryRunner
      PRIVATE
      ps2_runtime
-diff --git a/ps2xRuntime/include/dod_host_pacer.h b/ps2xRuntime/include/dod_host_pacer.h
+diff --git a/b/ps2xRuntime/include/dod_host_pacer.h b/ps2xRuntime/include/dod_host_pacer.h
 new file mode 100644
 index 0000000..85c27eb
 --- /dev/null
@@ -6631,7 +6620,7 @@ index f247ff9..915fb06 100644
      mutable std::mutex m_snapshotMutex;
      EeKernelSnapshot m_snapshot;
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..079127b 100644
+index c5e31c4..b94002a 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,16 +1,458 @@
@@ -6766,9 +6755,9 @@ index c5e31c4..079127b 100644
 +{
 +    return std::chrono::nanoseconds(g_dodVBlankPeriodNs.load(std::memory_order_relaxed));
 +}
- 
- namespace
- {
++
++namespace
++{
 +    // [DoD] DOD_DISPATCH_STATS=1 (RUNTIME_PATCHES row 119): once a second, how often guest code went back to the
 +    // dispatcher and why. Executor-thread counters except the posted events (any thread). No behaviour change.
 +    struct DodDispatchStats
@@ -6867,9 +6856,9 @@ index c5e31c4..079127b 100644
 +        s.last = keep + std::chrono::seconds(1) > now - std::chrono::seconds(1) ? keep + std::chrono::seconds(1) : now;
 +    }
 +}
-+
-+namespace
-+{
+ 
+ namespace
+ {
 +    // [DoD] Bounded, executor-local diagnostics; no scheduler state or timing is
 +    // changed. Track only real semaphore/external blocks, not successful polls.
 +    struct DodWaitPerf
@@ -7808,13 +7797,13 @@ index c5e31c4..079127b 100644
          }
      }
 -    std::deque<EeEvent> pending;
-+    if (dodEventPumpAlways() || g_dodQueuedEvents.load(std::memory_order_seq_cst) != 0u)
-     {
+-    {
 -        std::lock_guard lock(m_eventMutex);
 -        pending.swap(m_events);
 -    }
 -    for (const EeEvent &event : pending)
--    {
++    if (dodEventPumpAlways() || g_dodQueuedEvents.load(std::memory_order_seq_cst) != 0u)
+     {
 -        processEvent(event);
 +        std::deque<EeEvent> pending;
 +        {
@@ -7904,24 +7893,39 @@ index c5e31c4..079127b 100644
          ++m_vsyncTick;
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
-@@ -1877,6 +2713,97 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1877,6 +2713,112 @@ void EeScheduler::processEvent(const EeEvent &event)
          {
              m_runtime.memory().gs().csr.fetch_and(~0x2000ull, std::memory_order_acq_rel);
          }
 +        dodpcsx2::vsync(m_runtime.memory().gs()); // [DoD] PCSX2's GS composes and presents the field
 +        dodCallHistTick(m_vsyncTick);
 +        {
-+            // [DoD] DOD_RAM_DUMP=<dir> (RUNTIME_PATCHES row 124): every 300 fields, EE RAM 0x3FF000-0x932000 (DoD's data
-+            // and bss) to <dir>\tick_<n>.bin, to find the game's own counters (its frame counter) and read the same
-+            // word in PCSX2 through PINE for a like-for-like comparison.
++            // PS2_RAM_DUMP=<dir>: every 300 fields, EE RAM to <dir>\tick_<n>.bin, to find the game's own counters
++            // (its frame counter) and read the same word in PCSX2 through PINE for a like-for-like comparison.
++            // PS2_RAM_DUMP_RANGE=<first>-<last> picks the part (default: all 32 MB; a game's data and bss is much smaller).
 +            static const char *dumpDir = std::getenv("DOD_RAM_DUMP");
++            static const std::pair<uint32_t, uint32_t> dumpRange = []() {
++                uint32_t first = 0u, last = 0x2000000u;
++                if (const char *v = std::getenv("DOD_RAM_DUMP_RANGE"))
++                {
++                    char *end = nullptr;
++                    const uint32_t a = static_cast<uint32_t>(std::strtoul(v, &end, 0));
++                    if (*end == '-')
++                    {
++                        const uint32_t b = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
++                        if (a < b && b <= 0x2000000u)
++                            first = a, last = b;
++                    }
++                }
++                return std::make_pair(first, last);
++            }();
 +            if (dumpDir && m_rdram && m_vsyncTick % 300u == 0u)
 +            {
 +                char path[512];
 +                std::snprintf(path, sizeof(path), "%s\\tick_%06llu.bin", dumpDir, static_cast<unsigned long long>(m_vsyncTick));
 +                if (FILE *f = std::fopen(path, "wb"))
 +                {
-+                    std::fwrite(m_rdram + 0x3FF000u, 1, 0x932000u - 0x3FF000u, f);
++                    std::fwrite(m_rdram + dumpRange.first, 1, dumpRange.second - dumpRange.first, f);
 +                    std::fclose(f);
 +                }
 +                std::fprintf(stderr, "[ram-dump] tick %llu\n", static_cast<unsigned long long>(m_vsyncTick));
@@ -8002,7 +8006,7 @@ index c5e31c4..079127b 100644
          writeGuestU32(m_vsyncFlagAddress, 1u);
          if (m_vsyncTickAddress != 0u)
          {
-@@ -1889,6 +2816,92 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1889,6 +2831,115 @@ void EeScheduler::processEvent(const EeEvent &event)
          m_vsyncFlagAddress = 0u;
          m_vsyncTickAddress = 0u;
          completeVSync(m_vsyncTick);
@@ -8010,23 +8014,46 @@ index c5e31c4..079127b 100644
 +        // original libpad2 DMA buffers through to the game's button edges.
 +        if (m_rdram)
 +        {
++            // PS2_PAD_TRACE=1 together with PS2_PAD_TRACE_ADDRS=<11 guest addresses, comma separated>: the game's own
++            // libpad variables, in this order: state, current buttons, edge, raw, DMA buffer 0 and 1 (low half),
++            // frame loop counter, callback counter, last sequence, header of buffer 0 and of buffer 1 (the 0x7C words
++            // after each are traced too). They differ in every game; find them with a memory search while a button is
++            // held. Without the addresses only the host side trace (ps2_pad.cpp) runs.
 +            static const bool tracePad = std::getenv("DOD_PAD_TRACE") != nullptr;
-+            if (tracePad)
++            static const std::array<uint32_t, 11> padAddr = []() {
++                std::array<uint32_t, 11> a{};
++                if (const char *v = std::getenv("DOD_PAD_TRACE_ADDRS"))
++                {
++                    size_t n = 0;
++                    for (const char *p = v; *p && n < a.size();)
++                    {
++                        char *end = nullptr;
++                        a[n++] = static_cast<uint32_t>(std::strtoul(p, &end, 0));
++                        if (end == p)
++                            break;
++                        p = *end == ',' ? end + 1 : end;
++                    }
++                    if (n != a.size())
++                        a.fill(0u);
++                }
++                return a;
++            }();
++            if (tracePad && padAddr[0] != 0u)
 +            {
 +                const auto word = [&](uint32_t address) {
 +                    uint32_t value = 0;
 +                    std::memcpy(&value, m_rdram + address, sizeof(value));
 +                    return value;
 +                };
-+                const uint32_t state = word(0x690348u), current = word(0x690404u), edge = word(0x69040Cu);
-+                const uint32_t raw = word(0x69042Cu) & 0xFFFFu;
-+                const uint32_t dma0 = word(0x690D9Cu) & 0xFFFFu, dma1 = word(0x690E1Cu) & 0xFFFFu;
-+                const uint32_t loop = word(0x817730u), callback = word(0x817734u);
-+                const uint32_t lastSeq = word(0x6AB758u);
++                const uint32_t state = word(padAddr[0]), current = word(padAddr[1]), edge = word(padAddr[2]);
++                const uint32_t raw = word(padAddr[3]) & 0xFFFFu;
++                const uint32_t dma0 = word(padAddr[4]) & 0xFFFFu, dma1 = word(padAddr[5]) & 0xFFFFu;
++                const uint32_t loop = word(padAddr[6]), callback = word(padAddr[7]);
++                const uint32_t lastSeq = word(padAddr[8]);
 +                // Header words preserve all first eight bytes: byte 0 is state,
 +                // byte 2 is payload length, and the second word is validity.
-+                const uint32_t hdr00 = word(0x690D80u), hdr01 = word(0x690D84u);
-+                const uint32_t hdr10 = word(0x690E00u), hdr11 = word(0x690E04u);
++                const uint32_t hdr00 = word(padAddr[9]), hdr01 = word(padAddr[9] + 4u);
++                const uint32_t hdr10 = word(padAddr[10]), hdr11 = word(padAddr[10] + 4u);
 +                using PadClock = std::chrono::steady_clock;
 +                struct PadTraceState
 +                {
@@ -8063,7 +8090,7 @@ index c5e31c4..079127b 100644
 +                            seconds, static_cast<unsigned long long>(m_vsyncTick),
 +                            static_cast<unsigned long long>(ticks), ticks / seconds,
 +                            loop, loops, loops / seconds, callback, callbacks, callbacks / seconds,
-+                            lastSeq, word(0x690DFCu), word(0x690E7Cu), hdr00, hdr01, hdr10, hdr11,
++                            lastSeq, word(padAddr[9] + 0x7Cu), word(padAddr[10] + 0x7Cu), hdr00, hdr01, hdr10, hdr11,
 +                            trace.suppressedChanges);
 +                        ++trace.rateLines;
 +                    }
@@ -8082,7 +8109,7 @@ index c5e31c4..079127b 100644
 +                {
 +                    std::fprintf(stderr, "[pad:ee] tick=%llu state=%u raw=%04X current=%08X edge=%08X dma0=%04X dma1=%04X seq0=%u seq1=%u loop=%u callback=%u lastSeq=%u hdr0=%08X:%08X hdr1=%08X:%08X\n",
 +                        static_cast<unsigned long long>(m_vsyncTick), state, raw, current, edge, dma0, dma1,
-+                        word(0x690DFCu), word(0x690E7Cu), loop, callback, lastSeq, hdr00, hdr01, hdr10, hdr11);
++                        word(padAddr[9] + 0x7Cu), word(padAddr[10] + 0x7Cu), loop, callback, lastSeq, hdr00, hdr01, hdr10, hdr11);
 +                    ++trace.changeLines;
 +                    ++trace.windowChanges;
 +                }
@@ -8095,7 +8122,7 @@ index c5e31c4..079127b 100644
          if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
          {
              GuestInvocation invocation{};
-@@ -1909,6 +2922,9 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1909,6 +2960,9 @@ void EeScheduler::processEvent(const EeEvent &event)
          dispatchIrq(false, 3u);
          break;
      case EeEventType::Dmac:
@@ -8105,7 +8132,7 @@ index c5e31c4..079127b 100644
          break;
      case EeEventType::Alarm:
      {
-@@ -2050,6 +3066,8 @@ void EeScheduler::waitForEvent()
+@@ -2050,6 +3104,8 @@ void EeScheduler::waitForEvent()
              accountCycles(step);
              remaining -= step;
          }
@@ -8114,7 +8141,7 @@ index c5e31c4..079127b 100644
          m_checkpointPending.store(true, std::memory_order_release);
      }
  }
-@@ -2070,6 +3088,7 @@ void EeScheduler::updateNextDeadline()
+@@ -2070,6 +3126,7 @@ void EeScheduler::updateNextDeadline()
  {
      if (m_deadlines.empty())
      {
@@ -8122,7 +8149,7 @@ index c5e31c4..079127b 100644
          m_nextDeadlineCycle.store(0u, std::memory_order_release);
          return;
      }
-@@ -2082,6 +3101,7 @@ void EeScheduler::updateNextDeadline()
+@@ -2082,6 +3139,7 @@ void EeScheduler::updateNextDeadline()
                                           }
                                           return left.sequence < right.sequence;
                                       });
@@ -8369,20 +8396,21 @@ index b32e44a..e1f8279 100644
  
      void sceDmaSendM(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
-index 9c54919..de5228f 100644
+index 9c54919..b8e4d88 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
-@@ -4,6 +4,9 @@
+@@ -4,6 +4,10 @@
  #include "runtime/gs/ps2_gs_common.h"
  #include "runtime/gs/ps2_gs_psmct16.h"
  #include "runtime/ee_scheduler.h"
++#include <atomic>
 +#include <chrono>
 +#include <cstdio>
 +#include <cstdlib>
  
  namespace ps2_stubs
  {
-@@ -122,7 +125,6 @@ namespace ps2_stubs
+@@ -122,7 +126,6 @@ namespace ps2_stubs
              runtime->gs().writeRegister(static_cast<uint8_t>(clear.testb.reg & 0xFFu), clear.testb.value);
          }
  
@@ -8390,7 +8418,7 @@ index 9c54919..de5228f 100644
          void writePacketBuilderCurrent(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t currentAddr);
  
          void initPacketBuilderState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-@@ -158,6 +160,19 @@ namespace ps2_stubs
+@@ -158,6 +161,19 @@ namespace ps2_stubs
              }
  
              writePacketBuilderCurrent(rdram, runtime, stateAddr, currentAddr);
@@ -8410,7 +8438,7 @@ index 9c54919..de5228f 100644
              writeGuestBytes(rdram,
                              runtime,
                              stateAddr + 8u,
-@@ -227,39 +242,12 @@ namespace ps2_stubs
+@@ -227,39 +243,12 @@ namespace ps2_stubs
                              sizeof(temp));
          }
  
@@ -8453,7 +8481,7 @@ index 9c54919..de5228f 100644
          }
  
          uint32_t reservePacketBuilderWords(uint8_t *rdram, PS2Runtime *runtime, uint32_t stateAddr, uint32_t wordCount)
-@@ -810,43 +798,17 @@ namespace ps2_stubs
+@@ -810,43 +799,17 @@ namespace ps2_stubs
  
              if (runtime)
              {
@@ -8508,7 +8536,7 @@ index 9c54919..de5228f 100644
              }
          }
  
-@@ -855,6 +817,24 @@ namespace ps2_stubs
+@@ -855,6 +818,24 @@ namespace ps2_stubs
  
      void sceGsResetPath(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -8533,7 +8561,7 @@ index 9c54919..de5228f 100644
          setReturnS32(ctx, 0);
      }
  
-@@ -1218,42 +1198,105 @@ namespace ps2_stubs
+@@ -1218,42 +1199,105 @@ namespace ps2_stubs
  
          if (mode == 0)
          {
@@ -8640,20 +8668,58 @@ index 9c54919..de5228f 100644
                      setReturnS32(ctx, -1);
                      return;
                  }
-@@ -1280,10 +1323,38 @@ namespace ps2_stubs
+@@ -1278,12 +1322,76 @@ namespace ps2_stubs
+         }
+     }
  
++    namespace
++    {
++        // Guest address of the game's libgraph GParam record (the one its native sceGsGetGParam returns), 0 = unknown.
++        // Set by the game's runner (setGsGParamAddress) or PS2_GS_GPARAM=0x... (DOD_GS_GPARAM also works); find it by
++        // reading what the game's sceGsGetGParam returns.
++        std::atomic<uint32_t> g_guestGParamAddress{0u};
++        std::atomic<bool> g_guestGParamEnvRead{false};
++
++        uint32_t guestGParamAddress()
++        {
++            if (!g_guestGParamEnvRead.exchange(true))
++            {
++                const char *v = std::getenv("PS2_GS_GPARAM");
++                if (!v || !*v)
++                    v = std::getenv("DOD_GS_GPARAM");
++                if (v && *v && g_guestGParamAddress.load() == 0u)
++                    g_guestGParamAddress.store(static_cast<uint32_t>(std::strtoul(v, nullptr, 0)));
++            }
++            return g_guestGParamAddress.load();
++        }
++    }
++
++    void setGsGParamAddress(uint32_t address)
++    {
++        g_guestGParamEnvRead.store(true);
++        g_guestGParamAddress.store(address);
++    }
++
      void sceGsSyncV(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
 -        ps2_syscalls::WaitVSyncTick(rdram,
 -                                    ctx,
 -                                    runtime,
 -                                    g_gparam.interlace != 0u ? -1 : 1);
-+        // [DoD] Native sceGsGetGParam (0x102848) returns this libgraph record.
-+        // ResetGraph now updates it directly; the HLE's private byte-sized
-+        // g_gparam is not its ABI. intcUsed is read before waiting, inter after.
-+        constexpr uint32_t kDodGsGParamAddress = 0x003FD4A0u;
++        const uint32_t kGuestGParamAddress = guestGParamAddress();
++        if (kGuestGParamAddress == 0u)
++        {
++            // No guest GParam address known: the HLE's own record (what the games that call the HLE ResetGraph use).
++            ps2_syscalls::WaitVSyncTick(rdram,
++                                        ctx,
++                                        runtime,
++                                        g_gparam.interlace != 0u ? -1 : 1);
++            return;
++        }
++        // The game's native sceGsGetGParam returns this libgraph record; ResetGraph updates it directly, the HLE's
++        // private byte-sized g_gparam is not its ABI. intcUsed is read before waiting, inter after.
 +        uint32_t intcUsed = 0u;
-+        if (!tryReadWordFromGuest(rdram, runtime, kDodGsGParamAddress + 8u, intcUsed))
++        if (!tryReadWordFromGuest(rdram, runtime, kGuestGParamAddress + 8u, intcUsed))
 +        {
 +            setReturnS32(ctx, -1);
 +            return;
@@ -8661,12 +8727,12 @@ index 9c54919..de5228f 100644
 +        EeScheduler &ee = runtime->eeScheduler();
 +        ee.bindMainContextForSyscall(*ctx, rdram);
 +        ee.waitVSync(ee.currentVSyncTick(), -1,
-+                    [rdram, runtime, useVSync2 = intcUsed != 0u](R5900Context &resumeContext)
++                    [rdram, runtime, kGuestGParamAddress, useVSync2 = intcUsed != 0u](R5900Context &resumeContext)
 +                    {
 +                        const int32_t waitResult = static_cast<int32_t>(getRegU32(&resumeContext, 2));
 +                        if (waitResult < 0) return; // preserve cancellation/release errors
 +                        uint32_t modeWord = 0u;
-+                        if (!tryReadWordFromGuest(rdram, runtime, kDodGsGParamAddress, modeWord))
++                        if (!tryReadWordFromGuest(rdram, runtime, kGuestGParamAddress, modeWord))
 +                        {
 +                            setReturnS32(&resumeContext, -1);
 +                            return;
@@ -8683,6 +8749,19 @@ index 9c54919..de5228f 100644
      }
  
      void sceGsSyncVCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.h b/ps2xRuntime/src/lib/Kernel/Stubs/GS.h
+index 82cd0b8..bc46121 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.h
+@@ -34,6 +34,8 @@ namespace ps2_stubs
+     void sceGsSwapDBuffDc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+     void sceGsSwapDBuff(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+     void sceGsSyncPath(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
++    // Guest address of the game's libgraph GParam record (0 = unknown, the HLE's own record is used); see GS.cpp.
++    void setGsGParamAddress(uint32_t address);
+     void sceGsSyncV(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+     void sceGsSyncVCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+     void sceGszbufaddr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
 index b1bb6d8..48b4575 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
@@ -10189,7 +10268,7 @@ index b7840d4..87a3a3a 100644
          setReturnS32(ctx, 0);
      }
  
-diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h b/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h
+diff --git a/b/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h b/ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h
 new file mode 100644
 index 0000000..18676f4
 --- /dev/null
@@ -10888,7 +10967,7 @@ index 5110ee2..7a7ec71 100644
          ee.sleepCurrent();
          setReturnS32(ctx, KE_OK);
      }
-diff --git a/ps2xRuntime/src/lib/dod_audio_settings.h b/ps2xRuntime/src/lib/dod_audio_settings.h
+diff --git a/b/ps2xRuntime/src/lib/dod_audio_settings.h b/ps2xRuntime/src/lib/dod_audio_settings.h
 new file mode 100644
 index 0000000..4e8432c
 --- /dev/null
@@ -10917,293 +10996,7 @@ index 0000000..4e8432c
 +        return parsed < 0 ? 0 : parsed > 100 ? 100 : static_cast<int>(parsed);
 +    }
 +}
-diff --git a/ps2xRuntime/src/lib/dod_cheats.cpp b/ps2xRuntime/src/lib/dod_cheats.cpp
-new file mode 100644
-index 0000000..378ecfd
---- /dev/null
-+++ b/ps2xRuntime/src/lib/dod_cheats.cpp
-@@ -0,0 +1,237 @@
-+// [DoD] In-game cheat menu (F2): the user's Action Replay codes for Shin Onimusha: Dawn of Dreams (SLPM-66275),
-+// decrypted with the AR1 key (work/cheats-20261028/ar_decrypt.py, decrypted.txt). Fourteen of them rewrite game
-+// instructions (a branch made a no-op or redirected, an add / load replaced); the recompiled functions do not read their
-+// instructions from RAM, so those are switches inside the generated code (g_dodCheats, added by
-+// tools/scripts/apply_dod_cheats.py at exactly those instructions; off = the original code). The item counts are RAM
-+// writes once per host frame, as an emulator applies a code. Everything starts off at each launch.
-+// The panel is the GS's ImGui menu (pcsx2gs_api.h set_menu): docked at the left, scaled with the image height, mouse
-+// read from Win32 in image pixels (dodpcsx2::menuInput), keyboard / controller navigation; the game gets a released pad
-+// while it is open.
-+#include "dod_cheats.h"
-+
-+#include "gs/dod_pcsx2_gs.h"
-+#include "gs/pcsx2gs_api.h"
-+#include "ps2_host_backend.h"
-+
-+#include <atomic>
-+#include <cstdio>
-+#include <cstdlib>
-+#include <cstring>
-+
-+extern "C" volatile unsigned char g_dodCheats[32] = {};
-+
-+namespace
-+{
-+    struct Entry
-+    {
-+        int id;             // -1: a section title
-+        const char *label;  // UTF-8 (Simplified Chinese, as the game's text)
-+        const char *help;   // hover / focus help (may be null)
-+        const char *note;   // shown under the item (warnings)
-+    };
-+
-+    const Entry kEntries[] = {
-+        {-1, "一闪", nullptr, nullptr},
-+        {kDodCheatChainCount, "连锁一闪次数无限制", "连锁一闪不再有次数上限。", nullptr},
-+        {kDodCheatChainRange, "连锁一闪：不限敌人距离",
-+         "连锁一闪可以接到任意距离的敌人。原作者建议搭配“一闪距离变更”（设为 100）使用，本菜单没有该项。", nullptr},
-+        {kDodCheatChainSameEnemy, "连锁一闪：可重复攻击同一敌人", "在幻魔空间里可能会碍事。", nullptr},
-+        {kDodCheatOtherIssenRange, "其他一闪：不限敌人距离", "通常一闪以外的一闪也能接到任意距离的敌人。", nullptr},
-+        {kDodCheatBassari, "一闪爽快感辅助", "原作者的“バッサリ感”辅助：建议与上面四项一起开启。", nullptr},
-+        {kDodCheatDeflectIssen, "R1 锁定后攻击即为弹一闪", "按住 R1 锁定敌人，再按攻击就是弹一闪。", nullptr},
-+        {-1, "能力槽", nullptr, nullptr},
-+        {kDodCheatSpirit, "心力常时回复", "心力一直回满。", nullptr},
-+        {kDodCheatOniPower, "鬼力常时回复", "鬼战术用完立刻回满。", nullptr},
-+        {kDodCheatOugi, "奥义随时可用", "奥义槽一直是满的。", nullptr},
-+        {-1, "道具与强化", nullptr, nullptr},
-+        {kDodCheatItems, "道具数量保持 99（前 10 格）", "已有道具的数量一直是 99；空格不会变出道具。", nullptr},
-+        {kDodCheatMoneyMax, "金钱变动时直接最大", "得到或花掉金钱时，金钱直接变为最大值。", nullptr},
-+        {kDodCheatKibushiMax, "鬼武侠点数变动时直接最大", "鬼武侠点数变动时直接变为最大值。", nullptr},
-+        {kDodCheatSoulsKeep, "强化武器时不消耗魂", "强化武器时，分配出去的魂不会减少。", nullptr},
-+        {kDodCheatUpgradeOnce, "武具强化：分配一次魂就升级", "武具强化时，分配一次魂就升一级。", nullptr},
-+        {kDodCheatSkill99, "技强化获得点数 99", "技强化时得到的点数固定为 99。", "原作者注明可能会黑屏，开启前请先存档。"},
-+    };
-+
-+    std::atomic<bool> s_open{false};        // F2 / Esc on the window thread, the close button on the GS thread
-+    std::atomic<bool> s_justOpened{false};  // the next drawn frame gives the panel the focus
-+    std::atomic<uint16_t> s_hostButtons{0xFFFFu};
-+    std::atomic<bool> s_hostGamepad{false};
-+
-+    const char *labelOf(int id)
-+    {
-+        for (const Entry &e : kEntries)
-+            if (e.id == id)
-+                return e.label;
-+        return "?";
-+    }
-+
-+    void setCheat(int id, bool on)
-+    {
-+        if (id < 0 || id >= static_cast<int>(kDodCheatCount) || (g_dodCheats[id] != 0) == on)
-+            return;
-+        g_dodCheats[id] = on ? 1u : 0u;
-+        std::fprintf(stderr, "[cheats] %s: %s\n", labelOf(id), on ? "on" : "off");
-+    }
-+
-+    // GS thread, at every present while the menu is shown.
-+    void drawMenu(const Pcsx2GsUi *ui, void *)
-+    {
-+        int open = 1;
-+        const char *title = "金手指###dodcheats";
-+        const uint32_t flags = PCSX2GS_PANEL_LEFT | (s_justOpened.exchange(false) ? PCSX2GS_PANEL_FOCUS : 0u);
-+        const bool panel = ui->version >= 3u && ui->begin_panel;
-+        const int visible = panel ? ui->begin_panel(title, &open, 440.0f, 860.0f, flags) : ui->begin_window(title, &open, 440.0f, 860.0f);
-+        if (visible)
-+        {
-+            ui->text_disabled("F2 或 Esc 关闭");
-+            ui->text_disabled("鼠标／方向键＋空格／手柄十字键＋A");
-+            for (const Entry &e : kEntries)
-+            {
-+                if (e.id < 0)
-+                {
-+                    ui->separator_text(e.label);
-+                    continue;
-+                }
-+                ui->push_id(e.id);
-+                int value = g_dodCheats[e.id] ? 1 : 0;
-+                if (ui->checkbox(e.label, &value))
-+                    setCheat(e.id, value != 0);
-+                if (panel && ui->tooltip && e.help)
-+                    ui->tooltip(e.help);
-+                if (e.note)
-+                    ui->text_colored(0xFF4A8CF5u, e.note); // orange (R in the low byte)
-+                ui->pop_id();
-+            }
-+            ui->spacing();
-+            if (ui->button("全部关闭"))
-+                for (int id = 0; id < static_cast<int>(kDodCheatCount); ++id)
-+                    setCheat(id, false);
-+            ui->text_wrapped("只在这次运行有效；重新启动游戏后全部恢复关闭。");
-+        }
-+        ui->end_window();
-+        if (!open)
-+            s_open.store(false, std::memory_order_relaxed);
-+    }
-+
-+    // DOD_CHEATS=all | <index>,<index>... (tests): switches on at start; DOD_CHEAT_MENU_AT=<seconds>: opens the menu then.
-+    void applyTestEnv()
-+    {
-+        const char *v = std::getenv("DOD_CHEATS");
-+        if (!v || !*v)
-+            return;
-+        if (std::strcmp(v, "all") == 0)
-+        {
-+            for (int id = 0; id < static_cast<int>(kDodCheatCount); ++id)
-+                setCheat(id, true);
-+            return;
-+        }
-+        for (const char *p = v; *p;)
-+        {
-+            char *end = nullptr;
-+            const long id = std::strtol(p, &end, 10);
-+            if (end == p)
-+                break;
-+            setCheat(static_cast<int>(id), true);
-+            p = *end == ',' ? end + 1 : end;
-+        }
-+    }
-+
-+    uint32_t menuKeys()
-+    {
-+        uint32_t keys = 0u;
-+        const auto key = [&](int raylibKey, uint32_t bit) {
-+            if (IsKeyDown(raylibKey))
-+                keys |= bit;
-+        };
-+        key(KEY_UP, PCSX2GS_KEY_UP);
-+        key(KEY_DOWN, PCSX2GS_KEY_DOWN);
-+        key(KEY_LEFT, PCSX2GS_KEY_LEFT);
-+        key(KEY_RIGHT, PCSX2GS_KEY_RIGHT);
-+        key(KEY_ENTER, PCSX2GS_KEY_ENTER);
-+        key(KEY_KP_ENTER, PCSX2GS_KEY_ENTER);
-+        key(KEY_SPACE, PCSX2GS_KEY_SPACE);
-+        key(KEY_ESCAPE, PCSX2GS_KEY_ESCAPE);
-+        key(KEY_TAB, PCSX2GS_KEY_TAB);
-+        key(KEY_LEFT_SHIFT, PCSX2GS_KEY_SHIFT);
-+        key(KEY_RIGHT_SHIFT, PCSX2GS_KEY_SHIFT);
-+        key(KEY_LEFT_CONTROL, PCSX2GS_KEY_CTRL);
-+        key(KEY_RIGHT_CONTROL, PCSX2GS_KEY_CTRL);
-+        return keys;
-+    }
-+
-+    // The controller's buttons (only when it is the active device: the keyboard's own mapping to pad buttons would
-+    // move the cursor twice) as the menu's: D-pad, A / cross = accept, B / circle = back, L1 / R1.
-+    uint32_t menuPad()
-+    {
-+        if (!s_hostGamepad.load(std::memory_order_relaxed))
-+            return 0u;
-+        const uint16_t held = static_cast<uint16_t>(~s_hostButtons.load(std::memory_order_relaxed));
-+        uint32_t pad = 0u;
-+        if (held & 0x0010u) pad |= PCSX2GS_PAD_UP;
-+        if (held & 0x0040u) pad |= PCSX2GS_PAD_DOWN;
-+        if (held & 0x0080u) pad |= PCSX2GS_PAD_LEFT;
-+        if (held & 0x0020u) pad |= PCSX2GS_PAD_RIGHT;
-+        if (held & 0x4000u) pad |= PCSX2GS_PAD_ACCEPT;
-+        if (held & 0x2000u) pad |= PCSX2GS_PAD_BACK;
-+        if (held & 0x0400u) pad |= PCSX2GS_PAD_L1;
-+        if (held & 0x0800u) pad |= PCSX2GS_PAD_R1;
-+        return pad;
-+    }
-+}
-+
-+void dodCheatsSetHostPad(uint16_t buttons, bool gamepad)
-+{
-+    s_hostButtons.store(buttons, std::memory_order_relaxed);
-+    s_hostGamepad.store(gamepad, std::memory_order_relaxed);
-+}
-+
-+bool dodCheatsMenuOpen()
-+{
-+    return s_open.load(std::memory_order_relaxed);
-+}
-+
-+void dodCheatsHostTick(uint8_t *rdram)
-+{
-+    static bool started = false;
-+    static bool shown = false;
-+    static double menuAt = []() { const char *v = std::getenv("DOD_CHEAT_MENU_AT"); return v ? std::atof(v) : 0.0; }();
-+    if (!started)
-+    {
-+        started = true;
-+        applyTestEnv();
-+    }
-+    const bool autoOpen = menuAt > 0.0 && GetTime() >= menuAt;
-+    if (autoOpen)
-+        menuAt = 0.0;
-+    if (IsKeyPressed(KEY_F2) || autoOpen)
-+    {
-+        const bool open = autoOpen || !s_open.load(std::memory_order_relaxed);
-+        s_open.store(open, std::memory_order_relaxed);
-+        if (open)
-+            s_justOpened.store(true, std::memory_order_relaxed);
-+    }
-+    else if (shown && IsKeyPressed(KEY_ESCAPE))
-+        s_open.store(false, std::memory_order_relaxed);
-+
-+    const bool open = s_open.load(std::memory_order_relaxed);
-+    if (open != shown)
-+    {
-+        dodpcsx2::setMenu(open ? drawMenu : nullptr, nullptr);
-+        if (!open)
-+            dodpcsx2::menuInput(0u, 0u, 0.0f); // nothing held when it opens again
-+        shown = open;
-+        std::fprintf(stderr, "[cheats] menu %s\n", open ? "open" : "closed");
-+    }
-+    if (open)
-+        dodpcsx2::menuInput(menuKeys(), menuPad(), GetMouseWheelMove());
-+
-+    // RAM codes: the first ten item slots' counts (8-bit at 0x8D729C + 8 n; the code writes 0xC7 into all ten, this
-+    // keeps the 99 its title says and leaves empty slots empty).
-+    if (rdram && g_dodCheats[kDodCheatItems])
-+        for (uint32_t n = 0; n < 10u; ++n)
-+        {
-+            uint8_t &count = rdram[0x8D729Cu + 8u * n];
-+            if (count != 0u && count != 99u)
-+                count = 99u;
-+        }
-+}
-diff --git a/ps2xRuntime/src/lib/dod_cheats.h b/ps2xRuntime/src/lib/dod_cheats.h
-new file mode 100644
-index 0000000..da1e9ca
---- /dev/null
-+++ b/ps2xRuntime/src/lib/dod_cheats.h
-@@ -0,0 +1,37 @@
-+#pragma once
-+
-+#include <cstdint>
-+
-+// [DoD] In-game cheat menu (F2, dod_cheats.cpp). The switches are read by the generated functions themselves
-+// (tools/scripts/apply_dod_cheats.py adds `g_dodCheats[n]` at the patched instructions), so the indexes below are fixed:
-+// the script uses the same numbers.
-+enum DodCheat : unsigned
-+{
-+    kDodCheatChainCount = 0,      // 2B3D50 2B3E80: chain Issen without a count limit
-+    kDodCheatChainRange = 1,      // 2B26FC: chain Issen finds enemies at any distance
-+    kDodCheatChainSameEnemy = 2,  // 2B26B4: chain Issen may hit the same enemy again
-+    kDodCheatOtherIssenRange = 3, // 26010C 260190 26029C: the other Issen kinds find enemies at any distance
-+    kDodCheatBassari = 4,         // 2B3694: the "slash feel" helper (the chain counter does not count up)
-+    kDodCheatDeflectIssen = 5,    // 26005C: lock on (R1), then an attack is a deflect Issen
-+    kDodCheatSpirit = 6,          // 25F14C: spirit gauge always refills
-+    kDodCheatOniPower = 7,        // 25F114: Oni power refills at once
-+    kDodCheatOugi = 8,            // 25F2C8: ougi gauge always full
-+    kDodCheatItems = 9,           // RAM 0x8D729C + 8 n (n < 10): item counts held at 99
-+    kDodCheatMoneyMax = 10,       // 2F22C8 2F231C: money goes to the maximum when it changes
-+    kDodCheatKibushiMax = 11,     // 3345B4: Kibushi points go to the maximum when they change
-+    kDodCheatSoulsKeep = 12,      // 362AF8: upgrading weapons does not use souls
-+    kDodCheatUpgradeOnce = 13,    // 362B0C: one soul allotment levels a weapon / armour up
-+    kDodCheatSkill99 = 14,        // 329940: skill upgrades give 99 points (the code's author: may black out)
-+    kDodCheatCount = 15,
-+};
-+
-+extern "C" volatile unsigned char g_dodCheats[32];
-+
-+// Window thread, once per host frame after the pad poll: F2 opens / closes the menu, its input goes to the GS while it
-+// is open, the RAM cheats are written. rdram = the guest's 32 MB.
-+void dodCheatsHostTick(uint8_t *rdram);
-+// While the menu is open the game gets a released pad (ps2_pad.cpp).
-+bool dodCheatsMenuOpen();
-+// The pad buttons the host read this frame (active low, PS2 order) and whether they came from a controller: the
-+// menu's controller navigation (ps2_pad.cpp publishes them before it blanks the game's copy).
-+void dodCheatsSetHostPad(uint16_t buttons, bool gamepad);
-diff --git a/ps2xRuntime/src/lib/dod_gamepad.cpp b/ps2xRuntime/src/lib/dod_gamepad.cpp
+diff --git a/b/ps2xRuntime/src/lib/dod_gamepad.cpp b/ps2xRuntime/src/lib/dod_gamepad.cpp
 new file mode 100644
 index 0000000..12c2d71
 --- /dev/null
@@ -11394,7 +11187,7 @@ index 0000000..12c2d71
 +bool dodGamepadBackendReady() { return false; }
 +void dodShutdownGamepad() {}
 +#endif
-diff --git a/ps2xRuntime/src/lib/dod_gamepad.h b/ps2xRuntime/src/lib/dod_gamepad.h
+diff --git a/b/ps2xRuntime/src/lib/dod_gamepad.h b/ps2xRuntime/src/lib/dod_gamepad.h
 new file mode 100644
 index 0000000..bcedcec
 --- /dev/null
@@ -11410,7 +11203,7 @@ index 0000000..bcedcec
 +bool dodPollGamepad(uint8_t *data32, bool focused);
 +bool dodGamepadBackendReady();
 +void dodShutdownGamepad();
-diff --git a/ps2xRuntime/src/lib/dod_host_pacer.cpp b/ps2xRuntime/src/lib/dod_host_pacer.cpp
+diff --git a/b/ps2xRuntime/src/lib/dod_host_pacer.cpp b/ps2xRuntime/src/lib/dod_host_pacer.cpp
 new file mode 100644
 index 0000000..660af6f
 --- /dev/null
@@ -11468,7 +11261,7 @@ index 0000000..660af6f
 +    while (Clock::now() < target) std::this_thread::yield();
 +#endif
 +}
-diff --git a/ps2xRuntime/src/lib/dod_input_settings.h b/ps2xRuntime/src/lib/dod_input_settings.h
+diff --git a/b/ps2xRuntime/src/lib/dod_input_settings.h b/ps2xRuntime/src/lib/dod_input_settings.h
 new file mode 100644
 index 0000000..b2b0cc2
 --- /dev/null
@@ -11639,7 +11432,7 @@ index 0000000..b2b0cc2
 +// Startup only: call before runtime.initialize()/the first window-thread poll.
 +void dodConfigureKeyboardInput(const dod_input::KeyboardBindings &bindings);
 +void dodConfigureKeyboardSticks(const dod_input::StickBindings &sticks);
-diff --git a/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h b/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h
+diff --git a/b/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h b/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h
 new file mode 100644
 index 0000000..4966223
 --- /dev/null
@@ -11756,7 +11549,7 @@ index 0000000..4966223
 +    inline std::vector<uint8_t> take(uint32_t mpegAddr, size_t maxBytes = 64u * 1024u)
 +    { return ingress().take(mpegAddr, maxBytes); }
 +}
-diff --git a/ps2xRuntime/src/lib/dod_to_ipu_dma.h b/ps2xRuntime/src/lib/dod_to_ipu_dma.h
+diff --git a/b/ps2xRuntime/src/lib/dod_to_ipu_dma.h b/ps2xRuntime/src/lib/dod_to_ipu_dma.h
 new file mode 100644
 index 0000000..abc374f
 --- /dev/null
@@ -11916,7 +11709,7 @@ index 0000000..abc374f
 +        Gathered transfer_;
 +    };
 +}
-diff --git a/ps2xRuntime/src/lib/dod_vif1_unpack.h b/ps2xRuntime/src/lib/dod_vif1_unpack.h
+diff --git a/b/ps2xRuntime/src/lib/dod_vif1_unpack.h b/ps2xRuntime/src/lib/dod_vif1_unpack.h
 new file mode 100644
 index 0000000..ee09388
 --- /dev/null
@@ -12102,7 +11895,7 @@ index 0000000..ee09388
 +        table[(vnvl << 3) | (((upk >> 4) & 1u) << 2) | mode](vuMem, vuMemSize, regs, cmd, data, dataBytes);
 +    }
 +}
-diff --git a/ps2xRuntime/src/lib/gs/dod_cg_cadence.h b/ps2xRuntime/src/lib/gs/dod_cg_cadence.h
+diff --git a/b/ps2xRuntime/src/lib/gs/dod_cg_cadence.h b/ps2xRuntime/src/lib/gs/dod_cg_cadence.h
 new file mode 100644
 index 0000000..441c8c7
 --- /dev/null
@@ -12333,7 +12126,7 @@ index 0000000..441c8c7
 +                 unsigned(s.active), s.stable, s.phase, s.corrections, s.unavailable);
 +}
 +}
-diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+diff --git a/b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
 new file mode 100644
 index 0000000..21f755e
 --- /dev/null
@@ -13377,9 +13170,9 @@ index 0000000..21f755e
 +}
 +
 +#endif
-diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
+diff --git a/b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
 new file mode 100644
-index 0000000..d7b01f0
+index 0000000..d997041
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
 @@ -0,0 +1,77 @@
@@ -13443,7 +13236,7 @@ index 0000000..d7b01f0
 +    // Any thread: the game's scene changed (0x7E1344); the GS loads and uploads that room's HD textures ahead
 +    // (pcsx2gs_dod_prefetch_scene; nothing with a DLL that lacks it).
 +    void prefetchScene(uint32_t scene);
-+    // [DoD] The GS's in-game menu (pcsx2gs_api.h set_menu; the F2 cheat panel, dod_cheats.cpp): draw runs on the GS
++    // The GS's in-game menu (pcsx2gs_api.h set_menu; the F2 cheat panel, ps2_cheats.cpp): draw runs on the GS
 +    // thread at every present, null hides it. Any thread.
 +    void setMenu(void (*draw)(const ::Pcsx2GsUi *ui, void *user), void *user);
 +    // Window thread, while a menu is shown: its input. keys / pad are PCSX2GS_KEY_* / PCSX2GS_PAD_* bits held, wheel the
@@ -13460,7 +13253,7 @@ index 0000000..d7b01f0
 +    };
 +    bool rawSuppressed();
 +}
-diff --git a/ps2xRuntime/src/lib/gs/dod_perf.h b/ps2xRuntime/src/lib/gs/dod_perf.h
+diff --git a/b/ps2xRuntime/src/lib/gs/dod_perf.h b/ps2xRuntime/src/lib/gs/dod_perf.h
 new file mode 100644
 index 0000000..b9b5233
 --- /dev/null
@@ -13570,7 +13363,7 @@ index 0000000..b9b5233
 +    std::fputc('\n', stderr);
 +}
 +}
-diff --git a/ps2xRuntime/src/lib/gs/dod_widescreen.h b/ps2xRuntime/src/lib/gs/dod_widescreen.h
+diff --git a/b/ps2xRuntime/src/lib/gs/dod_widescreen.h b/ps2xRuntime/src/lib/gs/dod_widescreen.h
 new file mode 100644
 index 0000000..28d1e8c
 --- /dev/null
@@ -13906,7 +13699,7 @@ index 5658928..6665fe4 100644
  }
  
  void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
-diff --git a/ps2xRuntime/src/lib/gs/pcsx2gs_api.h b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
+diff --git a/b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
 new file mode 100644
 index 0000000..e61e66f
 --- /dev/null
@@ -14198,7 +13991,7 @@ index c289ba0..539783e 100644
  
      for (size_t i = 0; i < m_queue.size(); ++i)
      {
-diff --git a/ps2xRuntime/src/lib/ipu/ps2_ipu.c b/ps2xRuntime/src/lib/ipu/ps2_ipu.c
+diff --git a/b/ps2xRuntime/src/lib/ipu/ps2_ipu.c b/ps2xRuntime/src/lib/ipu/ps2_ipu.c
 new file mode 100644
 index 0000000..a602434
 --- /dev/null
@@ -15449,7 +15242,7 @@ index 0000000..a602434
 +    free(data);
 +    return bad;
 +}
-diff --git a/ps2xRuntime/src/lib/ipu/ps2_ipu_compat.h b/ps2xRuntime/src/lib/ipu/ps2_ipu_compat.h
+diff --git a/b/ps2xRuntime/src/lib/ipu/ps2_ipu_compat.h b/ps2xRuntime/src/lib/ipu/ps2_ipu_compat.h
 new file mode 100644
 index 0000000..7e1b638
 --- /dev/null
@@ -15518,7 +15311,7 @@ index 0000000..7e1b638
 +#endif
 +
 +#endif
-diff --git a/ps2xRuntime/src/lib/ipu/ps2_ipu_dct.inc b/ps2xRuntime/src/lib/ipu/ps2_ipu_dct.inc
+diff --git a/b/ps2xRuntime/src/lib/ipu/ps2_ipu_dct.inc b/ps2xRuntime/src/lib/ipu/ps2_ipu_dct.inc
 new file mode 100644
 index 0000000..c3c0bc2
 --- /dev/null
@@ -15639,7 +15432,7 @@ index 0000000..c3c0bc2
 +    {   0,   0, 0x00001,  6, 0x00001,  6 },
 +    {   0,   0, 0x00002,  2, 0x00006,  4 },
 +};
-diff --git a/ps2xRuntime/src/lib/ipu/ps2_ipu_glue.c b/ps2xRuntime/src/lib/ipu/ps2_ipu_glue.c
+diff --git a/b/ps2xRuntime/src/lib/ipu/ps2_ipu_glue.c b/ps2xRuntime/src/lib/ipu/ps2_ipu_glue.c
 new file mode 100644
 index 0000000..4467d0d
 --- /dev/null
@@ -15682,7 +15475,494 @@ index 0000000..4467d0d
 +void ps2_gs_trx_history(void)
 +{
 +}
-diff --git a/ps2xRuntime/src/lib/ps2_disc.h b/ps2xRuntime/src/lib/ps2_disc.h
+diff --git a/b/ps2xRuntime/src/lib/ps2_cheats.cpp b/ps2xRuntime/src/lib/ps2_cheats.cpp
+new file mode 100644
+index 0000000..50ab4fd
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_cheats.cpp
+@@ -0,0 +1,456 @@
++// Generic in-game cheat menu (F2). No game's cheats live here: the entries are read from `cheats.ini` (format in
++// docs/CHEATS.md). Every entry is a checkbox; while it is on, its RAM writes are applied once per host frame, as an
++// emulator applies a RAM cheat code. Everything starts off at each launch.
++// The panel is the GS's ImGui menu (pcsx2gs_api.h set_menu): docked at the left, scaled with the image height, mouse
++// read from Win32 in image pixels (dodpcsx2::menuInput), keyboard / controller navigation; the game gets a released pad
++// while it is open. Labels are UTF-8 text from the file (the GS merges the first CJK font Windows has).
++#include "ps2_cheats.h"
++
++#include "gs/dod_pcsx2_gs.h"
++#include "gs/pcsx2gs_api.h"
++#include "ps2_host_backend.h"
++
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <string>
++#include <vector>
++
++#ifdef _WIN32
++// Declared by hand: <windows.h> clashes with raylib's names (Rectangle, CloseWindow, ...).
++extern "C" __declspec(dllimport) unsigned long __stdcall GetModuleFileNameA(void *module, char *name, unsigned long size);
++#endif
++
++namespace
++{
++    constexpr uint32_t kGuestRamSize = 32u * 1024u * 1024u;
++    constexpr size_t kMaxCheats = 512;
++    constexpr size_t kMaxWritesPerCheat = 64;
++
++    struct Write
++    {
++        uint32_t address = 0;
++        uint8_t size = 4;       // 1, 2 or 4 bytes, little endian
++        uint32_t value = 0;
++        uint32_t count = 1;     // repeated `count` times, `stride` bytes apart
++        uint32_t stride = 0;
++        bool skipZero = false;  // leave a slot alone while it holds zero (an empty inventory slot stays empty)
++    };
++
++    struct Entry
++    {
++        bool section = false;   // a title line, not a checkbox
++        std::string label;
++        std::string help;
++        std::string note;
++        std::vector<Write> writes;
++    };
++
++    std::vector<Entry> s_entries;
++    std::unique_ptr<std::atomic<bool>[]> s_on; // parallel to s_entries
++    std::string s_loadedFrom;
++    std::string s_loadMessage;
++
++    std::atomic<bool> s_open{false};        // F2 / Esc on the window thread, the close button on the GS thread
++    std::atomic<bool> s_justOpened{false};  // the next drawn frame gives the panel the focus
++    std::atomic<uint16_t> s_hostButtons{0xFFFFu};
++    std::atomic<bool> s_hostGamepad{false};
++
++    std::string trim(const std::string &s)
++    {
++        size_t b = 0, e = s.size();
++        while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n'))
++            ++b;
++        while (e > b && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r' || s[e - 1] == '\n'))
++            --e;
++        return s.substr(b, e - b);
++    }
++
++    bool fileExists(const std::string &path)
++    {
++        if (FILE *f = std::fopen(path.c_str(), "rb"))
++        {
++            std::fclose(f);
++            return true;
++        }
++        return false;
++    }
++
++    std::string exeDirectory()
++    {
++#ifdef _WIN32
++        char buf[1024] = {};
++        const unsigned long n = GetModuleFileNameA(nullptr, buf, static_cast<unsigned long>(sizeof(buf)));
++        if (n > 0 && n < sizeof(buf))
++        {
++            std::string p(buf, n);
++            const size_t slash = p.find_last_of("\\/");
++            if (slash != std::string::npos)
++                return p.substr(0, slash + 1);
++        }
++#endif
++        return std::string();
++    }
++
++    // WRITE line: ADDRESS,SIZE,VALUE[,count=N][,stride=S][,skip_zero]
++    // SIZE is u8 / u16 / u32 (or 1 / 2 / 4); numbers are decimal or 0x hex.
++    bool parseWrite(const std::string &text, Write &out, std::string &error)
++    {
++        std::vector<std::string> parts;
++        size_t start = 0;
++        for (;;)
++        {
++            const size_t comma = text.find(',', start);
++            parts.push_back(trim(text.substr(start, comma == std::string::npos ? std::string::npos : comma - start)));
++            if (comma == std::string::npos)
++                break;
++            start = comma + 1;
++        }
++        if (parts.size() < 3)
++        {
++            error = "write needs ADDRESS,SIZE,VALUE";
++            return false;
++        }
++        char *end = nullptr;
++        const unsigned long address = std::strtoul(parts[0].c_str(), &end, 0);
++        if (end == parts[0].c_str() || *end)
++        {
++            error = "bad address";
++            return false;
++        }
++        const std::string &sz = parts[1];
++        if (sz == "u8" || sz == "1")
++            out.size = 1;
++        else if (sz == "u16" || sz == "2")
++            out.size = 2;
++        else if (sz == "u32" || sz == "4")
++            out.size = 4;
++        else
++        {
++            error = "size must be u8, u16 or u32";
++            return false;
++        }
++        const unsigned long long value = std::strtoull(parts[2].c_str(), &end, 0);
++        if (end == parts[2].c_str() || *end)
++        {
++            error = "bad value";
++            return false;
++        }
++        out.address = static_cast<uint32_t>(address) & 0x1FFFFFFFu; // KSEG / cached mirrors map to the same RAM
++        out.value = static_cast<uint32_t>(value);
++        for (size_t i = 3; i < parts.size(); ++i)
++        {
++            const std::string &opt = parts[i];
++            if (opt == "skip_zero")
++                out.skipZero = true;
++            else if (opt.rfind("count=", 0) == 0)
++                out.count = static_cast<uint32_t>(std::strtoul(opt.c_str() + 6, nullptr, 0));
++            else if (opt.rfind("stride=", 0) == 0)
++                out.stride = static_cast<uint32_t>(std::strtoul(opt.c_str() + 7, nullptr, 0));
++            else
++            {
++                error = "unknown option '" + opt + "'";
++                return false;
++            }
++        }
++        if (out.count == 0)
++            out.count = 1;
++        const uint64_t last = static_cast<uint64_t>(out.address) + static_cast<uint64_t>(out.count - 1) * out.stride + out.size;
++        if (last > kGuestRamSize)
++        {
++            error = "address range is outside the 32 MB of guest RAM";
++            return false;
++        }
++        return true;
++    }
++
++    void loadFile()
++    {
++        std::string path;
++        if (const char *env = std::getenv("PS2_CHEATS_FILE"); env && *env)
++            path = env;
++        else
++        {
++            const std::string beside = exeDirectory() + "cheats.ini";
++            path = fileExists(beside) ? beside : std::string("cheats.ini");
++        }
++        FILE *f = std::fopen(path.c_str(), "rb");
++        if (!f)
++        {
++            s_loadMessage = "No cheats.ini found (see docs/CHEATS.md).";
++            std::fprintf(stderr, "[cheats] no cheat file (%s)\n", path.c_str());
++            return;
++        }
++        std::string data;
++        char chunk[4096];
++        for (size_t n; (n = std::fread(chunk, 1, sizeof(chunk), f)) > 0;)
++            data.append(chunk, n);
++        std::fclose(f);
++        if (data.size() >= 3 && static_cast<uint8_t>(data[0]) == 0xEF && static_cast<uint8_t>(data[1]) == 0xBB &&
++            static_cast<uint8_t>(data[2]) == 0xBF)
++            data.erase(0, 3); // UTF-8 byte order mark
++
++        size_t lineNo = 0;
++        for (size_t pos = 0; pos <= data.size();)
++        {
++            size_t eol = data.find('\n', pos);
++            if (eol == std::string::npos)
++                eol = data.size();
++            const std::string line = trim(data.substr(pos, eol - pos));
++            pos = eol + 1;
++            ++lineNo;
++            if (line.empty() || line[0] == ';' || line[0] == '#')
++                continue;
++            if (line[0] == '[' && line.back() == ']')
++            {
++                if (s_entries.size() >= kMaxCheats)
++                    break;
++                Entry e;
++                const std::string name = trim(line.substr(1, line.size() - 2));
++                if (name.rfind("section:", 0) == 0)
++                {
++                    e.section = true;
++                    e.label = trim(name.substr(8));
++                }
++                else
++                    e.label = name;
++                s_entries.push_back(std::move(e));
++                continue;
++            }
++            const size_t eq = line.find('=');
++            if (eq == std::string::npos || s_entries.empty() || s_entries.back().section)
++            {
++                std::fprintf(stderr, "[cheats] %s:%zu: ignored line\n", path.c_str(), lineNo);
++                continue;
++            }
++            const std::string key = trim(line.substr(0, eq));
++            const std::string val = trim(line.substr(eq + 1));
++            Entry &e = s_entries.back();
++            if (key == "help")
++                e.help = val;
++            else if (key == "note")
++                e.note = val;
++            else if (key == "write")
++            {
++                Write w;
++                std::string error;
++                if (e.writes.size() >= kMaxWritesPerCheat)
++                    error = "too many write lines for one entry";
++                else if (parseWrite(val, w, error))
++                {
++                    e.writes.push_back(w);
++                    continue;
++                }
++                std::fprintf(stderr, "[cheats] %s:%zu: %s\n", path.c_str(), lineNo, error.c_str());
++            }
++            else
++                std::fprintf(stderr, "[cheats] %s:%zu: unknown key '%s'\n", path.c_str(), lineNo, key.c_str());
++        }
++        s_on.reset(new std::atomic<bool>[s_entries.size()]);
++        for (size_t i = 0; i < s_entries.size(); ++i)
++            s_on[i].store(false, std::memory_order_relaxed);
++        s_loadedFrom = path;
++        size_t cheats = 0;
++        for (const Entry &e : s_entries)
++            cheats += e.section ? 0u : 1u;
++        std::fprintf(stderr, "[cheats] %zu entries from %s\n", cheats, path.c_str());
++        if (cheats == 0)
++            s_loadMessage = "cheats.ini has no entries.";
++    }
++
++    void setCheat(size_t index, bool on)
++    {
++        if (index >= s_entries.size() || s_entries[index].section || s_on[index].load(std::memory_order_relaxed) == on)
++            return;
++        s_on[index].store(on, std::memory_order_relaxed);
++        std::fprintf(stderr, "[cheats] %s: %s\n", s_entries[index].label.c_str(), on ? "on" : "off");
++    }
++
++    // GS thread, at every present while the menu is shown.
++    void drawMenu(const Pcsx2GsUi *ui, void *)
++    {
++        int open = 1;
++        const char *title = "Cheats###ps2cheats";
++        const uint32_t flags = PCSX2GS_PANEL_LEFT | (s_justOpened.exchange(false) ? PCSX2GS_PANEL_FOCUS : 0u);
++        const bool panel = ui->version >= 3u && ui->begin_panel;
++        const int visible = panel ? ui->begin_panel(title, &open, 440.0f, 860.0f, flags) : ui->begin_window(title, &open, 440.0f, 860.0f);
++        if (visible)
++        {
++            ui->text_disabled("F2 or Esc closes");
++            ui->text_disabled("mouse / arrows + space / pad D-pad + A");
++            if (!s_loadMessage.empty())
++                ui->text_wrapped(s_loadMessage.c_str());
++            for (size_t i = 0; i < s_entries.size(); ++i)
++            {
++                const Entry &e = s_entries[i];
++                if (e.section)
++                {
++                    ui->separator_text(e.label.c_str());
++                    continue;
++                }
++                ui->push_id(static_cast<int>(i));
++                int value = s_on[i].load(std::memory_order_relaxed) ? 1 : 0;
++                if (ui->checkbox(e.label.c_str(), &value))
++                    setCheat(i, value != 0);
++                if (panel && ui->tooltip && !e.help.empty())
++                    ui->tooltip(e.help.c_str());
++                if (!e.note.empty())
++                    ui->text_colored(0xFF4A8CF5u, e.note.c_str()); // orange (R in the low byte)
++                ui->pop_id();
++            }
++            ui->spacing();
++            if (s_on && ui->button("All off"))
++                for (size_t i = 0; i < s_entries.size(); ++i)
++                    setCheat(i, false);
++            ui->text_wrapped("Only for this run; every cheat is off again at the next launch.");
++        }
++        ui->end_window();
++        if (!open)
++            s_open.store(false, std::memory_order_relaxed);
++    }
++
++    // PS2_CHEATS=all | <n>,<n>... (tests): switches on at start, n = the entry's number counted from 0 among the
++    // checkboxes (section titles do not count); PS2_CHEAT_MENU_AT=<seconds>: opens the menu then.
++    void applyTestEnv()
++    {
++        const char *v = std::getenv("PS2_CHEATS");
++        if (!v || !*v || !s_on)
++            return;
++        if (std::strcmp(v, "all") == 0)
++        {
++            for (size_t i = 0; i < s_entries.size(); ++i)
++                setCheat(i, true);
++            return;
++        }
++        for (const char *p = v; *p;)
++        {
++            char *end = nullptr;
++            const long want = std::strtol(p, &end, 10);
++            if (end == p)
++                break;
++            long n = 0;
++            for (size_t i = 0; i < s_entries.size(); ++i)
++                if (!s_entries[i].section && n++ == want)
++                {
++                    setCheat(i, true);
++                    break;
++                }
++            p = *end == ',' ? end + 1 : end;
++        }
++    }
++
++    uint32_t menuKeys()
++    {
++        uint32_t keys = 0u;
++        const auto key = [&](int raylibKey, uint32_t bit) {
++            if (IsKeyDown(raylibKey))
++                keys |= bit;
++        };
++        key(KEY_UP, PCSX2GS_KEY_UP);
++        key(KEY_DOWN, PCSX2GS_KEY_DOWN);
++        key(KEY_LEFT, PCSX2GS_KEY_LEFT);
++        key(KEY_RIGHT, PCSX2GS_KEY_RIGHT);
++        key(KEY_ENTER, PCSX2GS_KEY_ENTER);
++        key(KEY_KP_ENTER, PCSX2GS_KEY_ENTER);
++        key(KEY_SPACE, PCSX2GS_KEY_SPACE);
++        key(KEY_ESCAPE, PCSX2GS_KEY_ESCAPE);
++        key(KEY_TAB, PCSX2GS_KEY_TAB);
++        key(KEY_LEFT_SHIFT, PCSX2GS_KEY_SHIFT);
++        key(KEY_RIGHT_SHIFT, PCSX2GS_KEY_SHIFT);
++        key(KEY_LEFT_CONTROL, PCSX2GS_KEY_CTRL);
++        key(KEY_RIGHT_CONTROL, PCSX2GS_KEY_CTRL);
++        return keys;
++    }
++
++    // The controller's buttons (only when it is the active device: the keyboard's own mapping to pad buttons would
++    // move the cursor twice) as the menu's: D-pad, A / cross = accept, B / circle = back, L1 / R1.
++    uint32_t menuPad()
++    {
++        if (!s_hostGamepad.load(std::memory_order_relaxed))
++            return 0u;
++        const uint16_t held = static_cast<uint16_t>(~s_hostButtons.load(std::memory_order_relaxed));
++        uint32_t pad = 0u;
++        if (held & 0x0010u) pad |= PCSX2GS_PAD_UP;
++        if (held & 0x0040u) pad |= PCSX2GS_PAD_DOWN;
++        if (held & 0x0080u) pad |= PCSX2GS_PAD_LEFT;
++        if (held & 0x0020u) pad |= PCSX2GS_PAD_RIGHT;
++        if (held & 0x4000u) pad |= PCSX2GS_PAD_ACCEPT;
++        if (held & 0x2000u) pad |= PCSX2GS_PAD_BACK;
++        if (held & 0x0400u) pad |= PCSX2GS_PAD_L1;
++        if (held & 0x0800u) pad |= PCSX2GS_PAD_R1;
++        return pad;
++    }
++
++    void applyWrites(uint8_t *rdram)
++    {
++        for (size_t i = 0; i < s_entries.size(); ++i)
++        {
++            if (s_entries[i].section || !s_on[i].load(std::memory_order_relaxed))
++                continue;
++            for (const Write &w : s_entries[i].writes)
++                for (uint32_t n = 0; n < w.count; ++n)
++                {
++                    uint8_t *p = rdram + w.address + static_cast<size_t>(n) * w.stride;
++                    uint32_t current = 0;
++                    std::memcpy(&current, p, w.size);
++                    if (w.skipZero && current == 0u)
++                        continue;
++                    if (current != w.value)
++                        std::memcpy(p, &w.value, w.size); // little endian host, as the EE
++                }
++        }
++    }
++}
++
++void ps2CheatsSetHostPad(uint16_t buttons, bool gamepad)
++{
++    s_hostButtons.store(buttons, std::memory_order_relaxed);
++    s_hostGamepad.store(gamepad, std::memory_order_relaxed);
++}
++
++bool ps2CheatsMenuOpen()
++{
++    return s_open.load(std::memory_order_relaxed);
++}
++
++void ps2CheatsHostTick(uint8_t *rdram)
++{
++    static bool started = false;
++    static bool shown = false;
++    static double menuAt = []() { const char *v = std::getenv("PS2_CHEAT_MENU_AT"); return v ? std::atof(v) : 0.0; }();
++    if (!started)
++    {
++        started = true;
++        loadFile();
++        applyTestEnv();
++    }
++    const bool autoOpen = menuAt > 0.0 && GetTime() >= menuAt;
++    if (autoOpen)
++        menuAt = 0.0;
++    if (IsKeyPressed(KEY_F2) || autoOpen)
++    {
++        const bool open = autoOpen || !s_open.load(std::memory_order_relaxed);
++        s_open.store(open, std::memory_order_relaxed);
++        if (open)
++            s_justOpened.store(true, std::memory_order_relaxed);
++    }
++    else if (shown && IsKeyPressed(KEY_ESCAPE))
++        s_open.store(false, std::memory_order_relaxed);
++
++    const bool open = s_open.load(std::memory_order_relaxed);
++    if (open != shown)
++    {
++        dodpcsx2::setMenu(open ? drawMenu : nullptr, nullptr);
++        if (!open)
++            dodpcsx2::menuInput(0u, 0u, 0.0f); // nothing held when it opens again
++        shown = open;
++        std::fprintf(stderr, "[cheats] menu %s\n", open ? "open" : "closed");
++    }
++    if (open)
++        dodpcsx2::menuInput(menuKeys(), menuPad(), GetMouseWheelMove());
++
++    if (rdram && s_on)
++        applyWrites(rdram);
++}
+diff --git a/b/ps2xRuntime/src/lib/ps2_cheats.h b/ps2xRuntime/src/lib/ps2_cheats.h
+new file mode 100644
+index 0000000..50d5658
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_cheats.h
+@@ -0,0 +1,19 @@
++#pragma once
++
++#include <cstdint>
++
++// Generic in-game cheat menu (F2). The runtime ships no cheats of any game: the entries come from a text file the user
++// (or the port's author) writes for their own game, `cheats.ini`, looked up in this order:
++//   1. the path in the PS2_CHEATS_FILE environment variable
++//   2. cheats.ini next to the executable
++//   3. cheats.ini in the working directory
++// With no file F2 opens a panel that says so. See docs/CHEATS.md for the format. Everything starts off at each launch.
++
++// Window thread, once per host frame after the pad poll: F2 opens / closes the menu, its input goes to the GS while it
++// is open, the enabled RAM writes are applied. rdram = the guest's 32 MB.
++void ps2CheatsHostTick(uint8_t *rdram);
++// While the menu is open the game gets a released pad (ps2_pad.cpp).
++bool ps2CheatsMenuOpen();
++// The pad buttons the host read this frame (active low, PS2 order) and whether they came from a controller: the
++// menu's controller navigation (ps2_pad.cpp publishes them before it blanks the game's copy).
++void ps2CheatsSetHostPad(uint16_t buttons, bool gamepad);
+diff --git a/b/ps2xRuntime/src/lib/ps2_disc.h b/ps2xRuntime/src/lib/ps2_disc.h
 new file mode 100644
 index 0000000..45c1e69
 --- /dev/null
@@ -16511,7 +16791,7 @@ index 89d8576..b7da50a 100644
      std::recursive_mutex m_callMutex;
      R5900Context *m_activeContext = nullptr;
      uint8_t *m_activeRdram = nullptr;
-diff --git a/ps2xRuntime/src/lib/ps2_iop_post.h b/ps2xRuntime/src/lib/ps2_iop_post.h
+diff --git a/b/ps2xRuntime/src/lib/ps2_iop_post.h b/ps2xRuntime/src/lib/ps2_iop_post.h
 new file mode 100644
 index 0000000..527bad3
 --- /dev/null
@@ -16530,7 +16810,7 @@ index 0000000..527bad3
 +constexpr uint32_t kIopPostedWorkEventId = 0x494F5000u; // 'IOP\0'
 +
 +void ps2IopDrainPosted(PS2Runtime &runtime);
-diff --git a/ps2xRuntime/src/lib/ps2_ipu.cpp b/ps2xRuntime/src/lib/ps2_ipu.cpp
+diff --git a/b/ps2xRuntime/src/lib/ps2_ipu.cpp b/ps2xRuntime/src/lib/ps2_ipu.cpp
 new file mode 100644
 index 0000000..e8ff747
 --- /dev/null
@@ -17484,7 +17764,7 @@ index 0000000..e8ff747
 +        return g.stats;
 +    }
 +}
-diff --git a/ps2xRuntime/src/lib/ps2_ipu.h b/ps2xRuntime/src/lib/ps2_ipu.h
+diff --git a/b/ps2xRuntime/src/lib/ps2_ipu.h b/ps2xRuntime/src/lib/ps2_ipu.h
 new file mode 100644
 index 0000000..8c2cc70
 --- /dev/null
@@ -17528,7 +17808,7 @@ index 0000000..8c2cc70
 +    };
 +    Stats stats();
 +}
-diff --git a/ps2xRuntime/src/lib/ps2_ipu_vlc.h b/ps2xRuntime/src/lib/ps2_ipu_vlc.h
+diff --git a/b/ps2xRuntime/src/lib/ps2_ipu_vlc.h b/ps2xRuntime/src/lib/ps2_ipu_vlc.h
 new file mode 100644
 index 0000000..d458d08
 --- /dev/null
@@ -19928,7 +20208,7 @@ index 37b6a4d..250e444 100644
                  m_ioRegisters[address] = channelStatus;
                  return channelStatus;
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..53eefd3 100644
+index 8590f14..d17bf4c 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
 @@ -1,6 +1,26 @@
@@ -19936,7 +20216,7 @@ index 8590f14..53eefd3 100644
  #include "ps2_host_backend.h"
 +#include "dod_input_settings.h"
 +#include "dod_gamepad.h"
-+#include "dod_cheats.h"
++#include "ps2_cheats.h"
 +#include <atomic>
 +#include <cmath>
  #include <cstring>
@@ -20250,10 +20530,10 @@ index 8590f14..53eefd3 100644
 +        }
 +    }
 +
-+    // [DoD] The F2 cheat menu (dod_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
++    // The F2 cheat menu (ps2_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
 +    // released pad (sticks centred, no queued presses).
-+    dodCheatsSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
-+    if (dodCheatsMenuOpen())
++    ps2CheatsSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
++    if (ps2CheatsMenuOpen())
 +    {
 +        btns = 0xFFFFu;
 +        queuedPresses = 0u;
@@ -20341,7 +20621,7 @@ index 8590f14..53eefd3 100644
 +    return readHostPadSnapshot(data, size, true);
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..e3a1825 100644
+index 45cb9d2..3872c39 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,10 +1,14 @@
@@ -20354,7 +20634,7 @@ index 45cb9d2..e3a1825 100644
  #include "ps2_runtime_macros.h"
  #include "runtime/gs/gs_frontend.h"
 +#include "gs/dod_pcsx2_gs.h"
-+#include "dod_cheats.h"
++#include "ps2_cheats.h"
 +#include "gs/dod_perf.h"
  #include "runtime/ee_scheduler.h"
  #include "ThreadNaming.h"
@@ -20412,7 +20692,7 @@ index 45cb9d2..e3a1825 100644
      const bool needsLatch = !s_hasLatchedInitialFrame || currentTick != s_lastPresentationTick;
      if (needsLatch)
      {
-@@ -477,10 +495,117 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -477,10 +495,120 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      s_hasUploadedFrame = true;
  }
  
@@ -20512,8 +20792,11 @@ index 45cb9d2..e3a1825 100644
 +    EeStallWatchdog g_dodEeStallWatchdog;
 +}
 +
++void ps2EnvAliasesInstall(); // ps2_env.cpp: PS2_<name> environment variables are also DOD_<name>
++
  PS2Runtime::PS2Runtime()
  {
++    ps2EnvAliasesInstall();
      m_iopHost = std::make_unique<PS2IopHostAdapter>(*this);
      m_iopSubsystem = std::make_unique<ps2x::iop::IopSubsystem>(*m_iopHost);
 +    g_dodDiscIop = m_iopSubsystem.get();
@@ -20530,7 +20813,7 @@ index 45cb9d2..e3a1825 100644
  
      m_eeScheduler = std::make_unique<EeScheduler>(*this);
  
-@@ -529,6 +654,9 @@ PS2Runtime::~PS2Runtime()
+@@ -529,6 +657,9 @@ PS2Runtime::~PS2Runtime()
      try
      {
          requestStop();
@@ -20540,7 +20823,7 @@ index 45cb9d2..e3a1825 100644
          m_iopSubsystem.reset();
          m_iopHost.reset();
  #if defined(PLATFORM_VITA)
-@@ -605,9 +733,42 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -605,9 +736,42 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
      m_iopSubsystem->onSifTransfer(transfer);
  }
  
@@ -20584,7 +20867,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  void PS2Runtime::resetIop()
-@@ -650,6 +811,43 @@ bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
+@@ -650,6 +814,43 @@ bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
      return m_iopSubsystem && m_iopSubsystem->isMemoryRange(address, size);
  }
  
@@ -20628,7 +20911,7 @@ index 45cb9d2..e3a1825 100644
  bool PS2Runtime::syncCoreSubsystems()
  {
      uint8_t *const rdram = m_memory.getRDRAM();
-@@ -682,6 +880,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -682,6 +883,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                       m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                     m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                     m_gs, &m_memory, startPC, top, itop, 65536);
@@ -20636,7 +20919,7 @@ index 45cb9d2..e3a1825 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -700,6 +899,7 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -700,6 +902,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                       m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
                                                    m_gs, &m_memory, top, itop, 65536);
@@ -20644,7 +20927,7 @@ index 45cb9d2..e3a1825 100644
                                       cpuContext->vu0_vpu_stat =
                                           (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                           (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
-@@ -713,8 +913,20 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -713,8 +916,20 @@ bool PS2Runtime::syncCoreSubsystems()
      return true;
  }
  
@@ -20665,7 +20948,7 @@ index 45cb9d2..e3a1825 100644
      try
      {
          if (!m_memory.initialize())
-@@ -732,6 +944,10 @@ bool PS2Runtime::initialize(const char *title)
+@@ -732,6 +947,10 @@ bool PS2Runtime::initialize(const char *title)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
          SetConfigFlags(FLAG_WINDOW_RESIZABLE);
@@ -20676,7 +20959,7 @@ index 45cb9d2..e3a1825 100644
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
-@@ -881,6 +1097,14 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -881,6 +1100,14 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
          const uint64_t regionSize = scratch ? static_cast<uint64_t>(PS2_SCRATCHPAD_SIZE)
                                              : static_cast<uint64_t>(PS2_RAM_SIZE);
          const uint64_t segmentMemEnd = static_cast<uint64_t>(physAddr) + static_cast<uint64_t>(ph.memsz);
@@ -20691,7 +20974,7 @@ index 45cb9d2..e3a1825 100644
          if (segmentMemEnd > regionSize)
          {
              std::cerr << "ELF segment " << i << " exceeds "
-@@ -1049,6 +1273,20 @@ void PS2Runtime::setIoPaths(const IoPaths &paths)
+@@ -1049,6 +1276,20 @@ void PS2Runtime::setIoPaths(const IoPaths &paths)
      runtimeIoPaths() = normalized;
  }
  
@@ -20712,7 +20995,7 @@ index 45cb9d2..e3a1825 100644
  void PS2Runtime::configureIoPathsFromElf(const std::string &elfPath)
  {
      IoPaths paths = runtimeIoPaths();
-@@ -1086,6 +1324,20 @@ namespace
+@@ -1086,6 +1327,20 @@ namespace
          slot = offset >> 2;
          return slot < g_ps2RecompiledFunctionTableSlotCount;
      }
@@ -20733,7 +21016,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
-@@ -1093,6 +1345,11 @@ bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
+@@ -1093,6 +1348,11 @@ bool PS2Runtime::replaceFunction(uint32_t address, RecompiledFunction func)
      uint32_t slot = 0u;
      if (!generatedFunctionTableSlot(address, slot))
      {
@@ -20745,7 +21028,7 @@ index 45cb9d2..e3a1825 100644
          std::cerr << "[function-table] cannot replace guest PC 0x" << std::hex << address
                    << ": outside generated dense table [0x" << g_ps2RecompiledFunctionTableBase
                    << ", 0x" << g_ps2RecompiledFunctionTableEnd << ")"
-@@ -1112,7 +1369,12 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
+@@ -1112,7 +1372,12 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
  bool PS2Runtime::hasFunction(uint32_t address) const
  {
      uint32_t slot = 0u;
@@ -20759,7 +21042,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  const char *describeGuestBranchKind(PS2Runtime::GuestBranchKind kind)
-@@ -1147,6 +1409,10 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
+@@ -1147,6 +1412,10 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
              return fn;
          }
      }
@@ -20770,7 +21053,7 @@ index 45cb9d2..e3a1825 100644
  
      std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
                << " tableBase=0x" << g_ps2RecompiledFunctionTableBase
-@@ -1342,6 +1608,75 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1342,6 +1611,75 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
      }
  }
  
@@ -20846,7 +21129,7 @@ index 45cb9d2..e3a1825 100644
  bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                       R5900Context *ctx,
                                       uint32_t targetPc,
-@@ -1350,6 +1685,10 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1350,6 +1688,10 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                       GuestBranchKind kind,
                                       const char *debugName)
  {
@@ -20857,7 +21140,7 @@ index 45cb9d2..e3a1825 100644
      ctx->pc = targetPc;
      const bool isCall = (kind == GuestBranchKind::DirectCall || kind == GuestBranchKind::IndirectCall);
  
-@@ -1358,6 +1697,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1358,6 +1700,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
      // this charge bounds straight-line call chains that have no local loop.
      if (m_eeScheduler && m_eeScheduler->checkpointDue(EeScheduler::kGuestDispatchCycles))
      {
@@ -20865,7 +21148,7 @@ index 45cb9d2..e3a1825 100644
          return false;
      }
  
-@@ -1369,6 +1709,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1369,6 +1712,7 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          }
  
          ctx->pc = targetPc;
@@ -20873,7 +21156,7 @@ index 45cb9d2..e3a1825 100644
          return false;
      }
  
-@@ -1388,17 +1729,72 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1388,17 +1732,84 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          {
              ctx->pc = targetPc;
              // if you need the app to keep open to open debug pannel change this to false
@@ -20888,10 +21171,22 @@ index 45cb9d2..e3a1825 100644
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
 -    targetFn(rdram, ctx, this);
-+    // [DoD] DOD_VU0_TRACE=<n>: the first n calls to each libvu0 function (0x105050..0x105D94) with their register
-+    // arguments, the 64 bytes at a1/a2/a3 before and at a0 after.
++    // PS2_VU0_TRACE=<n>: the first n calls to each function in PS2_VU0_TRACE_RANGE=<first>-<last> (the game's libvu0,
++    // e.g. 0x105050-0x105D94; without a range nothing is traced) with their register arguments, the 64 bytes at
++    // a1/a2/a3 before and at a0 after.
 +    static const int vu0Trace = []() { const char *v = std::getenv("DOD_VU0_TRACE"); return v ? std::atoi(v) : 0; }();
-+    if (vu0Trace > 0 && targetPc >= 0x105050u && targetPc < 0x105D94u)
++    static const std::pair<uint32_t, uint32_t> vu0TraceRange = []() {
++        uint32_t first = 0u, last = 0u;
++        if (const char *v = std::getenv("DOD_VU0_TRACE_RANGE"))
++        {
++            char *end = nullptr;
++            first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
++            if (*end == '-')
++                last = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
++        }
++        return std::make_pair(first, last);
++    }();
++    if (vu0Trace > 0 && targetPc >= vu0TraceRange.first && targetPc < vu0TraceRange.second)
 +    {
 +        static std::unordered_map<uint32_t, int> counts;
 +        if (counts[targetPc]++ < vu0Trace)
@@ -20948,7 +21243,7 @@ index 45cb9d2..e3a1825 100644
      {
          return false;
      }
-@@ -1408,7 +1804,12 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1408,7 +1819,12 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
          ctx->pc = fallthroughPc;
      }
  
@@ -20962,7 +21257,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  void PS2Runtime::SignalException(R5900Context *ctx, PS2Exception exception)
-@@ -1483,8 +1884,12 @@ void PS2Runtime::handleBreak(uint8_t *rdram, R5900Context *ctx)
+@@ -1483,8 +1899,12 @@ void PS2Runtime::handleBreak(uint8_t *rdram, R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_BREAKPOINT);
  }
  
@@ -20975,7 +21270,7 @@ index 45cb9d2..e3a1825 100644
      for (uint32_t cause : m_memory.consumeCompletedDmacCauses())
      {
          ps2_syscalls::dispatchDmacHandlersForCause(rdram, this, cause);
-@@ -1629,11 +2034,13 @@ uint32_t PS2Runtime::clampGuestHeapBase(uint32_t guestBase) const
+@@ -1629,11 +2049,13 @@ uint32_t PS2Runtime::clampGuestHeapBase(uint32_t guestBase) const
  uint32_t PS2Runtime::clampGuestHeapLimit(uint32_t guestLimit) const
  {
      const uint32_t hardLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
@@ -20991,7 +21286,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  void PS2Runtime::resetGuestHeapLocked(uint32_t guestBase, uint32_t guestLimit)
-@@ -1820,7 +2227,17 @@ uint32_t PS2Runtime::guestMalloc(uint32_t size, uint32_t alignment)
+@@ -1820,7 +2242,17 @@ uint32_t PS2Runtime::guestMalloc(uint32_t size, uint32_t alignment)
  {
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
@@ -21010,7 +21305,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  uint32_t PS2Runtime::guestCalloc(uint32_t count, uint32_t size, uint32_t alignment)
-@@ -1990,6 +2407,24 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
+@@ -1990,6 +2422,24 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
      }
  
      std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -21035,7 +21330,7 @@ index 45cb9d2..e3a1825 100644
      uint32_t top = m_asyncCallbackStackTop;
      if (top > PS2_RAM_SIZE)
      {
-@@ -2010,6 +2445,13 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
+@@ -2010,6 +2460,13 @@ uint32_t PS2Runtime::reserveAsyncCallbackStack(uint32_t size, uint32_t alignment
      }
  
      m_asyncCallbackStackTop = base;
@@ -21049,7 +21344,7 @@ index 45cb9d2..e3a1825 100644
      return top - 0x10u;
  }
  
-@@ -2039,11 +2481,39 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,11 +2496,39 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -21090,7 +21385,7 @@ index 45cb9d2..e3a1825 100644
      }
      catch (const std::exception &)
      {
-@@ -2084,6 +2554,7 @@ void PS2Runtime::Store8(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint8
+@@ -2084,6 +2569,7 @@ void PS2Runtime::Store8(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint8
      try
      {
          m_memory.write8(vaddr, value);
@@ -21098,7 +21393,7 @@ index 45cb9d2..e3a1825 100644
      }
      catch (const std::exception &)
      {
-@@ -2097,6 +2568,7 @@ void PS2Runtime::Store16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
+@@ -2097,6 +2583,7 @@ void PS2Runtime::Store16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
      try
      {
          m_memory.write16(vaddr, value);
@@ -21106,7 +21401,7 @@ index 45cb9d2..e3a1825 100644
      }
      catch (const std::exception &)
      {
-@@ -2124,6 +2596,7 @@ void PS2Runtime::Store64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
+@@ -2124,6 +2611,7 @@ void PS2Runtime::Store64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, uint
      try
      {
          m_memory.write64(vaddr, value);
@@ -21114,7 +21409,7 @@ index 45cb9d2..e3a1825 100644
      }
      catch (const std::exception &)
      {
-@@ -2139,6 +2612,7 @@ void PS2Runtime::Store128(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, __m
+@@ -2139,6 +2627,7 @@ void PS2Runtime::Store128(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr, __m
      try
      {
          m_memory.write128(vaddr, value);
@@ -21122,7 +21417,7 @@ index 45cb9d2..e3a1825 100644
      }
      catch (const std::exception &)
      {
-@@ -2211,7 +2685,10 @@ void PS2Runtime::postEeEvent(EeEvent event)
+@@ -2211,7 +2700,10 @@ void PS2Runtime::postEeEvent(EeEvent event)
  
  bool PS2Runtime::eeCheckpointDue(uint32_t cycles) noexcept
  {
@@ -21134,7 +21429,7 @@ index 45cb9d2..e3a1825 100644
  }
  
  [[noreturn]] void PS2Runtime::eeWaitVSyncTicks(uint32_t ticks, uint32_t resumePc)
-@@ -2364,6 +2841,12 @@ void PS2Runtime::run()
+@@ -2364,6 +2856,12 @@ void PS2Runtime::run()
  
      std::atomic<bool> gameThreadFinished{false};
  
@@ -21147,7 +21442,7 @@ index 45cb9d2..e3a1825 100644
      std::thread gameThread([&]()
                             {
          ThreadNaming::SetCurrentThreadName("GameThread");
-@@ -2386,8 +2869,14 @@ void PS2Runtime::run()
+@@ -2386,8 +2884,14 @@ void PS2Runtime::run()
          gameThreadFinished.store(true, std::memory_order_release); });
  
      uint64_t tick = 0;
@@ -21162,7 +21457,7 @@ index 45cb9d2..e3a1825 100644
          PS2_IF_AGRESSIVE_LOGS({
              tick++;
              if ((tick % 120) == 0)
-@@ -2420,31 +2909,181 @@ void PS2Runtime::run()
+@@ -2420,31 +2924,181 @@ void PS2Runtime::run()
  
              }
          });
@@ -21236,7 +21531,7 @@ index 45cb9d2..e3a1825 100644
 +        hostPacer.wait();
 +        dodperf::end(dodperf::EndDrawing, endDrawingStart);
 +        dodPollHostPadInput();
-+        dodCheatsHostTick(m_memory.getRDRAM()); // [DoD] F2 cheat menu, RAM cheats (dod_cheats.cpp)
++        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
 +
 +        // [DoD] Test launcher audio trace: F9 saves the last 60 s of sound and events (ps2_iop_host.cpp); the title
 +        // shows "已保存声音追踪：<folder>" for 5 s.
@@ -21369,7 +21664,7 @@ index 45cb9d2..e3a1825 100644
  
          if (WindowShouldClose())
          {
-@@ -2455,16 +3094,20 @@ void PS2Runtime::run()
+@@ -2455,16 +3109,20 @@ void PS2Runtime::run()
      }
  
      requestStop();
@@ -21913,7 +22208,7 @@ index b02c7ca..55d3b1c 100644
              continue;
          }
      }
-diff --git a/ps2xRuntime/src/lib/vu/dod_kzvu.cpp b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
+diff --git a/b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
 new file mode 100644
 index 0000000..18ba158
 --- /dev/null
@@ -22067,7 +22362,7 @@ index bd75bba..ffc621c 100644
      m_state.cycles = m_cycle;
      if (useVuRounding && previousRoundingMode != -1)
          std::fesetround(previousRoundingMode);
-diff --git a/ps2xRuntime/src/runner/dod_utf8.manifest b/ps2xRuntime/src/runner/dod_utf8.manifest
+diff --git a/b/ps2xRuntime/src/runner/dod_utf8.manifest b/ps2xRuntime/src/runner/dod_utf8.manifest
 new file mode 100644
 index 0000000..38a4e79
 --- /dev/null
@@ -22098,7 +22393,7 @@ index 6b7210a..003fdb3 100644
  )
  target_include_directories(ps2_gs_cache_backend_under_test PUBLIC "${PS2_GS_RUNTIME_DIR}/include")
  target_compile_features(ps2_gs_cache_backend_under_test PUBLIC cxx_std_20)
-diff --git a/ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp b/ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp
+diff --git a/b/ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp b/ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp
 new file mode 100644
 index 0000000..c63ea12
 --- /dev/null

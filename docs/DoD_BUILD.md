@@ -12,10 +12,9 @@
 python -I tools/scripts/apply_cg_progressive.py third_party/src/PS2Recomp/ps2xRuntime/src/runner
 python -I tools/scripts/apply_widescreen.py
 python -I tools/scripts/apply_cg_subtitles.py
-python -I tools/scripts/apply_dod_cheats.py third_party/src/PS2Recomp/ps2xRuntime/src/runner
 ```
 
-2026-10-28 起：F2 金手指選單（RUNTIME_PATCHES 第 150 列）在 22 個產生碼檔的 18 條指令加了開關（讀 `g_dodCheats[n]`，定義在 `src/lib/dod_cheats.cpp`）；重新產生 runner 後必須跑上面最後一行，否則選單裡的指令型金手指會沒有作用（資料型的「道具數量」仍有效）。腳本只接受它認得的原始指令文字，產生碼改了會直接報錯。
+（2026-11 更正：F2 金手指選單原本在這裡寫了新鬼專屬的項目與 `apply_dod_cheats.py`，那是錯誤地放進倉庫的，已移除。現在選單是通用的，項目由各遊戲自己的 `cheats.ini` 提供，見 `docs/CHEATS.md`；產生碼不再需要金手指開關這一步。）
 
 腳本可重複執行；不認得指令文字就拒絕修補，並可從 293 的 hook 升級。不要只還原產生碼而漏套這一步，否則劇情 CG 的選行／換幀修正會遺失。`DOD_CG_FIELD=keep` 回復舊選行，`DOD_CG_CADENCE=keep` 只關閉 295 的換幀；平常都不設定。295 實跑與限制見 `work/cg-cadence-20261021/RESULTS.md`。
 

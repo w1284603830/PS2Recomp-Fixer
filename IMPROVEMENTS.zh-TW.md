@@ -92,12 +92,14 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | 位置 | 內容 | 換遊戲時 |
 |---|---|---|
 | `examples/dod_runner/main.cpp`（不在建置內） | 新鬼的入口：dod.ini、依位址掛的 hook、換盤、寬螢幕開關、亂數追蹤、高清紋理場景預讀（場景號 0x7E1344） | 當範本，自己寫該遊戲的 `ps2xRuntime/src/runner/main.cpp` |
-| `ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp` `sceGsSyncV` | 寫死新鬼 libgraph 參數位址 `kDodGsGParamAddress = 0x003FD4A0` | **必改**：換成該遊戲 `sceGsGetGParam` 回傳的位址，或改回不 HLE 這個函式 |
+| `ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp` `sceGsSyncV` | libgraph 紀錄位址不再寫死：`game.ini` 的 `gparam`、`PS2_GS_GPARAM` 或 `setGsGParamAddress()`（原遊戲是 `0x003FD4A0`） | 遊戲的 libgraph 是原生執行時，傳入該遊戲 `sceGsGetGParam` 回傳的位址；沒給就用 HLE 自己的紀錄 |
+| pcsx2gs `compat/Bridge.cpp` `ApplyGameFixes` | PCSX2 的逐遊戲修正（`GameIndex.yaml`）原本固定成原遊戲的條目，現在不套用任何一組 | 把該遊戲的條目放進 `gs_options`（`blending=…;half_pixel_offset=…;native_scaling=…;bilinear_upscale=…`） |
+| `ps2xRuntime/src/lib/Kernel/EeScheduler.cpp`、`ps2_runtime.cpp` 診斷 | `DOD_PAD_TRACE` 的遊戲位址、`DOD_RAM_DUMP` 範圍、`DOD_VU0_TRACE` 範圍原本是原遊戲的 | 現在是參數：`PS2_PAD_TRACE_ADDRS`、`PS2_RAM_DUMP_RANGE`、`PS2_VU0_TRACE_RANGE`（docs/GAME_PORTING.md）；所有 `DOD_*` 開關也可寫成 `PS2_*` |
 | `ps2xRuntime/src/lib/Kernel/Stubs/dod_hd_cg.h`（MPEG.cpp 引用） | 1080p CG 替換：讀執行檔旁 `movies_hd\movies.tsv`（新鬼影片編號） | 沒有 `movies_hd` 資料夾時播放前就回退；不用就設 `DOD_CG_HD_DIR=0` 或拿掉 |
 | `ps2xRuntime/src/lib/gs/dod_cg_cadence.h` | 劇情 CG 換幀節奏，靠新鬼產生碼裡的 hook 送資料 | 新遊戲沒有那些 hook；可用 `DOD_CG_CADENCE=keep` 關閉 |
 | `ps2xRuntime/src/lib/gs/dod_widescreen.h`＋pcsx2gs `GS/DoDWidescreen.h`、`GSState.cpp` 寬螢幕區塊 | 新鬼的 16:9（世界投影常數在新鬼產生碼裡） | runner 只在 `aspect=16:9` 時送 `widescreen=1`；新遊戲不要開 |
 | pcsx2gs `GS/DoDHdStatic.h`、`DoDHdCg.h` | 新鬼高清靜態頁、CG 的 GS 端 | 依新鬼紋理／影片資料；新遊戲沒有對應資源 |
 | `ps2xRuntime/CMakeLists.txt` | `dod_branding.rc.in`（圖示資源，現在沒有就略過）、`dod_utf8.manifest`（通用，建議保留） | 自己的圖示放 `src/runner/dod_branding.rc.in` |
-| `ps2xRuntime/src/lib/dod_cheats.[h,cpp]`（`ps2_runtime.cpp`、`ps2_pad.cpp` 呼叫；滑鼠輸入在 `gs/dod_pcsx2_gs.cpp`） | 新鬼的 F2 遊戲內金手指選單：道具數量每幀寫入新鬼的 RAM 位址；改指令的金手指是 `g_dodCheats[n]` 開關，由腳本插進新鬼的產生碼（不在本倉庫）。每次啟動全部關閉 | 選單本身通用（靠左面板、滑鼠／鍵盤／手把、跟著畫面大小縮放）：換成該遊戲的項目與位址，或刪掉這個檔與兩處呼叫 |
+| `ps2xRuntime/src/lib/ps2_cheats.[h,cpp]`（`ps2_runtime.cpp`、`ps2_pad.cpp` 呼叫；滑鼠輸入在 `gs/dod_pcsx2_gs.cpp`） | 通用的 F2 遊戲內金手指選單：項目是從該遊戲自己的 `cheats.ini` 讀入的 RAM 寫入（格式見 `docs/CHEATS.md`）；本倉庫不附任何遊戲的金手指。每次啟動全部關閉 | 靠左面板、滑鼠／鍵盤／手把、跟著畫面大小縮放。改遊戲指令的金手指檔案不支援（重編譯函式不從記憶體讀指令）；需要的話在自己產生碼裡加開關 |
 
 另外 `[DoD]` 修正裡有一些是「新鬼先踩到、但依 PCSX2／實機行為修」的（例如 SPU2、IOP 臨界區、VIF1），對其他遊戲同樣有效；若新遊戲出現行為差異，先查 `docs/DoD_RUNTIME_PATCHES.md` 對應列的說明與環境變數開關。

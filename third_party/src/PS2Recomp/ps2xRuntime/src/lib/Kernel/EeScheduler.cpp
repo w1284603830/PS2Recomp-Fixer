@@ -2716,17 +2716,32 @@ void EeScheduler::processEvent(const EeEvent &event)
         dodpcsx2::vsync(m_runtime.memory().gs()); // [DoD] PCSX2's GS composes and presents the field
         dodCallHistTick(m_vsyncTick);
         {
-            // [DoD] DOD_RAM_DUMP=<dir> (RUNTIME_PATCHES row 124): every 300 fields, EE RAM 0x3FF000-0x932000 (DoD's data
-            // and bss) to <dir>\tick_<n>.bin, to find the game's own counters (its frame counter) and read the same
-            // word in PCSX2 through PINE for a like-for-like comparison.
+            // PS2_RAM_DUMP=<dir>: every 300 fields, EE RAM to <dir>\tick_<n>.bin, to find the game's own counters
+            // (its frame counter) and read the same word in PCSX2 through PINE for a like-for-like comparison.
+            // PS2_RAM_DUMP_RANGE=<first>-<last> picks the part (default: all 32 MB; a game's data and bss is much smaller).
             static const char *dumpDir = std::getenv("DOD_RAM_DUMP");
+            static const std::pair<uint32_t, uint32_t> dumpRange = []() {
+                uint32_t first = 0u, last = 0x2000000u;
+                if (const char *v = std::getenv("DOD_RAM_DUMP_RANGE"))
+                {
+                    char *end = nullptr;
+                    const uint32_t a = static_cast<uint32_t>(std::strtoul(v, &end, 0));
+                    if (*end == '-')
+                    {
+                        const uint32_t b = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
+                        if (a < b && b <= 0x2000000u)
+                            first = a, last = b;
+                    }
+                }
+                return std::make_pair(first, last);
+            }();
             if (dumpDir && m_rdram && m_vsyncTick % 300u == 0u)
             {
                 char path[512];
                 std::snprintf(path, sizeof(path), "%s\\tick_%06llu.bin", dumpDir, static_cast<unsigned long long>(m_vsyncTick));
                 if (FILE *f = std::fopen(path, "wb"))
                 {
-                    std::fwrite(m_rdram + 0x3FF000u, 1, 0x932000u - 0x3FF000u, f);
+                    std::fwrite(m_rdram + dumpRange.first, 1, dumpRange.second - dumpRange.first, f);
                     std::fclose(f);
                 }
                 std::fprintf(stderr, "[ram-dump] tick %llu\n", static_cast<unsigned long long>(m_vsyncTick));
@@ -2820,23 +2835,46 @@ void EeScheduler::processEvent(const EeEvent &event)
         // original libpad2 DMA buffers through to the game's button edges.
         if (m_rdram)
         {
+            // PS2_PAD_TRACE=1 together with PS2_PAD_TRACE_ADDRS=<11 guest addresses, comma separated>: the game's own
+            // libpad variables, in this order: state, current buttons, edge, raw, DMA buffer 0 and 1 (low half),
+            // frame loop counter, callback counter, last sequence, header of buffer 0 and of buffer 1 (the 0x7C words
+            // after each are traced too). They differ in every game; find them with a memory search while a button is
+            // held. Without the addresses only the host side trace (ps2_pad.cpp) runs.
             static const bool tracePad = std::getenv("DOD_PAD_TRACE") != nullptr;
-            if (tracePad)
+            static const std::array<uint32_t, 11> padAddr = []() {
+                std::array<uint32_t, 11> a{};
+                if (const char *v = std::getenv("DOD_PAD_TRACE_ADDRS"))
+                {
+                    size_t n = 0;
+                    for (const char *p = v; *p && n < a.size();)
+                    {
+                        char *end = nullptr;
+                        a[n++] = static_cast<uint32_t>(std::strtoul(p, &end, 0));
+                        if (end == p)
+                            break;
+                        p = *end == ',' ? end + 1 : end;
+                    }
+                    if (n != a.size())
+                        a.fill(0u);
+                }
+                return a;
+            }();
+            if (tracePad && padAddr[0] != 0u)
             {
                 const auto word = [&](uint32_t address) {
                     uint32_t value = 0;
                     std::memcpy(&value, m_rdram + address, sizeof(value));
                     return value;
                 };
-                const uint32_t state = word(0x690348u), current = word(0x690404u), edge = word(0x69040Cu);
-                const uint32_t raw = word(0x69042Cu) & 0xFFFFu;
-                const uint32_t dma0 = word(0x690D9Cu) & 0xFFFFu, dma1 = word(0x690E1Cu) & 0xFFFFu;
-                const uint32_t loop = word(0x817730u), callback = word(0x817734u);
-                const uint32_t lastSeq = word(0x6AB758u);
+                const uint32_t state = word(padAddr[0]), current = word(padAddr[1]), edge = word(padAddr[2]);
+                const uint32_t raw = word(padAddr[3]) & 0xFFFFu;
+                const uint32_t dma0 = word(padAddr[4]) & 0xFFFFu, dma1 = word(padAddr[5]) & 0xFFFFu;
+                const uint32_t loop = word(padAddr[6]), callback = word(padAddr[7]);
+                const uint32_t lastSeq = word(padAddr[8]);
                 // Header words preserve all first eight bytes: byte 0 is state,
                 // byte 2 is payload length, and the second word is validity.
-                const uint32_t hdr00 = word(0x690D80u), hdr01 = word(0x690D84u);
-                const uint32_t hdr10 = word(0x690E00u), hdr11 = word(0x690E04u);
+                const uint32_t hdr00 = word(padAddr[9]), hdr01 = word(padAddr[9] + 4u);
+                const uint32_t hdr10 = word(padAddr[10]), hdr11 = word(padAddr[10] + 4u);
                 using PadClock = std::chrono::steady_clock;
                 struct PadTraceState
                 {
@@ -2873,7 +2911,7 @@ void EeScheduler::processEvent(const EeEvent &event)
                             seconds, static_cast<unsigned long long>(m_vsyncTick),
                             static_cast<unsigned long long>(ticks), ticks / seconds,
                             loop, loops, loops / seconds, callback, callbacks, callbacks / seconds,
-                            lastSeq, word(0x690DFCu), word(0x690E7Cu), hdr00, hdr01, hdr10, hdr11,
+                            lastSeq, word(padAddr[9] + 0x7Cu), word(padAddr[10] + 0x7Cu), hdr00, hdr01, hdr10, hdr11,
                             trace.suppressedChanges);
                         ++trace.rateLines;
                     }
@@ -2892,7 +2930,7 @@ void EeScheduler::processEvent(const EeEvent &event)
                 {
                     std::fprintf(stderr, "[pad:ee] tick=%llu state=%u raw=%04X current=%08X edge=%08X dma0=%04X dma1=%04X seq0=%u seq1=%u loop=%u callback=%u lastSeq=%u hdr0=%08X:%08X hdr1=%08X:%08X\n",
                         static_cast<unsigned long long>(m_vsyncTick), state, raw, current, edge, dma0, dma1,
-                        word(0x690DFCu), word(0x690E7Cu), loop, callback, lastSeq, hdr00, hdr01, hdr10, hdr11);
+                        word(padAddr[9] + 0x7Cu), word(padAddr[10] + 0x7Cu), loop, callback, lastSeq, hdr00, hdr01, hdr10, hdr11);
                     ++trace.changeLines;
                     ++trace.windowChanges;
                 }

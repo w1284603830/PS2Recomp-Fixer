@@ -4,6 +4,7 @@
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
 #include "runtime/ee_scheduler.h"
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -1321,14 +1322,50 @@ namespace ps2_stubs
         }
     }
 
+    namespace
+    {
+        // Guest address of the game's libgraph GParam record (the one its native sceGsGetGParam returns), 0 = unknown.
+        // Set by the game's runner (setGsGParamAddress) or PS2_GS_GPARAM=0x... (DOD_GS_GPARAM also works); find it by
+        // reading what the game's sceGsGetGParam returns.
+        std::atomic<uint32_t> g_guestGParamAddress{0u};
+        std::atomic<bool> g_guestGParamEnvRead{false};
+
+        uint32_t guestGParamAddress()
+        {
+            if (!g_guestGParamEnvRead.exchange(true))
+            {
+                const char *v = std::getenv("PS2_GS_GPARAM");
+                if (!v || !*v)
+                    v = std::getenv("DOD_GS_GPARAM");
+                if (v && *v && g_guestGParamAddress.load() == 0u)
+                    g_guestGParamAddress.store(static_cast<uint32_t>(std::strtoul(v, nullptr, 0)));
+            }
+            return g_guestGParamAddress.load();
+        }
+    }
+
+    void setGsGParamAddress(uint32_t address)
+    {
+        g_guestGParamEnvRead.store(true);
+        g_guestGParamAddress.store(address);
+    }
+
     void sceGsSyncV(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        // [DoD] Native sceGsGetGParam (0x102848) returns this libgraph record.
-        // ResetGraph now updates it directly; the HLE's private byte-sized
-        // g_gparam is not its ABI. intcUsed is read before waiting, inter after.
-        constexpr uint32_t kDodGsGParamAddress = 0x003FD4A0u;
+        const uint32_t kGuestGParamAddress = guestGParamAddress();
+        if (kGuestGParamAddress == 0u)
+        {
+            // No guest GParam address known: the HLE's own record (what the games that call the HLE ResetGraph use).
+            ps2_syscalls::WaitVSyncTick(rdram,
+                                        ctx,
+                                        runtime,
+                                        g_gparam.interlace != 0u ? -1 : 1);
+            return;
+        }
+        // The game's native sceGsGetGParam returns this libgraph record; ResetGraph updates it directly, the HLE's
+        // private byte-sized g_gparam is not its ABI. intcUsed is read before waiting, inter after.
         uint32_t intcUsed = 0u;
-        if (!tryReadWordFromGuest(rdram, runtime, kDodGsGParamAddress + 8u, intcUsed))
+        if (!tryReadWordFromGuest(rdram, runtime, kGuestGParamAddress + 8u, intcUsed))
         {
             setReturnS32(ctx, -1);
             return;
@@ -1336,12 +1373,12 @@ namespace ps2_stubs
         EeScheduler &ee = runtime->eeScheduler();
         ee.bindMainContextForSyscall(*ctx, rdram);
         ee.waitVSync(ee.currentVSyncTick(), -1,
-                    [rdram, runtime, useVSync2 = intcUsed != 0u](R5900Context &resumeContext)
+                    [rdram, runtime, kGuestGParamAddress, useVSync2 = intcUsed != 0u](R5900Context &resumeContext)
                     {
                         const int32_t waitResult = static_cast<int32_t>(getRegU32(&resumeContext, 2));
                         if (waitResult < 0) return; // preserve cancellation/release errors
                         uint32_t modeWord = 0u;
-                        if (!tryReadWordFromGuest(rdram, runtime, kDodGsGParamAddress, modeWord))
+                        if (!tryReadWordFromGuest(rdram, runtime, kGuestGParamAddress, modeWord))
                         {
                             setReturnS32(&resumeContext, -1);
                             return;
