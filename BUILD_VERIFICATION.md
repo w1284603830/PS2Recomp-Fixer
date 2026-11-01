@@ -9,6 +9,12 @@ before: `sceGsSyncV` without a configured GParam address uses the HLE record aga
 game says `boot ELF not found` and exits. The cheat menu, the GParam path with an address, and the diagnostics were not run
 against a game in this pass.
 
+**2026-11-02:** SPU2 reverb FIR now follows PCSX2's SSE path (per-tap rounding, saturating lane sums) and the host audio
+output resamples with a 64-tap windowed sinc instead of linear interpolation (`PS2_AUDIO_LINEAR=1` returns to linear).
+Same toolchain: `ps2x_tests` 422 / 446, IOP tests (including SPU2) all pass, GS cache 45 / 45. The sinc resampler was
+checked offline (exact DC gain, 47762 outputs per 48000 inputs at step 1.005); its sound against a game was judged by
+the original port only, with no subjective listening done in this pass.
+
 **2026-10-28 update (rows 146–150):** the commit was cloned into an empty folder, `fetch_deps.ps1` extracted the same
 pinned zips (all SHA256 matched; PCSX2 `646df006a4` reused), and `build_all.ps1` from an empty build folder built
 `kzvu.lib`, `pcsx2gs.dll` and all of PS2Recomp. Results are unchanged from 2026-10-27: IOP tests all pass, GS cache

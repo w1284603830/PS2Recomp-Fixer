@@ -42,6 +42,8 @@ Ones with game-specific content now take that content from you instead of fixing
 | `PS2_VU0_TRACE=<n>`, `PS2_VU0_TRACE_RANGE=0xFIRST-0xLAST` | the first n calls of each function in the range (the game's libvu0); nothing is traced without a range |
 | `PS2_PAD_TRACE=1`, `PS2_PAD_TRACE_ADDRS=a0,...,a10` | the host pad trace always works; the guest-side libpad trace also needs the 11 guest addresses of the game's libpad variables (order in `EeScheduler.cpp`) |
 | `PS2_GS_GPARAM=0x...` | as above |
+| `PS2_AUDIO_LINEAR=1` | host audio output back to linear interpolation; the default is a 64-tap windowed-sinc resampler (`ps2_output_resampler.h`, fixed 0.646 ms delay, same queue control and game clock) |
+| `PS2_SPU2_REVERB_STEMS=<file>`, `PS2_SPU2_REVERB_CORE=0` | dump the reverb input / return of core 1 (or core 0) as raw 4-channel 16-bit 48 kHz |
 | `PS2_CHEATS_FILE`, `PS2_CHEATS`, `PS2_CHEAT_MENU_AT` | see [CHEATS.md](CHEATS.md) |
 
 ## 4. What is still the first port's
