@@ -14,6 +14,8 @@ Without a file, F2 still opens the panel and tells you so. See `examples/cheats.
 ## Format
 
 UTF-8 text (a BOM is fine). Lines starting with `;` or `#` are comments.
+Section/checkbox headers and `write` lines also accept trailing comments (put a space or tab before `;` or `#`
+on a `write` line). `help` and `note` keep these characters as literal text.
 
 ```ini
 [section:Player]            ; a title line in the panel, not a checkbox
@@ -37,6 +39,11 @@ write=0x00200000,u8,99,count=10,stride=8,skip_zero
 | `count=N` | repeat N times, `stride` bytes apart (an inventory table) |
 | `stride=S` | bytes between repeats |
 | `skip_zero` | leave a slot alone while it holds 0 (an empty slot stays empty) |
+
+Numbers are unsigned 32-bit integers in decimal (including leading zeros) or `0x` hexadecimal. `VALUE` must fit
+the selected size; `count` must be positive, and the complete repeated range must fit in RAM. Negative numbers,
+overflow, missing values and trailing junk are rejected instead of silently truncated. A zero/omitted stride
+repeats the same address, so it is applied just once per frame.
 
 While a checkbox is on, its writes are applied once per host frame, the way an emulator applies a RAM cheat code. Cheats
 that change game *code* are not part of this file: the recompiled functions do not read their instructions from RAM, so

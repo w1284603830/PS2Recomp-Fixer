@@ -11,6 +11,7 @@
 #include "ps2_host_backend.h"
 
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -96,8 +97,30 @@ namespace
 
     // WRITE line: ADDRESS,SIZE,VALUE[,count=N][,stride=S][,skip_zero]
     // SIZE is u8 / u16 / u32 (or 1 / 2 / 4); numbers are decimal or 0x hex.
+    bool parseUnsigned(const std::string &text, uint32_t &out)
+    {
+        if (text.empty())
+            return false;
+        const bool hex = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+        const size_t start = hex ? 2 : 0;
+        for (size_t i = start; i < text.size(); ++i)
+        {
+            const char c = text[i];
+            if (!(c >= '0' && c <= '9') && !(hex && ((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))))
+                return false;
+        }
+        errno = 0;
+        char *end = nullptr;
+        const unsigned long long value = std::strtoull(text.c_str() + start, &end, hex ? 16 : 10);
+        if (errno == ERANGE || *end || value > UINT32_MAX)
+            return false;
+        out = static_cast<uint32_t>(value);
+        return true;
+    }
+
     bool parseWrite(const std::string &text, Write &out, std::string &error)
     {
+        out = Write{};
         std::vector<std::string> parts;
         size_t start = 0;
         for (;;)
@@ -113,9 +136,8 @@ namespace
             error = "write needs ADDRESS,SIZE,VALUE";
             return false;
         }
-        char *end = nullptr;
-        const unsigned long address = std::strtoul(parts[0].c_str(), &end, 0);
-        if (end == parts[0].c_str() || *end)
+        uint32_t address = 0;
+        if (!parseUnsigned(parts[0], address))
         {
             error = "bad address";
             return false;
@@ -132,30 +154,43 @@ namespace
             error = "size must be u8, u16 or u32";
             return false;
         }
-        const unsigned long long value = std::strtoull(parts[2].c_str(), &end, 0);
-        if (end == parts[2].c_str() || *end)
+        uint32_t value = 0;
+        if (!parseUnsigned(parts[2], value) || (out.size < 4 && value >= (1u << (out.size * 8))))
         {
             error = "bad value";
             return false;
         }
-        out.address = static_cast<uint32_t>(address) & 0x1FFFFFFFu; // KSEG / cached mirrors map to the same RAM
-        out.value = static_cast<uint32_t>(value);
+        out.address = address & 0x1FFFFFFFu; // KSEG / cached mirrors map to the same RAM
+        out.value = value;
         for (size_t i = 3; i < parts.size(); ++i)
         {
             const std::string &opt = parts[i];
             if (opt == "skip_zero")
                 out.skipZero = true;
             else if (opt.rfind("count=", 0) == 0)
-                out.count = static_cast<uint32_t>(std::strtoul(opt.c_str() + 6, nullptr, 0));
+            {
+                if (!parseUnsigned(trim(opt.substr(6)), out.count) || out.count == 0)
+                {
+                    error = "count must be a positive 32-bit integer";
+                    return false;
+                }
+            }
             else if (opt.rfind("stride=", 0) == 0)
-                out.stride = static_cast<uint32_t>(std::strtoul(opt.c_str() + 7, nullptr, 0));
+            {
+                if (!parseUnsigned(trim(opt.substr(7)), out.stride))
+                {
+                    error = "stride must be an unsigned 32-bit integer";
+                    return false;
+                }
+            }
             else
             {
                 error = "unknown option '" + opt + "'";
                 return false;
             }
         }
-        if (out.count == 0)
+        // Repeated stores to the same slot have the same result; do not loop billions of times.
+        if (out.stride == 0)
             out.count = 1;
         const uint64_t last = static_cast<uint64_t>(out.address) + static_cast<uint64_t>(out.count - 1) * out.stride + out.size;
         if (last > kGuestRamSize)
@@ -198,11 +233,23 @@ namespace
             size_t eol = data.find('\n', pos);
             if (eol == std::string::npos)
                 eol = data.size();
-            const std::string line = trim(data.substr(pos, eol - pos));
+            std::string line = trim(data.substr(pos, eol - pos));
             pos = eol + 1;
             ++lineNo;
             if (line.empty() || line[0] == ';' || line[0] == '#')
                 continue;
+            // The documented examples use trailing comments on headers and write lines.
+            // Preserve literal '#' / ';' in labels, help and note text.
+            if (line[0] == '[')
+            {
+                const size_t close = line.find(']');
+                if (close != std::string::npos)
+                {
+                    const std::string tail = trim(line.substr(close + 1));
+                    if (tail.empty() || tail[0] == ';' || tail[0] == '#')
+                        line.resize(close + 1);
+                }
+            }
             if (line[0] == '[' && line.back() == ']')
             {
                 if (s_entries.size() >= kMaxCheats)
@@ -226,7 +273,7 @@ namespace
                 continue;
             }
             const std::string key = trim(line.substr(0, eq));
-            const std::string val = trim(line.substr(eq + 1));
+            std::string val = trim(line.substr(eq + 1));
             Entry &e = s_entries.back();
             if (key == "help")
                 e.help = val;
@@ -234,6 +281,12 @@ namespace
                 e.note = val;
             else if (key == "write")
             {
+                for (size_t i = 1; i < val.size(); ++i)
+                    if ((val[i] == ';' || val[i] == '#') && (val[i - 1] == ' ' || val[i - 1] == '\t'))
+                    {
+                        val = trim(val.substr(0, i));
+                        break;
+                    }
                 Write w;
                 std::string error;
                 if (e.writes.size() >= kMaxWritesPerCheat)
