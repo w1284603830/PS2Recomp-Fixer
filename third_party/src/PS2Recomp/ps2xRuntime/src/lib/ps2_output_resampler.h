@@ -46,26 +46,30 @@ private:
     using Row = std::array<double, Taps>;
     using Table = std::array<Row, Phases + 1>;
     static const Table& table() {
-        // Construct once, before opening the audio device; no callback allocations.
-        static const Table coefficients = [] {
-            Table result{};
-            constexpr double pi = 3.1415926535897932384626433832795;
-            constexpr double radius = Taps / 2.0;
-            for (unsigned p = 0; p <= Phases; ++p) {
-                const double fraction = static_cast<double>(p) / Phases;
-                double sum = 0.0;
-                for (unsigned k = 0; k < Taps; ++k) {
-                    const double x = k - radius + fraction;
-                    const double sinc = std::abs(x) < 1e-12 ? Cutoff : std::sin(pi * Cutoff * x) / (pi * x);
-                    const double window = 0.42 + 0.5 * std::cos(pi * x / radius) + 0.08 * std::cos(2.0 * pi * x / radius);
-                    result[p][k] = sinc * window;
-                    sum += result[p][k];
+        // Construct directly in static storage: a by-value lambda return can put a 512 KiB
+        // temporary on the startup thread's stack when named return-value optimization is disabled.
+        // Construct once, before opening the audio device; no heap or callback allocations.
+        struct Coefficients {
+            Table value{};
+            Coefficients() {
+                constexpr double pi = 3.1415926535897932384626433832795;
+                constexpr double radius = Taps / 2.0;
+                for (unsigned p = 0; p <= Phases; ++p) {
+                    const double fraction = static_cast<double>(p) / Phases;
+                    double sum = 0.0;
+                    for (unsigned k = 0; k < Taps; ++k) {
+                        const double x = k - radius + fraction;
+                        const double sinc = std::abs(x) < 1e-12 ? Cutoff : std::sin(pi * Cutoff * x) / (pi * x);
+                        const double window = 0.42 + 0.5 * std::cos(pi * x / radius) + 0.08 * std::cos(2.0 * pi * x / radius);
+                        value[p][k] = sinc * window;
+                        sum += value[p][k];
+                    }
+                    for (double& c : value[p]) c /= sum; // exact DC gain, no loudness enhancement.
                 }
-                for (double& c : result[p]) c /= sum; // exact DC gain, no loudness enhancement.
             }
-            return result;
-        }();
-        return coefficients;
+        };
+        static const Coefficients coefficients;
+        return coefficients.value;
     }
     static int16_t pcm(double sample) {
         // A band-limited reconstruction can overshoot on full-scale transients.
