@@ -24,9 +24,14 @@ dozens of test hooks): a reference for what a finished runner can do, not a temp
 | PCSX2 per-game GS fixes (`GameIndex.yaml`: blending level, half pixel offset, native scaling, bilinear upscale...) | `gs_options`, e.g. `blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2` | Nothing is applied by default. Keys: `Bridge.cpp` `ApplyOptions`. Look your game up in PCSX2's `GameIndex.yaml`. |
 | Guest address of libgraph's GParam record (what the game's `sceGsGetGParam` returns) | `game.ini` `gparam`, `PS2_GS_GPARAM=0x...`, or `ps2_stubs::setGsGParamAddress()` | Without it `sceGsSyncV` uses the HLE's own record. Needed when the game's libgraph runs natively and updates its own record. |
 | libipu tables (IQ, VQ, D4_CHCR helper) for the IPU HLE `sceIpuInit` | `ps2_stubs::dodConfigureIpuInit()` | The defaults in `IPU.cpp` are another game's. Do not rely on the HLE `sceIpuInit` unless you set them. |
-| MPEG library ABI | none | The HLE MPEG paths in `MPEG.cpp` check the original instructions of the game's libmpeg (`usesDodMpegAbi`) before they use the first port's layout; other games take the generic path. The HD movie hooks (`dodInstallHdMovieHooks`) are the first port's and are not installed by the generic runner. |
+| MPEG library ABI | explicit supported adapter and ABI verification | `usesDodMpegAbi` checks the first port's instructions/layout. The alternative path also contains legacy fixed globals and callback layouts; it is not proof of a portable ABI. The first port's HD hooks (`dodInstallHdMovieHooks`) are not installed by the generic runner. |
 | RAM cheats | `cheats.ini` | |
 | Diagnostics | `PS2_*` environment variables (below) | |
+
+The base is intended for every port. Particle-edge and other rendering workarounds require independently qualified
+profiles for every game/revision, including reference games. Current shared/profile boundaries, confirmed remaining
+bindings and handoff-to-source findings are recorded in [REUSABLE_BASE.md](REUSABLE_BASE.md). The legacy particle
+heuristic's HPO5/HUD assumptions must not become universal defaults; its default-off/profile work is tracked in issue #3.
 
 ## 3. Environment variables
 

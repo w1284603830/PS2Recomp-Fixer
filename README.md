@@ -11,6 +11,11 @@ the upstream runtime lacked were added.
 **This repository contains no game.** It is the reusable base: recompiler, runtime, IOP emulation, PCSX2 GS and VU
 modules, tools and tests. To port a game you need your own legally obtained copy of it.
 
+**Project target: a game-independent base anyone can reuse.** Shared mechanisms implement hardware and host
+services; every port supplies explicit game/revision profiles for addresses, library ABIs and rendering workarounds.
+Particle-edge fixes require independent qualification for every game. Development rules: [AGENTS.md](AGENTS.md);
+current boundaries and source audit: [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.md).
+
 ## Highlights
 
 - **PCSX2's hardware GS** (DX11/DX12) as `pcsx2gs.dll`, fed on its own thread; upscaling, FXAA/SSAA, HD texture
