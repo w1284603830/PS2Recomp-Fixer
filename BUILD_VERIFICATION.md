@@ -15,6 +15,18 @@ Same toolchain: `ps2x_tests` 422 / 446, IOP tests (including SPU2) all pass, GS 
 checked offline (exact DC gain, 47762 outputs per 48000 inputs at step 1.005); its sound against a game was judged by
 the original port only, with no subjective listening done in this pass.
 
+**2026-11-02, headless audio follow-up (Linux/GCC):** the existing SPU2 smoke test and eight focused regression
+tests pass (`python -m unittest discover -s tests -v`). The production reverb FIR matches the pinned PCSX2 SSE
+instruction sequence in 2,560,000 comparisons (both coefficient tables, every ring position, random and full-scale
+inputs). The resampler passes rate, DC/stereo, impulse-delay, invalid-step and frequency-response checks.
+
+Coefficient construction now happens directly in static storage. With NRVO and compiler folding of trigonometric
+calls disabled, the original constructor failed under a 128 KiB stack limit; the revised constructor passes.
+A deterministic 12,000-frame stereo signal with changing drift rates produced identical PCM before/after the
+storage change (FNV-1a fingerprint `14f39a8017a039d1`). The distributable upstream patch and its diffstat now include
+the audio update and pass reverse-application parity checks. No Windows/MSVC rebuild or in-game listening was done
+in this follow-up; the full-build results above belong to the preceding pass.
+
 **2026-10-28 update (rows 146–150):** the commit was cloned into an empty folder, `fetch_deps.ps1` extracted the same
 pinned zips (all SHA256 matched; PCSX2 `646df006a4` reused), and `build_all.ps1` from an empty build folder built
 `kzvu.lib`, `pcsx2gs.dll` and all of PS2Recomp. Results are unchanged from 2026-10-27: IOP tests all pass, GS cache

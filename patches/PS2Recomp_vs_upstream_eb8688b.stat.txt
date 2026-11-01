@@ -9,7 +9,7 @@
  ps2xIOP/src/emulator/core/iop_memory.h                   |   16 ++
  ps2xIOP/src/emulator/core/iop_sio2.cpp             |  463 +++++++++++++++++++++++++++++++++++++++
  ps2xIOP/src/emulator/core/iop_sio2.h               |   74 +++++++
- ps2xIOP/src/emulator/core/iop_spu2.cpp             | 1498 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ ps2xIOP/src/emulator/core/iop_spu2.cpp             | 1515 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  ps2xIOP/src/emulator/core/iop_spu2.h               |  233 ++++++++++++++++++++
  ps2xIOP/src/emulator/core/iop_spu2_gauss.h         |  269 +++++++++++++++++++++++
  ps2xIOP/src/emulator/imports/iop_cdvd.cpp                |   25 +++
@@ -80,13 +80,14 @@
  ps2xRuntime/src/lib/ps2_cheats.cpp                 |  456 ++++++++++++++++++++++++++++++++++++++
  ps2xRuntime/src/lib/ps2_cheats.h                   |   19 ++
  ps2xRuntime/src/lib/ps2_disc.h                     |    8 +
- ps2xRuntime/src/lib/ps2_iop_host.cpp                     |  692 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ ps2xRuntime/src/lib/ps2_iop_host.cpp                     |  702 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++-
  ps2xRuntime/src/lib/ps2_iop_host.h                       |   26 +++
  ps2xRuntime/src/lib/ps2_iop_post.h                 |   13 ++
  ps2xRuntime/src/lib/ps2_ipu.cpp                    |  948 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
  ps2xRuntime/src/lib/ps2_ipu.h                      |   38 ++++
  ps2xRuntime/src/lib/ps2_ipu_vlc.h                  |  469 +++++++++++++++++++++++++++++++++++++++
  ps2xRuntime/src/lib/ps2_memory.cpp                       | 1496 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++----
+ ps2xRuntime/src/lib/ps2_output_resampler.h               |   83 ++++++++++++++++++++++++++++++
  ps2xRuntime/src/lib/ps2_pad.cpp                          |  376 ++++++++++++++++++++++++++++----
  ps2xRuntime/src/lib/ps2_runtime.cpp                      |  730 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++---
  ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp             |  389 ++++++++++++++++++++++++++++++---
@@ -96,4 +97,4 @@
  ps2xTest/gs_cache/CMakeLists.txt                         |    1 +
  ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp         |    9 +
  ps2xTest/src/ps2_memory_tests.cpp                        |   66 ++++++
- 98 files changed, 17640 insertions(+), 494 deletions(-)
+ 99 files changed, 17750 insertions(+), 494 deletions(-)
