@@ -36,6 +36,7 @@ namespace ps2_stubs
     void sceGsSyncPath(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     // Guest address of the game's libgraph GParam record (0 = unknown, the HLE's own record is used); see GS.cpp.
     void setGsGParamAddress(uint32_t address);
+    void resetGsGameProfile();
     void sceGsSyncV(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceGsSyncVCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
     void sceGszbufaddr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);

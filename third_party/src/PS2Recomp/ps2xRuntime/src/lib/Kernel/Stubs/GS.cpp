@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "GS.h"
+#include "GuestAddress.h"
 #include "ps2_log.h"
 #include "runtime/gs/ps2_gs_common.h"
 #include "runtime/gs/ps2_gs_psmct16.h"
@@ -1338,15 +1339,32 @@ namespace ps2_stubs
                 if (!v || !*v)
                     v = std::getenv("DOD_GS_GPARAM");
                 if (v && *v && g_guestGParamAddress.load() == 0u)
-                    g_guestGParamAddress.store(static_cast<uint32_t>(std::strtoul(v, nullptr, 0)));
+                {
+                    uint32_t address = 0u;
+                    if (parseProfileAddress(v, address) && (!address || validProfileRamRange(address, 12u, 4u)))
+                        g_guestGParamAddress.store(address);
+                    else
+                        std::fprintf(stderr, "[gs] invalid per-game GParam address; using HLE record\n");
+                }
             }
             return g_guestGParamAddress.load();
         }
     }
 
+    void resetGsGameProfile()
+    {
+        g_guestGParamAddress.store(0u);
+        g_guestGParamEnvRead.store(false);
+    }
+
     void setGsGParamAddress(uint32_t address)
     {
         g_guestGParamEnvRead.store(true);
+        if (address && !validProfileRamRange(address, 12u, 4u))
+        {
+            std::fprintf(stderr, "[gs] invalid per-game GParam address; using HLE record\n");
+            address = 0u;
+        }
         g_guestGParamAddress.store(address);
     }
 

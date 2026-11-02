@@ -16,6 +16,7 @@
 #include "../lib/dod_audio_settings.h"
 #include "../lib/gs/dod_pcsx2_gs.h"
 #include "../lib/gs/dod_widescreen.h"
+#include "game_profile.h"
 
 bool dodKzvuInstall(PS2Runtime &runtime, const char *mode); // [DoD] ../lib/vu/dod_kzvu.cpp
 
@@ -912,8 +913,6 @@ int main(int argc, char *argv[])
             std::string gsOptions = "blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2";
             if (ini.count("gs_options") && !ini["gs_options"].empty())
                 gsOptions += ";" + ini["gs_options"];
-            // [DoD] The libgraph GParam record this game's native sceGsGetGParam (0x102848) returns.
-            ps2_stubs::setGsGParamAddress(0x003FD4A0u);
             const char* aspectEnv = std::getenv("DOD_ASPECT");
             const std::string aspect = aspectEnv && *aspectEnv ? aspectEnv : ini.count("aspect") ? ini["aspect"] : "4:3";
             dodwide::enabled = renderer == "pcsx2" && aspect == "16:9";
@@ -1347,8 +1346,30 @@ int main(int argc, char *argv[])
                                     ps2_stubs::sceCdGetDiskType(rdram, ctx, rt);
                                 });
 
+        runtime.setCaptureMetadataProvider([](const uint8_t *ram) {
+            if (!ram)
+                return std::string{};
+            uint32_t scene = 0, area = 0, frame = 0;
+            std::memcpy(&scene, ram + 0x7E1344u, 4);
+            std::memcpy(&area, ram + 0x7E1348u, 4);
+            std::memcpy(&frame, ram + 0x817730u, 4);
+            char info[160];
+            std::snprintf(info, sizeof(info), "room (scene) 0x%X\narea (movie) %u\ngame frame %u\n",
+                          scene & 0xFFFFu, area & 0xFFu, frame);
+            return std::string(info);
+        });
+
+        // This game's native sceGsGetGParam returns this record; environment overrides remain available.
+        if (!std::getenv("DOD_GS_GPARAM") && !std::getenv("PS2_GS_GPARAM"))
+            ps2_stubs::setGsGParamAddress(0x003FD4A0u);
+
         // libipu's sceIpuInit tables in SLPM_662.75 (intra/non-intra IQ at 0x3FD690, VQ CLUT at 0x3FD6E0).
         ps2_stubs::dodConfigureIpuInit(0x003FD690u, 0x003FD6E0u, 0u);
+        if (!ps2_stubs::configureMpegGameProfile(dodMpegGameProfile()))
+        {
+            std::cerr << "[runner] invalid SLPM_662.75 MPEG profile" << std::endl;
+            return 2;
+        }
 
         // DoD's Sofdec cleanup at 0x21A5E0 tail-calls the native libmpeg
         // destructor. Pair it with the existing HLE Create so its host decoder

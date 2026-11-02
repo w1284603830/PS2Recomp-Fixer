@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <functional>
+#include <utility>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(USE_SSE2NEON)
@@ -290,6 +291,10 @@ public:
     bool loadELF(const std::string &elfPath);
     void run();
 
+    // Optional per-port capture metadata. Install after loadELF; the callback runs on the host loop.
+    using CaptureMetadataProvider = std::function<std::string(const uint8_t *)>;
+    void setCaptureMetadataProvider(CaptureMetadataProvider provider) { m_captureMetadataProvider = std::move(provider); }
+
     [[nodiscard]] ps2x::iop::ModuleLoadResult loadIopModule(std::string_view path, const void *arguments = nullptr, uint32_t argumentSize = 0);
     [[nodiscard]] ps2x::iop::ModuleLoadResult loadIopModuleBuffer(uint32_t guestAddress, const void *arguments = nullptr, uint32_t argumentSize = 0);
     [[nodiscard]] bool stopIopModule(int32_t moduleId, int32_t *result = nullptr);
@@ -524,6 +529,7 @@ private:
     DebugUiCallback m_debugUiShutdownCallback = nullptr;
     void *m_debugUiUserData = nullptr;
     bool m_debugUiInitialized = false;
+    CaptureMetadataProvider m_captureMetadataProvider;
 
 public:
     std::atomic<uint32_t> m_debugPc{0};

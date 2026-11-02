@@ -1,5 +1,12 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-03, address portability:** IPU table defaults, MPEG callbacks/globals/movie hooks, font table/GP offsets,
+the movie FIELD instruction and capture-state addresses are now explicit per-port configuration. `loadELF` clears the
+preceding configuration; runners must reapply it after loading. The previous full Windows build results below predate
+these changes. Current validation compiles production IPU/MPEG/font units and the generic runner headlessly with
+GCC/UndefinedBehaviorSanitizer, plus the existing headless suite and distributable-patch parity. No new Windows/MSVC
+build, game visual/audio acceptance or deployed binaries are claimed.
+
 **2026-11-01, generalisation pass:** the F2 cheat menu no longer carries a game's cheats (generic `cheats.ini`, `ps2_cheats.cpp`),
 the GS bridge applies no per-game fixes, the libgraph GParam address, pad-trace addresses and RAM / VU0 trace ranges are
 parameters, and `PS2_*` environment names alias the `DOD_*` ones. `build_all.ps1` (kzvu, pcsx2gs, all of PS2Recomp)

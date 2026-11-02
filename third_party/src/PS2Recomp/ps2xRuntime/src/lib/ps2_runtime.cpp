@@ -12,7 +12,9 @@
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
 #include "Kernel/Stubs/Audio.h"
+#include "Kernel/Stubs/Font.h"
 #include "Kernel/Stubs/GS.h"
+#include "Kernel/Stubs/IPU.h"
 #include "Kernel/Stubs/MPEG.h"
 #include "ps2_host_backend.h"
 #include "ps2_iop_host.h"
@@ -978,6 +980,12 @@ bool PS2Runtime::initialize(const char *title)
 
 bool PS2Runtime::loadELF(const std::string &elfPath)
 {
+    // A runner configures these after loading its game/revision, never for a preceding ELF.
+    ps2_stubs::resetIpuInitConfig();
+    ps2_stubs::resetFontGameProfile();
+    ps2_stubs::resetGsGameProfile();
+    m_captureMetadataProvider = {};
+    ps2_stubs::resetMpegGameProfile(this);
     configureIoPathsFromElf(elfPath);
 
     std::ifstream file(elfPath, std::ios::binary);
@@ -2496,37 +2504,12 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
     }
 }
 
-namespace
-{
-    // [DoD] Sofdec's movie upload (FUN_003bb280) converts each macroblock row (16 lines) into a buffer and sends 8 of
-    // its lines to the GS with VIF1 REF tags 2 lines apart: the odd lines when GS CSR.FIELD reads 0 at 0x3bb2f0, the
-    // even lines when it reads 1 (on a TV the next field is the other one and shows half a line lower). Shown
-    // progressively, a frame uploaded during an even field sits half a line off the others and the movie (most
-    // visibly the still Sofdec / ADX logo) jumps by a line now and then. The load at that instruction reads FIELD = 1,
-    // so every frame uses its even lines; the instruction word is checked so other code is never affected.
-    // DOD_MOVIE_FIELD=keep reads the real CSR.
-    bool dodSofdecFieldRead(uint8_t *rdram, const R5900Context *ctx)
-    {
-        constexpr uint32_t kPc = 0x3bb2f0u;
-        constexpr uint32_t kInsn = 0x8c281000u; // lw $t0, 0x1000($at), $at = 0x12000000
-        static const bool on = [] {
-            const char *v = std::getenv("DOD_MOVIE_FIELD");
-            return !(v && std::strcmp(v, "keep") == 0);
-        }();
-        if (!on || !ctx || !rdram || ctx->pc != kPc)
-            return false;
-        uint32_t insn = 0u;
-        std::memcpy(&insn, rdram + kPc, sizeof(insn));
-        return insn == kInsn;
-    }
-}
-
 uint32_t PS2Runtime::Load32(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
 {
     try
     {
         const uint32_t value = m_memory.read32(vaddr);
-        if (vaddr == 0x12001000u && dodSofdecFieldRead(rdram, ctx))
+        if (vaddr == 0x12001000u && ps2_stubs::mpegMovieFieldRead(rdram, ctx))
             return value | 0x2000u;
         return value;
     }
@@ -3035,19 +3018,10 @@ void PS2Runtime::run()
                 while (std::filesystem::exists(dir));
                 std::error_code ec;
                 std::filesystem::create_directories(dir + "/draws", ec);
-                // The game's state (memory dod-game-structure): scene load task 0x7E1340 (+4 room, +8 movie / event
-                // "area"), game frame counter 0x817730.
-                char gameInfo[256] = {};
-                if (const uint8_t *ram = m_memory.getRDRAM())
-                {
-                    uint32_t scene = 0, area = 0, frame = 0;
-                    std::memcpy(&scene, ram + 0x7E1344u, 4);
-                    std::memcpy(&area, ram + 0x7E1348u, 4);
-                    std::memcpy(&frame, ram + 0x817730u, 4);
-                    std::snprintf(gameInfo, sizeof(gameInfo), "room (scene) 0x%X\narea (movie) %u\ngame frame %u\ntime %.1f s\n",
-                                  scene & 0xFFFFu, area & 0xFFu, frame, GetTime());
-                }
-                dodpcsx2::requestLineCapture(dir.c_str(), lineLight, lineAb, gameInfo);
+                std::string gameInfo = "time " + std::to_string(GetTime()) + " s\n";
+                if (m_captureMetadataProvider)
+                    gameInfo += m_captureMetadataProvider(m_memory.getRDRAM());
+                dodpcsx2::requestLineCapture(dir.c_str(), lineLight, lineAb, gameInfo.c_str());
                 std::fprintf(stderr, "[line-capture] %s -> %s (field %llu)\n", lineAuto ? "auto" : "F8", dir.c_str(),
                              static_cast<unsigned long long>(dodpcsx2::presents()));
                 SetWindowTitle((g_dodWindowTitle + "  \xc2\xb7  F8 " + dir).c_str());
