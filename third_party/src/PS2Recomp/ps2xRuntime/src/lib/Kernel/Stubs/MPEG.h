@@ -1,9 +1,15 @@
 #pragma once
 
 #include "ps2_stubs.h"
+#include "MpegGameProfile.h"
 
 namespace ps2_stubs
 {
+    // Configure after loadELF, before running guest code. Invalid profiles disable MPEG HLE.
+    bool configureMpegGameProfile(const MpegGameProfile &profile);
+    void resetMpegGameProfile(PS2Runtime *runtime);
+    void dodInstallHdMovieHooks(PS2Runtime &runtime);
+    bool mpegMovieFieldRead(const uint8_t *rdram, const R5900Context *ctx);
     void resetMpegStubState();
     void enqueueMpegDecodedFrameForTesting(uint32_t mpegAddr);
     void notifyMpegCdStreamStart(PS2Runtime *runtime = nullptr);

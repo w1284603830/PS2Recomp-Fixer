@@ -12,6 +12,7 @@
 #include "runtime/gs/ps2_gs_psmct32.h"
 #include "ps2_runtime_macros.h"
 #include "Stubs/MPEG.h"
+#include "Stubs/IPU.h"
 #include "Stubs/CD.h"
 #include "Stubs/Audio.h"
 #include "Stubs/GS.h"
@@ -47,6 +48,37 @@ namespace
     {
         return static_cast<int32_t>(::getRegU32(&ctx, reg));
     }
+
+    // Synthetic test data: these addresses are explicit fixtures, never game defaults.
+    struct MpegTestProfile
+    {
+        MpegTestProfile(TestCase &t, std::vector<uint8_t> &rdram)
+        {
+            ps2_stubs::resetMpegGameProfile(nullptr);
+            ps2_stubs::MpegGameProfile p;
+            p.abi = ps2_stubs::MpegAbi::Legacy118;
+            p.guards[0] = {0x00008000u, 0x27BDFFA0u};
+            std::memcpy(rdram.data() + p.guards[0].address, &p.guards[0].instruction, 4u);
+            p.defaultCallbacks = {0x00009000u, 0x00009010u};
+            p.objectGlobal = 0x00010000u;
+            p.referenceTable = 0x00010010u;
+            p.resetGlobal = 0x00010040u;
+            for (size_t i = 0; i < p.references.size(); ++i)
+                p.references[i] = 0x00011000u + static_cast<uint32_t>(i) * 0x80u;
+            t.IsTrue(ps2_stubs::configureMpegGameProfile(p), "synthetic MPEG test profile should be valid");
+        }
+        ~MpegTestProfile() { ps2_stubs::resetMpegGameProfile(nullptr); }
+    };
+
+    struct IpuTestProfile
+    {
+        explicit IpuTestProfile(uint32_t helper)
+        {
+            ps2_stubs::resetIpuInitConfig();
+            ps2_stubs::dodConfigureIpuInit(0x00170000u, 0x00170080u, helper);
+        }
+        ~IpuTestProfile() { ps2_stubs::resetIpuInitConfig(); }
+    };
 
     uint32_t makeVifCmd(uint8_t opcode, uint8_t num, uint16_t imm)
     {
@@ -507,10 +539,10 @@ void register_ps2_runtime_expansion_tests()
                       "ContinueToTarget should remain a non-stopping debug policy");
         });
 
-        tc.Run("MPEG init and callback stubs return success instead of TODO errors", [](TestCase &t)
+        tc.Run("configured MPEG init and callback stubs preserve the legacy ABI", [](TestCase &t)
         {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
-            ps2_stubs::resetMpegStubState();
+            MpegTestProfile mpegProfile(t, rdram);
 
             R5900Context initCtx{};
             ps2_stubs::sceMpegInit(rdram.data(), &initCtx, nullptr);
@@ -552,7 +584,7 @@ void register_ps2_runtime_expansion_tests()
         {
             PS2Runtime runtime;
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
-            ps2_stubs::resetMpegStubState();
+            MpegTestProfile mpegProfile(t, rdram);
 
             constexpr uint32_t kMpegAddr = 0x00123000u;
             constexpr uint32_t kCallbackEntry = 0x00124000u;
@@ -750,7 +782,7 @@ void register_ps2_runtime_expansion_tests()
         {
             PS2Runtime runtime;
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
-            ps2_stubs::resetMpegStubState();
+            MpegTestProfile mpegProfile(t, rdram);
             ps2_stubs::notifyMpegCdStreamStart();
             runtime.registerFunction(kMpegWaitMainPc, testMpegWaitMain);
             runtime.registerFunction(kMpegWaitResumePc, testMpegWaitResume);
@@ -783,7 +815,7 @@ void register_ps2_runtime_expansion_tests()
         {
             PS2Runtime runtime;
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
-            ps2_stubs::resetMpegStubState();
+            MpegTestProfile mpegProfile(t, rdram);
             ps2_stubs::notifyMpegCdStreamStart();
             ps2_stubs::enqueueMpegDecodedFrameForTesting(kMpegNoDuplicateHandle);
             runtime.registerFunction(kMpegNoDuplicateMainPc, testMpegNoDuplicateMain);
@@ -931,6 +963,7 @@ void register_ps2_runtime_expansion_tests()
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
             R5900Context ctx{};
             ctx.pc = 0x0010B470u;
+            IpuTestProfile ipuProfile(kIpuSetD4Pc);
 
             ps2_stubs::sceIpuInit(rdram.data(), &ctx, &runtime);
 
@@ -946,6 +979,7 @@ void register_ps2_runtime_expansion_tests()
         {
             PS2Runtime runtime;
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
+            IpuTestProfile ipuProfile(kIpuSetD4Pc);
             runtime.registerFunction(kIpuInitMainPc, testIpuInitMain);
             runtime.registerFunction(kIpuInitResumePc, testIpuInitResume);
             runtime.registerFunction(kIpuSetD4Pc, testIpuSetD4);

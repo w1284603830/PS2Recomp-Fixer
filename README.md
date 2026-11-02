@@ -99,8 +99,9 @@ that the runtime links. A game needs its own generated code and entry point (bel
    - `runtime.replaceFunction(address, …)` to replace or wrap game functions
 7. Pass the game-specific values ([docs/GAME_PORTING.md](docs/GAME_PORTING.md)): PCSX2's per-game GS fixes in
    `gs_options`, and the address of the game's libgraph GParam record (`gparam`, used by `sceGsSyncV`) when its libgraph
-   runs natively. Audit IPU/MPEG/font addresses and ABIs before using their HLE paths; game-specific defaults still
-   present in the public source must not be reused blindly. See [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.md).
+   runs natively. Configure IPU/MPEG/font adapters only with verified per-game data, after successful `loadELF`;
+   unconfigured adapters no longer inherit another game's addresses. Review remaining rendering-specific assumptions
+   in [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.md).
 8. Next to the executable: `pcsx2gs.dll`, `resources\` (from `pcsx2gs/pcsx2-gs/resources`), `SDL2.dll`
    (`third_party/src/SDL2-2.30.9/lib/x64`), the FFmpeg DLLs (copied by the build) and your game files
 
@@ -116,7 +117,8 @@ Results of a clean build on 2026-10-27 ([BUILD_VERIFICATION.md](BUILD_VERIFICATI
 | IOP tests (5 programs) | all pass |
 | GS cache tests | 45 / 45 pass |
 
-These are historical results, not acceptance of later changes or another game. The headless tests are documented in [tests/README.md](tests/README.md); they do not replace a Windows build or game validation.
+These are historical results, not acceptance of later changes or another game. The current headless address-profile
+checks are documented in [tests/README.md](tests/README.md); they do not replace a Windows build or game validation.
 
 ### Full regression and how to fix failures
 

@@ -604,15 +604,57 @@ namespace ps2_stubs
                 std::memcpy(getMemPtr(rdram, addr), &value, sizeof(value));
         }
 
-        // This SDK revision has 12-byte callback entries and a 0x19A0-byte
-        // private work structure. Detect the original executable, not a caller
-        // address or allocation size; the older HLE layout remains separate.
+        MpegGameProfile g_mpeg_profile;
+        bool g_mpeg_profile_valid = false;
+        bool g_mpeg_profile_warned = false;
+        std::map<uint32_t, PS2Runtime::RecompiledFunction> hdNativeFunctions;
+        std::array<uint32_t, static_cast<size_t>(MpegEntry::Count)> hdInstalledEntries{};
+        PS2Runtime *hdHookRuntime = nullptr;
+
+        bool matchesMpegGameProfile(const uint8_t *rdram)
+        {
+            if (!rdram || !g_mpeg_profile_valid)
+                return false;
+            for (const auto &guard : g_mpeg_profile.guards)
+                if (guard.address && mpegRead32(rdram, guard.address) != guard.instruction)
+                    return false;
+            return true;
+        }
+
+        bool requireMpegGameProfile(const uint8_t *rdram, R5900Context *ctx)
+        {
+            if (matchesMpegGameProfile(rdram))
+                return true;
+            if (!g_mpeg_profile_warned)
+            {
+                std::fprintf(stderr, "[MPEG] unsupported/unconfigured game profile or instruction mismatch; HLE disabled\n");
+                g_mpeg_profile_warned = true;
+            }
+            setReturnS32(ctx, -1);
+            return false;
+        }
+
         bool usesDodMpegAbi(const uint8_t *rdram)
         {
-            return mpegRead32(rdram, 0x10AC38u) == 0x27BDFFB0u &&
-                   mpegRead32(rdram, 0x10AC7Cu) == 0x28C219A0u &&
-                   mpegRead32(rdram, 0x10BA30u) == 0x8C880040u &&
-                   mpegRead32(rdram, 0x10BA34u) == 0x8D0200A8u;
+            return g_mpeg_profile.abi == MpegAbi::Work19A0 && matchesMpegGameProfile(rdram);
+        }
+
+        bool readProfileMovie(const uint8_t *rdram, const R5900Context *ctx, uint32_t &movie, uint16_t &flags)
+        {
+            movie = 0xFFFFFFFFu;
+            flags = 0u;
+            if (!matchesMpegGameProfile(rdram) || !g_mpeg_profile.movieCount)
+                return false;
+            const int64_t idAddress = static_cast<int64_t>(getRegU32(ctx, 28)) + g_mpeg_profile.movieIdGpOffset;
+            if (idAddress < 0 || idAddress > UINT32_MAX ||
+                !validProfileRamRange(static_cast<uint32_t>(idAddress), 4u, 4u))
+                return false;
+            movie = mpegRead32(rdram, static_cast<uint32_t>(idAddress));
+            if (movie >= g_mpeg_profile.movieCount)
+                return false;
+            const uint32_t flagsAddress = g_mpeg_profile.movieFlags + movie * g_mpeg_profile.movieFlagsStride;
+            std::memcpy(&flags, getConstMemPtr(rdram, flagsAddress), sizeof(flags));
+            return true;
         }
 
         void resetDodMpegGuestState(uint8_t *rdram, uint32_t object, uint32_t work)
@@ -635,6 +677,8 @@ namespace ps2_stubs
             const uint32_t work = (buffer + 3u) & ~3u;
             const uint32_t alignment = work - buffer;
             if (!rdram || object == 0u || buffer == 0u ||
+                !validProfileRamRange(object, 0x44u, 4u) ||
+                !validProfileRamRange(buffer, bufferSize, 1u) ||
                 objectOffset > PS2_RAM_SIZE - 0x44u ||
                 bufferSize > PS2_RAM_SIZE - bufferOffset ||
                 bufferSize < alignment || bufferSize - alignment < 0x19A0u)
@@ -662,8 +706,8 @@ namespace ps2_stubs
                 mpegWrite32(rdram, object + offset, 0xFFFFFFFFu);
             for (uint32_t offset : {0x98u, 0xA8u, 0xACu, 0xB0u, 0x100u, 0x104u, 0x860u})
                 mpegWrite32(rdram, work + offset, 0xFFFFFFFFu);
-            mpegWrite32(rdram, work + 0x24u, 0x10BEE8u);
-            mpegWrite32(rdram, work + 0x30u, 0x10BF10u);
+            mpegWrite32(rdram, work + 0x24u, g_mpeg_profile.defaultCallbacks[0]);
+            mpegWrite32(rdram, work + 0x30u, g_mpeg_profile.defaultCallbacks[1]);
             mpegWrite32(rdram, work + 0xC4u, 1u);
             mpegWrite32(rdram, work + 0x868u, object);
 
@@ -2006,6 +2050,8 @@ namespace ps2_stubs
 
         void getDodMpegPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
         {
+            if (!requireMpegGameProfile(rdram, ctx))
+                return;
             const uint32_t mpegAddr = getRegU32(ctx, 4);
             const uint32_t imageAddr = getRegU32(ctx, 5);
             const uint32_t macroblockCapacity = getRegU32(ctx, 6);
@@ -2023,11 +2069,9 @@ namespace ps2_stubs
                 if(!playback.hdRouteDecided)
                 {
                     playback.hdRouteDecided=true;
-                    const uint32_t gp=getRegU32(ctx,28);
-                    const uint32_t movie=(gp>=0x7e0cu && gp<PS2_RAM_SIZE)?mpegRead32(rdram,gp-0x7e0cu):0xffffffffu;
-                    uint16_t flags=0;
-                    if(movie<109) std::memcpy(&flags,rdram+0x4df7d6u+movie*8u,2);
-                    if(movie<109 && dodpcsx2::hdCgSupported())
+                    uint32_t movie;
+                    uint16_t flags;
+                    if(readProfileMovie(rdram,ctx,movie,flags) && dodpcsx2::hdCgSupported())
                     {
                         auto candidate=std::make_unique<dodhdcg::Decoder>();
                         if(candidate->open(static_cast<int>(movie),flags))
@@ -2168,6 +2212,40 @@ namespace ps2_stubs
         }
     }
 
+    bool configureMpegGameProfile(const MpegGameProfile &profile)
+    {
+        // Remove installed hooks with resetMpegGameProfile before changing a live profile.
+        if (hdHookRuntime)
+            return false;
+        g_mpeg_profile_valid = validMpegGameProfile(profile);
+        g_mpeg_profile = g_mpeg_profile_valid ? profile : MpegGameProfile{};
+        g_mpeg_profile_warned = false;
+        return g_mpeg_profile_valid;
+    }
+
+    bool mpegMovieFieldRead(const uint8_t *rdram, const R5900Context *ctx)
+    {
+        const char *mode = std::getenv("DOD_MOVIE_FIELD");
+        return !(mode && std::strcmp(mode, "keep") == 0) && ctx &&
+               g_mpeg_profile.movieFieldReadPc && ctx->pc == g_mpeg_profile.movieFieldReadPc &&
+               matchesMpegGameProfile(rdram) &&
+               mpegRead32(rdram, ctx->pc) == g_mpeg_profile.movieFieldReadInstruction;
+    }
+
+    void resetMpegGameProfile(PS2Runtime *runtime)
+    {
+        if (runtime && runtime == hdHookRuntime)
+            for (const auto &[address, original] : hdNativeFunctions)
+                runtime->replaceFunction(address, original);
+        hdNativeFunctions.clear();
+        hdInstalledEntries = {};
+        hdHookRuntime = nullptr;
+        g_mpeg_profile = {};
+        g_mpeg_profile_valid = false;
+        g_mpeg_profile_warned = false;
+        resetMpegStubState();
+    }
+
     void resetMpegStubState()
     {
         std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
@@ -2258,6 +2336,8 @@ namespace ps2_stubs
 
     void sceMpegFlush(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegFlush", ctx);
         (void)rdram;
         const uint32_t mpegAddr = getRegU32(ctx, 4);
@@ -2283,6 +2363,8 @@ namespace ps2_stubs
 
     void sceMpegAddBs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegAddBs", ctx);
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         const uint32_t dataAddr = getRegU32(ctx, 5);
@@ -2320,6 +2402,8 @@ namespace ps2_stubs
 
     void sceMpegAddCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegAddCallback", ctx);
         (void)rdram;
         (void)runtime;
@@ -2366,6 +2450,8 @@ namespace ps2_stubs
 
     void sceMpegAddStrCallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegAddStrCallback", ctx);
         (void)runtime;
         const uint32_t mpegAddr = getRegU32(ctx, 4);
@@ -2385,6 +2471,8 @@ namespace ps2_stubs
 
     void sceMpegClearRefBuff(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegClearRefBuff", ctx);
         (void)ctx;
         (void)runtime;
@@ -2400,10 +2488,9 @@ namespace ps2_stubs
             setReturnU32(ctx, 1u);
             return;
         }
-        static const uint32_t kRefGlobalAddrs[] = {
-            0x171800u, 0x17180Cu, 0x171818u, 0x171804u, 0x171810u, 0x17181Cu};
-        for (uint32_t addr : kRefGlobalAddrs)
+        for (uint32_t offset : {0u, 12u, 24u, 4u, 16u, 28u})
         {
+            const uint32_t addr = g_mpeg_profile.referenceTable + offset;
             uint8_t *p = getMemPtr(rdram, addr);
             if (!p)
                 continue;
@@ -2434,6 +2521,11 @@ namespace ps2_stubs
 
     void sceMpegCreate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+        {
+            setReturnU32(ctx, 0u);
+            return;
+        }
         dodMpegTrace("sceMpegCreate", ctx);
         const uint32_t param_1 = getRegU32(ctx, 4); // a0
         const uint32_t param_2 = getRegU32(ctx, 5); // a1
@@ -2456,9 +2548,10 @@ namespace ps2_stubs
         }
 
         const uint32_t uVar3 = (param_2 + 3u) & 0xFFFFFFFCu;
-        const int32_t iVar2_signed = static_cast<int32_t>(param_3) - static_cast<int32_t>(uVar3 - param_2);
-
-        if (iVar2_signed <= 0x117)
+        const uint32_t alignment = uVar3 - param_2;
+        if (!rdram || !param_1 || !param_2 ||
+            !validProfileRamRange(param_1, 0x44u, 4u) ||
+            !validProfileRamRange(param_2, param_3, 1u) || param_3 < alignment + 0x118u)
         {
             setReturnU32(ctx, 0u);
             return;
@@ -2470,7 +2563,7 @@ namespace ps2_stubs
         }
 
         const uint32_t puVar4 = uVar3 + 0x108u;
-        const uint32_t innerSize = static_cast<uint32_t>(iVar2_signed) - 0x118u;
+        const uint32_t innerSize = param_3 - alignment - 0x118u;
 
         mpegGuestWrite32(rdram, param_1 + 0x40, uVar3);
 
@@ -2504,21 +2597,18 @@ namespace ps2_stubs
         mpegGuestWrite64(rdram, uVar3 + 0x88, 0);
 
         mpegGuestWrite64(rdram, uVar3 + 0xF0, 0xFFFFFFFFFFFFFFFFULL);
-        mpegGuestWrite32(rdram, uVar3 + 0x1C, 0x1209F8u);
-        mpegGuestWrite32(rdram, uVar3 + 0x24, 0x120A08u);
+        mpegGuestWrite32(rdram, uVar3 + 0x1C, g_mpeg_profile.defaultCallbacks[0]);
+        mpegGuestWrite32(rdram, uVar3 + 0x24, g_mpeg_profile.defaultCallbacks[1]);
         mpegGuestWrite32(rdram, uVar3 + 0xB0, 1u);
         mpegGuestWrite32(rdram, uVar3 + 0x9C, 0xFFFFFFFFu);
         mpegGuestWrite32(rdram, uVar3 + 0x80, 0xFFFFFFFFu);
         mpegGuestWrite32(rdram, uVar3 + 0x94, 0xFFFFFFFFu);
         mpegGuestWrite32(rdram, uVar3 + 0x98, 0xFFFFFFFFu);
 
-        mpegGuestWrite32(rdram, 0x1717BCu, param_1);
-
-        static const uint32_t s_refValues[] = {
-            0x171A50u, 0x171C58u, 0x171CC0u, 0x171D28u, 0x171D90u,
-            0x171AB8u, 0x171B20u, 0x171B88u, 0x171BF0u};
-        for (unsigned i = 0; i < 9u; ++i)
-            mpegGuestWrite32(rdram, 0x171800u + i * 4u, s_refValues[i]);
+        mpegGuestWrite32(rdram, g_mpeg_profile.objectGlobal, param_1);
+        for (size_t i = 0; i < g_mpeg_profile.references.size(); ++i)
+            mpegGuestWrite32(rdram, g_mpeg_profile.referenceTable + static_cast<uint32_t>(i) * 4u,
+                             g_mpeg_profile.references[i]);
 
         uint32_t setDynamicRet = a1_init;
         if (uint8_t *p = getMemPtr(rdram, puVar4 + 8))
@@ -2530,6 +2620,8 @@ namespace ps2_stubs
 
     void sceMpegDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDelete", ctx);
         (void)rdram;
 
@@ -2550,6 +2642,8 @@ namespace ps2_stubs
 
     void sceMpegDemuxPss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDemuxPss", ctx);
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         const uint32_t dataAddr = getRegU32(ctx, 5);
@@ -2620,6 +2714,8 @@ namespace ps2_stubs
 
     void sceMpegDemuxPssRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDemuxPssRing", ctx);
         static std::atomic<uint32_t> s_demuxRingEntryCount{0u};
         const uint32_t entryIdx = s_demuxRingEntryCount.fetch_add(1u, std::memory_order_relaxed);
@@ -2715,6 +2811,8 @@ namespace ps2_stubs
 
     void sceMpegDispCenterOffX(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDispCenterOffX", ctx);
         (void)rdram;
         (void)runtime;
@@ -2723,6 +2821,8 @@ namespace ps2_stubs
 
     void sceMpegDispCenterOffY(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDispCenterOffY", ctx);
         (void)rdram;
         (void)runtime;
@@ -2731,6 +2831,8 @@ namespace ps2_stubs
 
     void sceMpegDispHeight(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDispHeight", ctx);
         (void)rdram;
         (void)runtime;
@@ -2741,6 +2843,8 @@ namespace ps2_stubs
 
     void sceMpegDispWidth(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegDispWidth", ctx);
         (void)rdram;
         (void)runtime;
@@ -2751,6 +2855,8 @@ namespace ps2_stubs
 
     void sceMpegGetDecodeMode(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegGetDecodeMode", ctx);
         (void)rdram;
         (void)runtime;
@@ -2774,6 +2880,8 @@ namespace ps2_stubs
 
     void sceMpegGetPicture(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegGetPicture", ctx);
         if (usesDodMpegAbi(rdram))
         {
@@ -2930,6 +3038,8 @@ namespace ps2_stubs
 
     void sceMpegGetPictureRAW8(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegGetPictureRAW8", ctx);
         if (usesDodMpegAbi(rdram))
         {
@@ -2943,6 +3053,8 @@ namespace ps2_stubs
 
     void sceMpegGetPictureRAW8xy(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegGetPictureRAW8xy", ctx);
         if (usesDodMpegAbi(rdram))
         {
@@ -2958,6 +3070,11 @@ namespace ps2_stubs
 
     void sceMpegInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+        {
+            setReturnU32(ctx, 0u);
+            return;
+        }
         dodMpegTrace("sceMpegInit", ctx);
         if (usesDodMpegAbi(rdram))
             resetDodMpegHardware(runtime);
@@ -2980,6 +3097,8 @@ namespace ps2_stubs
 
     void sceMpegIsEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegIsEnd", ctx);
         (void)rdram;
         const uint32_t mpegAddr = getRegU32(ctx, 4);
@@ -3023,6 +3142,8 @@ namespace ps2_stubs
 
     void sceMpegIsRefBuffEmpty(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegIsRefBuffEmpty", ctx);
         (void)rdram;
         (void)runtime;
@@ -3034,6 +3155,8 @@ namespace ps2_stubs
 
     void sceMpegReset(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegReset", ctx);
         (void)runtime;
         const uint32_t param_1 = getRegU32(ctx, 4);
@@ -3084,11 +3207,13 @@ namespace ps2_stubs
         mpegGuestWrite32(rdram, param_1 + 0x08, 0u);
         mpegGuestWrite32(rdram, inner + 0x80, 0xFFFFFFFFu);
         mpegGuestWrite32(rdram, inner + 0xAC, 0u);
-        mpegGuestWrite32(rdram, 0x171904u, 0u);
+        mpegGuestWrite32(rdram, g_mpeg_profile.resetGlobal, 0u);
     }
 
     void sceMpegResetDefaultPtsGap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegResetDefaultPtsGap", ctx);
         (void)rdram;
         (void)runtime;
@@ -3097,6 +3222,8 @@ namespace ps2_stubs
 
     void sceMpegSetDecodeMode(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegSetDecodeMode", ctx);
         (void)rdram;
         (void)runtime;
@@ -3109,6 +3236,8 @@ namespace ps2_stubs
 
     void sceMpegSetDefaultPtsGap(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegSetDefaultPtsGap", ctx);
         (void)rdram;
         (void)runtime;
@@ -3117,20 +3246,20 @@ namespace ps2_stubs
 
     namespace
     {
-        std::map<uint32_t, PS2Runtime::RecompiledFunction> hdNativeFunctions;
-        template<uint32_t Entry> void hdNativeGate(uint8_t* rdram,R5900Context* ctx,PS2Runtime* runtime)
+        template<MpegEntry Entry> void hdNativeGate(uint8_t* rdram,R5900Context* ctx,PS2Runtime* runtime)
         {
+            const uint32_t address = hdInstalledEntries[static_cast<size_t>(Entry)];
+            const bool supported = runtime == hdHookRuntime && usesDodMpegAbi(rdram);
             const uint32_t owner=getRegU32(ctx,4);
-            if constexpr(Entry==0x10ac38u)
+            if constexpr(Entry==MpegEntry::Create)
             {
-                if(ctx->pc==Entry && dodpcsx2::hdCgSupported() && usesDodMpegAbi(rdram))
+                if(supported && ctx->pc==address && dodpcsx2::hdCgSupported())
                 {
-                    const uint32_t gp=getRegU32(ctx,28);
-                    const uint32_t movie=(gp>=0x7e0c && gp<PS2_RAM_SIZE)?mpegRead32(rdram,gp-0x7e0c):0xffffffffu;
-                    uint16_t flags=0;
-                    if(movie<109) std::memcpy(&flags,rdram+0x4df7d6u+movie*8u,2);
+                    uint32_t movie;
+                    uint16_t flags;
+                    const bool selected = readProfileMovie(rdram,ctx,movie,flags);
                     auto hd=std::make_unique<dodhdcg::Decoder>();
-                    if(movie<109 && hd->open(static_cast<int>(movie),flags))
+                    if(selected && hd->open(static_cast<int>(movie),flags))
                     {
                         ctx->pc=getRegU32(ctx,31);
                         sceMpegCreate(rdram,ctx,runtime);
@@ -3148,49 +3277,68 @@ namespace ps2_stubs
                     std::fprintf(stderr,"[cg-hd] route=original selected_before_playback movie=%u\n",movie);
                 }
             }
-            else if(dod_mpeg_dma::activeSession().mpegAddr==owner && owner!=0)
+            else if(supported && dod_mpeg_dma::activeSession().mpegAddr==owner && owner!=0)
             {
                 ctx->pc=getRegU32(ctx,31);
-                if constexpr(Entry==0x10b890u) sceMpegDelete(rdram,ctx,runtime);
-                if constexpr(Entry==0x10b898u) sceMpegAddBs(rdram,ctx,runtime);
-                if constexpr(Entry==0x10b8d8u) sceMpegGetPicture(rdram,ctx,runtime);
-                if constexpr(Entry==0x10b978u) sceMpegReset(rdram,ctx,runtime);
-                if constexpr(Entry==0x10ba30u) sceMpegGetDecodeMode(rdram,ctx,runtime);
-                if constexpr(Entry==0x10ba50u) sceMpegAddCallback(rdram,ctx,runtime);
-                if constexpr(Entry==0x10bc08u) sceMpegClearRefBuff(rdram,ctx,runtime);
-                if constexpr(Entry==0x10c8a8u) sceMpegFlush(rdram,ctx,runtime);
-                if constexpr(Entry==0x10b920u || Entry==0x10bc60u)
+                if constexpr(Entry==MpegEntry::Delete) sceMpegDelete(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::AddBs) sceMpegAddBs(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::GetPicture) sceMpegGetPicture(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::Reset) sceMpegReset(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::GetDecodeMode) sceMpegGetDecodeMode(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::AddCallback) sceMpegAddCallback(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::ClearRefBuff) sceMpegClearRefBuff(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::Flush) sceMpegFlush(rdram,ctx,runtime);
+                if constexpr(Entry==MpegEntry::GetPictureRAW8 || Entry==MpegEntry::GetPictureRAW8xy)
                 {
                     std::fprintf(stderr,"[cg-hd] unexpected RAW8 mode; HD session stopped\n");
                     setReturnS32(ctx,-1);
                 }
                 return;
             }
-            hdNativeFunctions.at(Entry)(rdram,ctx,runtime);
+            const auto original = hdNativeFunctions.find(address);
+            if (original != hdNativeFunctions.end())
+                original->second(rdram,ctx,runtime);
+            else
+                setReturnS32(ctx,-1);
         }
     }
 
     void dodInstallHdMovieHooks(PS2Runtime& runtime)
     {
-        // Only the selected HD session uses the RGB adapter. Unavailable movies
-        // keep the existing recompiled libmpeg/IPU path, chosen before decoding.
-        const std::pair<uint32_t,PS2Runtime::RecompiledFunction> gates[] = {
-            {0x10ac38u,hdNativeGate<0x10ac38u>},{0x10b890u,hdNativeGate<0x10b890u>},
-            {0x10b898u,hdNativeGate<0x10b898u>},{0x10b8d8u,hdNativeGate<0x10b8d8u>},
-            {0x10b978u,hdNativeGate<0x10b978u>},{0x10ba30u,hdNativeGate<0x10ba30u>},
-            {0x10ba50u,hdNativeGate<0x10ba50u>},{0x10bc08u,hdNativeGate<0x10bc08u>},
-            {0x10c8a8u,hdNativeGate<0x10c8a8u>},{0x10b920u,hdNativeGate<0x10b920u>},
-            {0x10bc60u,hdNativeGate<0x10bc60u>}};
-        for(auto [address,gate]:gates)
+        // Explicit, revision-qualified and all-or-nothing. Repeated installation is a no-op.
+        if (!g_mpeg_profile_valid || g_mpeg_profile.abi != MpegAbi::Work19A0 ||
+            !matchesMpegGameProfile(runtime.memory().getRDRAM()) || hdHookRuntime)
+            return;
+        const PS2Runtime::RecompiledFunction gates[] = {
+            hdNativeGate<MpegEntry::Create>,
+            hdNativeGate<MpegEntry::Delete>,
+            hdNativeGate<MpegEntry::AddBs>,
+            hdNativeGate<MpegEntry::GetPicture>,
+            hdNativeGate<MpegEntry::Reset>,
+            hdNativeGate<MpegEntry::GetDecodeMode>,
+            hdNativeGate<MpegEntry::AddCallback>,
+            hdNativeGate<MpegEntry::ClearRefBuff>,
+            hdNativeGate<MpegEntry::Flush>,
+            hdNativeGate<MpegEntry::GetPictureRAW8>,
+            hdNativeGate<MpegEntry::GetPictureRAW8xy>,
+        };
+        for (uint32_t address : g_mpeg_profile.hdEntries)
+            if (!address || !runtime.lookupFunction(address))
+                return;
+        hdInstalledEntries = g_mpeg_profile.hdEntries;
+        hdHookRuntime = &runtime;
+        for (size_t i = 0; i < hdInstalledEntries.size(); ++i)
         {
-            auto original=runtime.lookupFunction(address);
-            if(original) { hdNativeFunctions[address]=original; runtime.replaceFunction(address,gate); }
+            const uint32_t address = hdInstalledEntries[i];
+            hdNativeFunctions[address] = runtime.lookupFunction(address);
+            runtime.replaceFunction(address, gates[i]);
         }
     }
 
     bool dodHdMpegDeleteIfOwned(uint8_t* rdram,R5900Context* ctx,PS2Runtime* runtime)
     {
-        if(ctx->pc!=0x10b890u || !dod_mpeg_dma::activeSession() ||
+        if(!usesDodMpegAbi(rdram) || !g_mpeg_profile.hdEntries[static_cast<size_t>(MpegEntry::Delete)] ||
+           ctx->pc!=g_mpeg_profile.hdEntries[static_cast<size_t>(MpegEntry::Delete)] || !dod_mpeg_dma::activeSession() ||
            dod_mpeg_dma::activeSession().mpegAddr!=getRegU32(ctx,4)) return false;
         ctx->pc=getRegU32(ctx,31);
         sceMpegDelete(rdram,ctx,runtime);
@@ -3199,6 +3347,8 @@ namespace ps2_stubs
 
     void sceMpegSetImageBuff(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireMpegGameProfile(rdram, ctx))
+            return;
         dodMpegTrace("sceMpegSetImageBuff", ctx);
         (void)rdram;
         (void)runtime;

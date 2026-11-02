@@ -3,6 +3,71 @@
 
 namespace ps2_stubs
 {
+    namespace
+    {
+        FontGameProfile fontProfile;
+        bool fontConfigured = false;
+        bool fontWarned = false;
+        constexpr uint32_t kFontEntrySz = 0x24u;
+
+        int32_t fontGpOffset(FontGlobal field)
+        {
+            return fontProfile.gpOffsets[static_cast<size_t>(field)];
+        }
+
+        bool requireFontProfile(uint8_t *rdram, R5900Context *ctx, bool usesGp = true)
+        {
+            bool valid = rdram && fontConfigured;
+            uint32_t word = 0u;
+            if (valid)
+                std::memcpy(&word, getConstMemPtr(rdram, fontProfile.signatureAddress), 4u);
+            valid = valid && word == fontProfile.signatureWord;
+            if (valid && usesGp)
+                for (int32_t offset : fontProfile.gpOffsets)
+                {
+                    const int64_t address = static_cast<int64_t>(getRegU32(ctx, 28)) + offset;
+                    valid = valid && address >= 0 && address <= UINT32_MAX &&
+                            validProfileRamRange(static_cast<uint32_t>(address), 4u, 4u);
+                }
+            if (valid)
+                return true;
+            if (!fontWarned)
+            {
+                std::fprintf(stderr, "[font] missing/mismatched game profile or invalid GP globals; HLE disabled\n");
+                fontWarned = true;
+            }
+            setReturnS32(ctx, -1);
+            return false;
+        }
+    }
+
+    void resetFontGameProfile()
+    {
+        fontProfile = {};
+        fontConfigured = false;
+        fontWarned = false;
+    }
+
+    bool configureFontGameProfile(const FontGameProfile &profile)
+    {
+        resetFontGameProfile();
+        if (!profile.table || !profile.count || !profile.signatureAddress ||
+            !validProfileRamRange(profile.table, static_cast<uint64_t>(profile.count) * kFontEntrySz, 4u) ||
+            !validProfileRamRange(profile.signatureAddress, 4u, 4u))
+            return false;
+        for (size_t i = 0; i < profile.gpOffsets.size(); ++i)
+        {
+            if ((profile.gpOffsets[i] & 3) != 0)
+                return false;
+            for (size_t j = i + 1; j < profile.gpOffsets.size(); ++j)
+                if (profile.gpOffsets[i] == profile.gpOffsets[j])
+                    return false;
+        }
+        fontProfile = profile;
+        fontConfigured = true;
+        return true;
+    }
+
     static void writeU32AtGp(uint8_t *rdram, uint32_t gp, int32_t offset, uint32_t value)
     {
         const uint32_t addr = gp + static_cast<uint32_t>(offset);
@@ -12,19 +77,21 @@ namespace ps2_stubs
 
     void sceeFontInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t gp = getRegU32(ctx, 28);
         const uint32_t a0 = getRegU32(ctx, 4);
         const uint32_t a1 = getRegU32(ctx, 5);
         const uint32_t a2 = getRegU32(ctx, 6);
         const uint32_t a3 = getRegU32(ctx, 7);
-        writeU32AtGp(rdram, gp, -0x7b60, a1);
-        writeU32AtGp(rdram, gp, -0x7b5c, a2);
-        writeU32AtGp(rdram, gp, -0x7b64, a0);
-        writeU32AtGp(rdram, gp, -0x7c98, a3);
-        writeU32AtGp(rdram, gp, -0x7b4c, 0x7f7f7f7f);
-        writeU32AtGp(rdram, gp, -0x7b50, 0x3f800000);
-        writeU32AtGp(rdram, gp, -0x7b54, 0x3f800000);
-        writeU32AtGp(rdram, gp, -0x7b58, 0);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Width), a1);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Height), a2);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Clut), a0);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Mode), a3);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Colour), 0x7f7f7f7f);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::ScaleY), 0x3f800000);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::ScaleX), 0x3f800000);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::FontId), 0);
 
         if (runtime && a0 != 0u)
         {
@@ -79,11 +146,16 @@ namespace ps2_stubs
 
     void sceeFontLoadFont(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        static constexpr uint32_t kFontBase = 0x176148u;
-        static constexpr uint32_t kFontEntrySz = 0x24u;
+        if (!requireFontProfile(rdram, ctx, false))
+            return;
 
         const uint32_t fontDataAddr = getRegU32(ctx, 4);
         const int fontId = static_cast<int>(getRegU32(ctx, 5));
+        if (fontId < 0 || static_cast<uint32_t>(fontId) >= fontProfile.count)
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
         const int tbp0 = static_cast<int>(getRegU32(ctx, 7));
 
         if (!fontDataAddr || !runtime)
@@ -109,12 +181,12 @@ namespace ps2_stubs
         if (raw8 & 0x40000000u)
         {
             pointsize = raw8 - 0x40000000u;
-            if (uint8_t *p = getMemPtr(rdram, kFontBase + fontOff + 0x20u))
+            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
                 *reinterpret_cast<uint32_t *>(p) = 1u;
         }
         else
         {
-            if (uint8_t *p = getMemPtr(rdram, kFontBase + fontOff + 0x20u))
+            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
                 *reinterpret_cast<uint32_t *>(p) = 0u;
         }
 
@@ -123,7 +195,7 @@ namespace ps2_stubs
 
         uint32_t glyphSrc = fontDataAddr + static_cast<uint32_t>(fontDataSz) + 0x10u;
         uint32_t glyphAlloc = runtime->guestMalloc(0x2010u, 0x40u);
-        if (uint8_t *p = getMemPtr(rdram, kFontBase + fontOff))
+        if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff))
             *reinterpret_cast<uint32_t *>(p) = glyphAlloc;
 
         if (glyphAlloc != 0u)
@@ -135,7 +207,7 @@ namespace ps2_stubs
         }
 
         uint32_t isDoubleByte = 0;
-        if (const uint8_t *p = getConstMemPtr(rdram, kFontBase + fontOff + 0x20u))
+        if (const uint8_t *p = getConstMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
             isDoubleByte = *reinterpret_cast<const uint32_t *>(p);
         if (isDoubleByte == 0u)
         {
@@ -154,7 +226,7 @@ namespace ps2_stubs
 
         auto writeFontField = [&](uint32_t off, uint32_t val)
         {
-            if (uint8_t *p = getMemPtr(rdram, kFontBase + fontOff + off))
+            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff + off))
                 *reinterpret_cast<uint32_t *>(p) = val;
         };
         writeFontField(0x18u, pointsize);
@@ -222,11 +294,11 @@ namespace ps2_stubs
         setReturnS32(ctx, retTbp);
     }
 
-    static constexpr uint32_t kFontBase = 0x176148u;
-    static constexpr uint32_t kFontEntrySz = 0x24u;
 
     void sceeFontGenerateString(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const float sclx = ctx->f[12];
         const float scly = ctx->f[13];
         const uint32_t bufAddr = getRegU32(ctx, 4);
@@ -237,6 +309,11 @@ namespace ps2_stubs
         const uint32_t colour = getRegU32(ctx, 9);
         const int alignCh = static_cast<int8_t>(getRegU32(ctx, 10) & 0xffu);
         const int fontId = static_cast<int>(getRegU32(ctx, 11));
+        if (fontId < 0 || static_cast<uint32_t>(fontId) >= fontProfile.count)
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
 
         const uint32_t sp = getRegU32(ctx, 29);
         const uint32_t strAddr = FAST_READ32(sp + 0x00u);
@@ -250,14 +327,14 @@ namespace ps2_stubs
         }
 
         const uint32_t gp = getRegU32(ctx, 28);
-        const uint32_t fontModeAdj = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7c98)));
+        const uint32_t fontModeAdj = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Mode))));
         const uint32_t shiftAmt = fontModeAdj & 0x1fu;
-        const int scrHeight = static_cast<int>(FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b5c))));
-        const int scrWidth = static_cast<int>(FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b60))));
-        const uint32_t fontClut = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b64)));
+        const int scrHeight = static_cast<int>(FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Height)))));
+        const int scrWidth = static_cast<int>(FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Width)))));
+        const uint32_t fontClut = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Clut))));
 
         const uint32_t fontOff = static_cast<uint32_t>(fontId * static_cast<int>(kFontEntrySz));
-        const int lineH = static_cast<int>(FAST_READ32(kFontBase + fontOff + 0x18u));
+        const int lineH = static_cast<int>(FAST_READ32(fontProfile.table + fontOff + 0x18u));
 
         int iVar21 = 0;
         int iStack_dc = 0;
@@ -304,10 +381,10 @@ namespace ps2_stubs
             FAST_WRITE64(bufAddr + 0x60, 0x1000000000000001ull);
             FAST_WRITE64(bufAddr + 0x68, 0x0eull);
 
-            uint64_t iVar5 = static_cast<uint64_t>(FAST_READ32(kFontBase + fontOff + 0x08u));
-            uint64_t iVar22 = static_cast<uint64_t>(FAST_READ32(kFontBase + fontOff + 0x0cu));
-            uint64_t iVar3 = static_cast<uint64_t>(FAST_READ32(kFontBase + fontOff + 0x10u));
-            uint64_t iVar4 = static_cast<uint64_t>(FAST_READ32(kFontBase + fontOff + 0x14u));
+            uint64_t iVar5 = static_cast<uint64_t>(FAST_READ32(fontProfile.table + fontOff + 0x08u));
+            uint64_t iVar22 = static_cast<uint64_t>(FAST_READ32(fontProfile.table + fontOff + 0x0cu));
+            uint64_t iVar3 = static_cast<uint64_t>(FAST_READ32(fontProfile.table + fontOff + 0x10u));
+            uint64_t iVar4 = static_cast<uint64_t>(FAST_READ32(fontProfile.table + fontOff + 0x14u));
 
             uint64_t tex0 = iVar5 | 0x2000000000000000ull | (iVar22 << 14) | 0x400000000ull | (iVar3 << 26) | 0x1400000ull | (iVar4 << 30) | (static_cast<uint64_t>(fontClut) << 37);
 
@@ -345,10 +422,10 @@ namespace ps2_stubs
 
             if (uVar9 > 0x20u)
             {
-                uint32_t dat176168 = FAST_READ32(kFontBase + fontOff + 0x20u);
+                uint32_t dat176168 = FAST_READ32(fontProfile.table + fontOff + 0x20u);
                 if (dat176168 == 0u)
                 {
-                    uint32_t fontPtr0 = FAST_READ32(kFontBase + fontOff);
+                    uint32_t fontPtr0 = FAST_READ32(fontProfile.table + fontOff);
                     uint32_t tableAddr = FAST_READ32(fontPtr0 + 0x2000u);
                     int8_t kern = static_cast<int8_t>(FAST_READ8(tableAddr - 0x1c20u + uStack_d8 * 0xe0u + uVar9));
                     iVar15 += static_cast<int>(static_cast<float>(static_cast<int>(kern)) * sclx);
@@ -370,7 +447,7 @@ namespace ps2_stubs
 
                 if (param14 != 0u)
                 {
-                    uint32_t fontPtr = FAST_READ32(kFontBase + fontOff);
+                    uint32_t fontPtr = FAST_READ32(fontProfile.table + fontOff);
                     int16_t sVar7 = baseX + static_cast<int16_t>(iVar15);
 
                     iVar22_qw += 2;
@@ -410,7 +487,7 @@ namespace ps2_stubs
                 }
 
                 {
-                    uint32_t fontPtr = FAST_READ32(kFontBase + fontOff);
+                    uint32_t fontPtr = FAST_READ32(fontProfile.table + fontOff);
                     uint32_t advOff = static_cast<uint32_t>((glyphIdx * 2 + 1) * 16 + 8);
                     int16_t advW = static_cast<int16_t>(FAST_READ16(fontPtr + advOff));
                     iVar15 += static_cast<int>(static_cast<float>(static_cast<int>(advW)) * sclx);
@@ -420,7 +497,7 @@ namespace ps2_stubs
 
         label_space:
         {
-            int spaceW = static_cast<int>(FAST_READ32(kFontBase + fontOff + 0x1cu));
+            int spaceW = static_cast<int>(FAST_READ32(fontProfile.table + fontOff + 0x1cu));
             iVar15 += static_cast<int>(static_cast<float>(spaceW) * sclx);
         }
 
@@ -503,6 +580,8 @@ namespace ps2_stubs
 
     void sceeFontPrintfAt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t oldSp = getRegU32(ctx, 29);
         const uint32_t frame = oldSp - 0x900u;
 
@@ -522,12 +601,12 @@ namespace ps2_stubs
         vsprintf(rdram, ctx, runtime);
 
         const uint32_t gp = getRegU32(ctx, 28);
-        uint32_t defaultSclxBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b54)));
-        uint32_t defaultSclyBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b50)));
-        uint32_t defaultColour = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b4c)));
-        uint32_t defaultFontId = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b58)));
-        uint32_t scrWidth = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b60)));
-        uint32_t scrHeight = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b5c)));
+        uint32_t defaultSclxBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::ScaleX))));
+        uint32_t defaultSclyBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::ScaleY))));
+        uint32_t defaultColour = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Colour))));
+        uint32_t defaultFontId = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::FontId))));
+        uint32_t scrWidth = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Width))));
+        uint32_t scrHeight = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Height))));
 
         std::memcpy(&ctx->f[12], &defaultSclxBits, sizeof(float));
         std::memcpy(&ctx->f[13], &defaultSclyBits, sizeof(float));
@@ -555,6 +634,8 @@ namespace ps2_stubs
 
     void sceeFontPrintfAt2(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t oldSp = getRegU32(ctx, 29);
         const uint32_t frame = oldSp - 0x900u;
 
@@ -577,10 +658,10 @@ namespace ps2_stubs
         vsprintf(rdram, ctx, runtime);
 
         const uint32_t gp = getRegU32(ctx, 28);
-        uint32_t defaultSclxBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b54)));
-        uint32_t defaultSclyBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b50)));
-        uint32_t defaultColour = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b4c)));
-        uint32_t defaultFontId = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(-0x7b58)));
+        uint32_t defaultSclxBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::ScaleX))));
+        uint32_t defaultSclyBits = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::ScaleY))));
+        uint32_t defaultColour = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::Colour))));
+        uint32_t defaultFontId = FAST_READ32(gp + static_cast<uint32_t>(static_cast<int32_t>(fontGpOffset(FontGlobal::FontId))));
 
         std::memcpy(&ctx->f[12], &defaultSclxBits, sizeof(float));
         std::memcpy(&ctx->f[13], &defaultSclyBits, sizeof(float));
@@ -608,12 +689,17 @@ namespace ps2_stubs
 
     void sceeFontClose(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        static constexpr uint32_t kFontBase = 0x176148u;
-        static constexpr uint32_t kFontEntrySz = 0x24u;
+        if (!requireFontProfile(rdram, ctx, false))
+            return;
         const int fontId = static_cast<int>(getRegU32(ctx, 4));
+        if (fontId < 0 || static_cast<uint32_t>(fontId) >= fontProfile.count)
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
         const uint32_t fontOff = static_cast<uint32_t>(fontId * static_cast<int>(kFontEntrySz));
         uint32_t glyphPtr = 0;
-        if (const uint8_t *p = getConstMemPtr(rdram, kFontBase + fontOff))
+        if (const uint8_t *p = getConstMemPtr(rdram, fontProfile.table + fontOff))
             glyphPtr = *reinterpret_cast<const uint32_t *>(p);
         if (glyphPtr != 0u)
         {
@@ -626,7 +712,7 @@ namespace ps2_stubs
                     runtime->guestFree(kernPtr);
                 runtime->guestFree(glyphPtr);
             }
-            if (uint8_t *p = getMemPtr(rdram, kFontBase + fontOff))
+            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff))
                 *reinterpret_cast<uint32_t *>(p) = 0u;
             setReturnS32(ctx, 0);
         }
@@ -638,30 +724,38 @@ namespace ps2_stubs
 
     void sceeFontSetColour(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t gp = getRegU32(ctx, 28);
-        writeU32AtGp(rdram, gp, -0x7b4c, getRegU32(ctx, 4));
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Colour), getRegU32(ctx, 4));
     }
 
     void sceeFontSetMode(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t gp = getRegU32(ctx, 28);
-        writeU32AtGp(rdram, gp, -0x7c98, getRegU32(ctx, 4));
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::Mode), getRegU32(ctx, 4));
         setReturnS32(ctx, 0);
     }
 
     void sceeFontSetFont(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t gp = getRegU32(ctx, 28);
-        writeU32AtGp(rdram, gp, -0x7b58, getRegU32(ctx, 4));
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::FontId), getRegU32(ctx, 4));
     }
 
     void sceeFontSetScale(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (!requireFontProfile(rdram, ctx))
+            return;
         const uint32_t gp = getRegU32(ctx, 28);
         uint32_t sclx_bits, scly_bits;
         std::memcpy(&sclx_bits, &ctx->f[12], sizeof(float));
         std::memcpy(&scly_bits, &ctx->f[13], sizeof(float));
-        writeU32AtGp(rdram, gp, -0x7b54, sclx_bits);
-        writeU32AtGp(rdram, gp, -0x7b50, scly_bits);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::ScaleX), sclx_bits);
+        writeU32AtGp(rdram, gp, fontGpOffset(FontGlobal::ScaleY), scly_bits);
     }
 }

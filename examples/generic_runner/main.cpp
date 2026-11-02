@@ -17,12 +17,17 @@
 //   volume       master volume 0..100                                        default: 100
 //   rumble       0 / 1, gamepad rumble                                       default: 1
 //   gparam       guest address of the game's libgraph GParam record          default: unknown (see GS.cpp)
+//   ipu_iq       guest address of libipu's 80-byte IQ input (16-byte aligned) required for HLE sceIpuInit
+//   ipu_vq       guest address of libipu's 32-byte VQ input (16-byte aligned) required with ipu_iq
+//   ipu_d4_chcr  optional guest helper for D4_CHCR; 0 writes it directly     default: 0
 //
 // Per-game GS settings (PCSX2's GameIndex.yaml fixes such as half_pixel_offset / native_scaling / blending) go in
 // gs_options; nothing is applied by default.
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 #include "../lib/gs/dod_pcsx2_gs.h"
+#include "../lib/Kernel/Stubs/IPU.h"
+#include "../lib/Kernel/Stubs/GuestAddress.h"
 
 #include <raylib.h>
 
@@ -35,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <string>
 
@@ -120,12 +126,19 @@ int main(int argc, char *argv[])
     {
         const fs::path exeDir = executableDirectory(argv[0]);
         std::map<std::string, std::string> ini = readIni(exeDir / "game.ini");
-        for (int i = 1; i + 1 < argc; i += 2)
+        for (int i = 1; i < argc; i += 2)
         {
             const std::string key = argv[i];
-            if (key.rfind("--", 0) != 0)
+            const char *known[] = {"elf", "iso", "title", "window", "fullscreen", "renderer", "gs_scale",
+                                   "gs_options", "vu1", "volume", "rumble", "gparam", "ipu_iq", "ipu_vq", "ipu_d4_chcr"};
+            if (key.rfind("--", 0) != 0 || std::find(std::begin(known), std::end(known), key.substr(2)) == std::end(known))
             {
                 std::cerr << "unknown argument: " << key << std::endl;
+                return 2;
+            }
+            if (i + 1 >= argc)
+            {
+                std::cerr << "missing value for argument: " << key << std::endl;
                 return 2;
             }
             ini[key.substr(2)] = argv[i + 1];
@@ -150,8 +163,35 @@ int main(int argc, char *argv[])
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         paths.cdImage = iso;
         PS2Runtime::setIoPaths(paths);
+        uint32_t gparam = 0u;
         if (ini.count("gparam"))
-            ps2_stubs::setGsGParamAddress(static_cast<uint32_t>(std::strtoul(ini["gparam"].c_str(), nullptr, 0)));
+        {
+            if (!ps2_stubs::parseProfileAddress(ini["gparam"], gparam) ||
+                (gparam && !ps2_stubs::validProfileRamRange(gparam, 12u, 4u)))
+            {
+                std::cerr << "[runner] invalid gparam address: " << ini["gparam"] << std::endl;
+                return 2;
+            }
+        }
+        const bool ipuConfigured = ini.count("ipu_iq") || ini.count("ipu_vq") || ini.count("ipu_d4_chcr");
+        uint32_t iq = 0, vq = 0, helper = 0;
+        if (ipuConfigured)
+        {
+            if (!ini.count("ipu_iq") || !ini.count("ipu_vq") ||
+                !ps2_stubs::parseProfileAddress(ini["ipu_iq"], iq) || !ps2_stubs::parseProfileAddress(ini["ipu_vq"], vq) ||
+                (ini.count("ipu_d4_chcr") && !ps2_stubs::parseProfileAddress(ini["ipu_d4_chcr"], helper)))
+            {
+                std::cerr << "[runner] ipu_iq and ipu_vq must both be unsigned EE addresses; ipu_d4_chcr is optional" << std::endl;
+                return 2;
+            }
+            ps2_stubs::dodConfigureIpuInit(iq, vq, helper);
+            if (!ps2_stubs::hasValidIpuInitConfig())
+            {
+                std::cerr << "[runner] IPU tables must be 16-byte aligned in 32 MB EE RAM (IQ: 80 bytes, VQ: 32 bytes); "
+                             "the optional helper must be 4-byte aligned in EE RAM" << std::endl;
+                return 2;
+            }
+        }
 
         dodConfigureGamepad(get("rumble", "1") != "0");
         ps2x::iop::g_dodPadRumbleOutput = dodRequestPadRumble;
@@ -208,6 +248,12 @@ int main(int argc, char *argv[])
             std::cerr << "[runner] failed to load ELF: " << elf.string() << std::endl;
             return 1;
         }
+        // loadELF clears the preceding game's profile. Apply the validated values to this ELF.
+        if (ini.count("gparam"))
+            ps2_stubs::setGsGParamAddress(gparam);
+        if (ipuConfigured)
+            ps2_stubs::dodConfigureIpuInit(iq, vq, helper);
+        // MPEG HLE needs an independently verified MpegGameProfile configured here; see GAME_PORTING.md.
         runtime.run();
         std::cout.flush();
         std::cerr.flush();

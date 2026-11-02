@@ -92,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
    - `dodKzvuInstall(runtime, "microvu")`：VU1 用 PCSX2 microVU（不呼叫就用內建 VU1 直譯器）
    - `dodpcsx2::configure("pcsx2", 倍率, 0, "gs 選項")`：PCSX2 GS 的倍率與選項。有 `pcsx2gs.dll` 時預設就用 PCSX2 GS。
    - `runtime.replaceFunction(位址, …)`：替換或包裝遊戲函式
-7. 傳入該遊戲專用的值（[docs/GAME_PORTING.md](docs/GAME_PORTING.md)）：PCSX2 的逐遊戲 GS 修正放在 `gs_options`；遊戲的 libgraph 是原生執行時，再給 libgraph GParam 紀錄的位址（`gparam`，`sceGsSyncV` 使用）。使用 IPU／MPEG／字型 HLE 前也要核對該遊戲的地址與 ABI；公開源碼仍有專用預設，不可盲目沿用。見 [通用基底界線](docs/REUSABLE_BASE.md)。
+7. 傳入該遊戲專用的值（[docs/GAME_PORTING.md](docs/GAME_PORTING.md)）：PCSX2 的逐遊戲 GS 修正放在 `gs_options`；遊戲的 libgraph 是原生執行時，再給 libgraph GParam 紀錄的位址（`gparam`，`sceGsSyncV` 使用）。IPU／MPEG／字型 HLE 也要用該遊戲已驗證的資料配置，並在成功 `loadELF` 後套用，不再沿用其他遊戲的地址。剩餘渲染專用假設見 [通用基底界線](docs/REUSABLE_BASE.md)。
 8. 執行檔旁要放：
    - `pcsx2gs.dll`
    - `resources\`（從 `pcsx2gs/pcsx2-gs/resources` 複製）
@@ -112,7 +112,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 | IOP 測試（5 個程式） | 全部通過 |
 | GS 快取測試 | 45／45 通過 |
 
-以上是歷史結果，不代表後續修改或其他遊戲已驗收。庫內無介面測試見 [tests/README.md](tests/README.md)，不能代替 Windows 建置與實際遊戲驗證。
+以上是歷史結果，不代表後續修改或其他遊戲已驗收。當前地址配置的無介面測試見 [tests/README.md](tests/README.md)，不能代替 Windows 建置與實際遊戲驗證。
 
 ### 完整回歸，以及如何依結果修正
 

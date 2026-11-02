@@ -27,7 +27,7 @@ vertex/texture coordinate transform; simply accepting HPO4 is not sufficient evi
 
 At audited public commit `311f718106ec88450a002175a9eafbc57978f26b`, the legacy renderer still has the HPO5 gate
 and no independent per-game opt-in. The default-off/profile separation is tracked in GitHub issue #3; it is not
-implemented by this documentation change. The existing `PS2_PARTICLE_EDGES=0` switch (legacy `DOD_PARTICLE_EDGES=0`)
+implemented by the address-portability changes below. The existing `PS2_PARTICLE_EDGES=0` switch (legacy `DOD_PARTICLE_EDGES=0`)
 can disable the heuristic when using a runtime/DLL combination supporting that switch.
 
 ## Public-source portability audit, 2026-11-02
@@ -53,5 +53,20 @@ Record the source/base revision, mechanism versus profile data, exact path activ
 directly affected game regression, counterexamples and unresolved limits. Keep shared code, profile selection and
 deployed binaries consistent. Update documentation and upstream patches alongside the actual code change.
 
-Regression planning and failure triage: [complete regression guide](REGRESSION_TESTING.md)
-([繁體中文](REGRESSION_TESTING.zh-TW.md)). Static entry coverage, content sweeps and natural playthrough are distinct gates.
+## Address portability implementation, 2026-11-03
+
+The address changes in this branch close the IPU/MPEG gaps identified above and also remove the inherited font and
+host-loop game addresses. Shared hardware register addresses and explicitly supported ABI field offsets remain
+constants; game locations are supplied by profiles or the reference runner.
+
+- IPU initialization requires aligned, bounded per-game tables. Missing helpers use direct DMA register setup.
+- MPEG selects a supported ABI explicitly, with executable instruction guards and per-game callbacks/globals.
+  There is no unknown-game fallback to a legacy layout. HD entries, movie flags and the FIELD workaround are opt-in.
+- SCEE font HLE requires a bounded font table, instruction guard and per-game GP offsets; invalid IDs are rejected.
+- GParam uses strict address parsing and RAM validation. Capture metadata comes from an optional runner callback.
+- ELF loading clears the preceding profile; runners configure the selected game after a successful load.
+
+The complete headless suite passes 47 tests, including production IPU/MPEG/font translation units and the actual
+generic runner compiled with GCC/UndefinedBehaviorSanitizer. The distributable upstream patch matches the vendored
+source. This is not a new Windows/MSVC build or evidence of game/codec/font-rendering acceptance. Existing runners
+must follow the migration instructions in [GAME_PORTING.md](GAME_PORTING.md#5-address-configuration-and-migration).

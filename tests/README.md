@@ -32,5 +32,17 @@ order and is not the reference for this scalar SSE-compatible implementation.
 
 No game, graphics or audio device is needed. These tests do not replace a Windows/MSVC build or in-game listening.
 
+## Per-game addresses
+
+IPU, MPEG and font tests compile the complete production translation units against recording host services, with
+UndefinedBehaviorSanitizer. They require C++20 `g++` and exercise missing/invalid profiles, instruction mismatch,
+RAM bounds/aliases, IPU helper continuation, relocated MPEG callbacks/globals, optional movie metadata, repeat-safe
+HD hook installation/restoration, font GP arithmetic and font ID bounds. MPEG decoding and font rendering are not
+validated by these host stubs. The actual generic runner is also compiled and exercised for configuration errors,
+missing CLI values and reapplying validated IPU settings after ELF-load reset.
+
+These checks do not certify a game's ABI or visuals and do not replace a Windows/MSVC build. Existing generated
+runners must migrate profile configuration to after `loadELF`; no executable or DLL is deployed by these tests.
+
 Game-level coverage and the failure-to-fix workflow live in [REGRESSION_TESTING.md](../docs/REGRESSION_TESTING.md)
 ([繁體中文](../docs/REGRESSION_TESTING.zh-TW.md)). A passing headless suite is one gate, not full port acceptance.

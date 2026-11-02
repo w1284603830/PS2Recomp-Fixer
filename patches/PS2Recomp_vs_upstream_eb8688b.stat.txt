@@ -43,11 +43,11 @@
  ps2xRuntime/src/lib/Kernel/EeScheduler.cpp               | 1108 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++---
  ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp                  |  123 ++++++++++-
  ps2xRuntime/src/lib/Kernel/Stubs/DMA.cpp                 |   39 +++-
- ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp                  |  254 +++++++++++++++-------
- ps2xRuntime/src/lib/Kernel/Stubs/GS.h                    |    2 +
+ ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp                      |   272 ++++++++++++++++++++++++++++++++++++++++----------
+ ps2xRuntime/src/lib/Kernel/Stubs/GS.h                        |     3 +++
  ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h       |  177 +++++++++++++++
- ps2xRuntime/src/lib/Kernel/Stubs/IPU.cpp                 |   18 +-
- ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp                |  658 ++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ ps2xRuntime/src/lib/Kernel/Stubs/IPU.cpp                     |    51 ++++++++++++++++++++++++++++++++++++++++------
+ ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp                    |   842 ++++++++++++++++++++++++++++++++++++++++----------
  ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp          |   50 +++++
  ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp                 |   54 ++++-
  ps2xRuntime/src/lib/Kernel/Stubs/VU.cpp                  |   16 ++
@@ -89,7 +89,7 @@
  ps2xRuntime/src/lib/ps2_memory.cpp                       | 1496 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++----
  ps2xRuntime/src/lib/ps2_output_resampler.h               |   83 ++++++++++++++++++++++++++++++
  ps2xRuntime/src/lib/ps2_pad.cpp                          |  376 ++++++++++++++++++++++++++++----
- ps2xRuntime/src/lib/ps2_runtime.cpp                      |  730 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++---
+ ps2xRuntime/src/lib/ps2_runtime.cpp                          |   704 ++++++++++++++++++++++++++++++++++++++++----------
  ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp             |  389 ++++++++++++++++++++++++++++++---
  ps2xRuntime/src/lib/vu/dod_kzvu.cpp                |  103 +++++++++
  ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp                  |   15 ++
@@ -97,4 +97,12 @@
  ps2xTest/gs_cache/CMakeLists.txt                         |    1 +
  ps2xTest/gs_cache/gs_cache_no_pcsx2_gs.cpp         |    9 +
  ps2xTest/src/ps2_memory_tests.cpp                        |   66 ++++++
- 99 files changed, 17803 insertions(+), 494 deletions(-)
+ ps2xRuntime/include/ps2_runtime.h                            |     6 ++++++
+ ps2xRuntime/src/lib/Kernel/Stubs/Font.cpp                    |   194 ++++++++++++++++++++++++++++++++++++++++----------
+ ps2xRuntime/src/lib/Kernel/Stubs/Font.h                      |    15 +++++++++++++++
+ ps2xRuntime/src/lib/Kernel/Stubs/GuestAddress.h              |    29 +++++++++++++++++++++++++++++
+ ps2xRuntime/src/lib/Kernel/Stubs/IPU.h                       |     5 +++++
+ ps2xRuntime/src/lib/Kernel/Stubs/MPEG.h                      |     6 ++++++
+ ps2xRuntime/src/lib/Kernel/Stubs/MpegGameProfile.h           |   101 ++++++++++++++++++++++++++++++++++++++++
+ ps2xTest/src/ps2_runtime_expansion_tests.cpp                 |    44 +++++++++++++++++++++++++++++++++++++++-----
+ 107 files changed, 18338 insertions(+), 569 deletions(-)
