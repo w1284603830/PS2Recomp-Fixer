@@ -52,3 +52,6 @@ machine paths, assets and unpublished validation details must remain outside pub
 Record the source/base revision, mechanism versus profile data, exact path activation, focused hardware/unit tests,
 directly affected game regression, counterexamples and unresolved limits. Keep shared code, profile selection and
 deployed binaries consistent. Update documentation and upstream patches alongside the actual code change.
+
+Regression planning and failure triage: [complete regression guide](REGRESSION_TESTING.md)
+([繁體中文](REGRESSION_TESTING.zh-TW.md)). Static entry coverage, content sweeps and natural playthrough are distinct gates.

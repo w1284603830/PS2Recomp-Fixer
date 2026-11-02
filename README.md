@@ -99,8 +99,8 @@ that the runtime links. A game needs its own generated code and entry point (bel
    - `runtime.replaceFunction(address, …)` to replace or wrap game functions
 7. Pass the game-specific values ([docs/GAME_PORTING.md](docs/GAME_PORTING.md)): PCSX2's per-game GS fixes in
    `gs_options`, and the address of the game's libgraph GParam record (`gparam`, used by `sceGsSyncV`) when its libgraph
-   runs natively. Nothing game-specific is fixed in the GS bridge any more; review the remaining spots listed at the end
-   of [IMPROVEMENTS.md](IMPROVEMENTS.md).
+   runs natively. Audit IPU/MPEG/font addresses and ABIs before using their HLE paths; game-specific defaults still
+   present in the public source must not be reused blindly. See [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.md).
 8. Next to the executable: `pcsx2gs.dll`, `resources\` (from `pcsx2gs/pcsx2-gs/resources`), `SDL2.dll`
    (`third_party/src/SDL2-2.30.9/lib/x64`), the FFmpeg DLLs (copied by the build) and your game files
 
@@ -116,8 +116,33 @@ Results of a clean build on 2026-10-27 ([BUILD_VERIFICATION.md](BUILD_VERIFICATI
 | IOP tests (5 programs) | all pass |
 | GS cache tests | 45 / 45 pass |
 
-The original port was verified with that game (room and movie sweeps, play tests); another game must be tested on
-its own.
+These are historical results, not acceptance of later changes or another game. The headless tests are documented in [tests/README.md](tests/README.md); they do not replace a Windows build or game validation.
+
+### Full regression and how to fix failures
+
+Follow [the complete regression guide](docs/REGRESSION_TESTING.md) ([繁體中文](docs/REGRESSION_TESTING.zh-TW.md)),
+distilled from the Dawn of Dreams and Onimusha 3 handoffs:
+
+- **Separate evidence levels.** A successful build, an empty runner, zero static missing entries or a room sweep does
+  not mean the game passed. Run the headless suite (`python -m unittest discover -s tests -v`) and bundled build
+  suites; inspect named failures, not only exit codes/counts. CTest finding zero cases is not a pass.
+- **Cover natural progression.** Cold boot → menus → new game/native load → movement/combat → scene transitions;
+  extend to all chapters, bosses, cutscenes, save/exit/reload, endings and applicable New Game Plus. Test original and
+  enhanced modes separately, including HUD/fonts/particles, audio/clocks, IOP/SIF, movies/stills and normal user settings.
+- **Keep per-game requirements.** Dawn of Dreams needs both discs and actual disc-switch return paths, plus merged
+  images when supported. Onimusha 3 needs main/overlay entry checks, rooms, individual events and natural chains;
+  forced entry may lack an inherited overlay or story state. Neither game's evidence validates another port.
+- **Diagnose the first divergence.** Freeze commits, launched EXE/DLL hashes, profile, save and consumed input;
+  compare the same native/reference state through EE → VIF/VU → GIF → GS. Validate audio against its actual source
+  and codec revision. Adjacent-frame A/B is not frozen-state replay; an applied draw is not visual acceptance.
+- **Repair and retest a coherent candidate.** Distinguish hardware, ABI/profile, content and test-driver causes;
+  keep game addresses and rendering exceptions in explicit profiles. Add a focused regression, rebuild affected
+  components, rerun the failure and adjacent paths, then complete the acceptance matrix for the release candidate.
+  Recheck contention-suspect audio/timeouts with one instance before changing game logic.
+- **Report limits honestly.** Record `PASS` / `FAIL` / `BLOCKED` / `NOT_RUN`, actual path activation and visual/listening
+  review. Preserve unresolved failures and version evidence; untested cases are not passes. Every game's particles
+  require independent qualification, including both reference games. Do not ship game data or test saves.
+
 
 ## Author
 

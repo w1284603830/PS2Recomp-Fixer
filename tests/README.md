@@ -31,3 +31,6 @@ lane sums, horizontal reduction, full-scale inputs and all ring positions. AVX2 
 order and is not the reference for this scalar SSE-compatible implementation.
 
 No game, graphics or audio device is needed. These tests do not replace a Windows/MSVC build or in-game listening.
+
+Game-level coverage and the failure-to-fix workflow live in [REGRESSION_TESTING.md](../docs/REGRESSION_TESTING.md)
+([繁體中文](../docs/REGRESSION_TESTING.zh-TW.md)). A passing headless suite is one gate, not full port acceptance.

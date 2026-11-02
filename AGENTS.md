@@ -52,3 +52,7 @@ Keep private port handoffs, local paths, assets and unpublished evidence out of 
 unless the user explicitly authorizes that disclosure.
 
 See `docs/REUSABLE_BASE.md` and `docs/GAME_PORTING.md` for the current portability audit and porting boundary.
+
+For regression planning and failure triage, follow `docs/REGRESSION_TESTING.md` (Traditional Chinese companion:
+`docs/REGRESSION_TESTING.zh-TW.md`). Keep original/enhanced modes, automated coverage and human acceptance separate;
+zero static missing entries, an empty runner or a forced-room sweep never establishes a full playthrough.

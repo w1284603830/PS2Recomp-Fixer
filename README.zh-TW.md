@@ -92,7 +92,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
    - `dodKzvuInstall(runtime, "microvu")`：VU1 用 PCSX2 microVU（不呼叫就用內建 VU1 直譯器）
    - `dodpcsx2::configure("pcsx2", 倍率, 0, "gs 選項")`：PCSX2 GS 的倍率與選項。有 `pcsx2gs.dll` 時預設就用 PCSX2 GS。
    - `runtime.replaceFunction(位址, …)`：替換或包裝遊戲函式
-7. 傳入該遊戲專用的值（[docs/GAME_PORTING.md](docs/GAME_PORTING.md)）：PCSX2 的逐遊戲 GS 修正放在 `gs_options`；遊戲的 libgraph 是原生執行時，再給 libgraph GParam 紀錄的位址（`gparam`，`sceGsSyncV` 使用）。GS 橋接層已不再寫死任何遊戲的設定；其餘專用處見 [IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md) 最後一節。
+7. 傳入該遊戲專用的值（[docs/GAME_PORTING.md](docs/GAME_PORTING.md)）：PCSX2 的逐遊戲 GS 修正放在 `gs_options`；遊戲的 libgraph 是原生執行時，再給 libgraph GParam 紀錄的位址（`gparam`，`sceGsSyncV` 使用）。使用 IPU／MPEG／字型 HLE 前也要核對該遊戲的地址與 ABI；公開源碼仍有專用預設，不可盲目沿用。見 [通用基底界線](docs/REUSABLE_BASE.md)。
 8. 執行檔旁要放：
    - `pcsx2gs.dll`
    - `resources\`（從 `pcsx2gs/pcsx2-gs/resources` 複製）
@@ -112,7 +112,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 | IOP 測試（5 個程式） | 全部通過 |
 | GS 快取測試 | 45／45 通過 |
 
-原移植專案是用那款遊戲驗證的（房間與影片巡檢、實機遊玩）。換一款遊戲要另外測。
+以上是歷史結果，不代表後續修改或其他遊戲已驗收。庫內無介面測試見 [tests/README.md](tests/README.md)，不能代替 Windows 建置與實際遊戲驗證。
+
+### 完整回歸，以及如何依結果修正
+
+請依 [完整回歸指南](docs/REGRESSION_TESTING.zh-TW.md)（[English](docs/REGRESSION_TESTING.md)）建立各遊戲的測試計畫，流程整理自新鬼武者與鬼武者 3 的交接：
+
+- **區分證據層級。** 編譯成功、空 runner、靜態入口零缺失或房間巡檢，不等於遊戲通過。執行 `python -m unittest discover -s tests -v` 與建置內附測試，逐項檢查失敗名稱，不能只看 exit code 或數量；CTest 找到零個測試也不算通過。
+- **覆蓋自然遊玩。** 冷啟動 → 選單 → 新遊戲／原生讀檔 → 移動／戰鬥 → 切場，再涵蓋各章節、Boss、過場、存檔／退出重開讀檔、結局及可適用的二周目。原版與增強模式分開，並測 HUD／字型／粒子、音訊／時鐘、IOP／SIF、影片／靜圖與常用輸出設定。
+- **保留各作要求。** 新鬼需測兩碟、實際換碟及後續流程，支援合併映像時另測該模式。鬼武者 3 需檢查主 ELF／overlay 入口、房間、事件逐段與自然連播；強制跳房可能缺少沿用的 overlay 或劇情狀態。任一作的結果都不能代替其他遊戲。
+- **找第一個差異。** 固定 commit、實際啟動 EXE／DLL 雜湊、profile、存檔與被消費的輸入，以相同原生／參考狀態沿 EE → VIF／VU → GIF → GS 比較。音訊核對真實來源及編碼版本；相鄰幀 A/B 不等於凍結狀態，draw 套用也不等於畫面驗收。
+- **修正後驗證同一候選。** 分清硬體、ABI／遊戲配置、素材及測試工具的原因；地址與特殊渲染規則留在獨立 profile。補有意義的回歸案例，統一建置受影響元件，先重測失敗及相鄰路徑，再對驗收候選跑完整矩陣。並行負載下的欠載／卡死，先以單實例確認原因。
+- **如實記錄範圍。** 使用 `PASS`／`FAIL`／`BLOCKED`／`NOT_RUN`，分別記錄路徑確實執行與人工實看／對聽。保留未解失敗和版本證據，未測不得記通過。所有遊戲的粒子都需獨立適配驗證，兩個參考遊戲也一樣；發佈包不含遊戲資料或測試存檔。
+
 
 ## 作者
 

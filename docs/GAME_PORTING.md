@@ -65,3 +65,6 @@ These keep their `dod` names and some of its assumptions; check them before you 
   front-end and input code, used by every game.
 
 Keep the `third_party/src/<module>` layout; the sources reference each other through relative paths.
+
+Regression planning and failure triage: [complete regression guide](REGRESSION_TESTING.md)
+([繁體中文](REGRESSION_TESTING.zh-TW.md)). Static entry coverage, content sweeps and natural playthrough are distinct gates.
