@@ -106,6 +106,29 @@ using TestCaseCallback = std::function<void(TestCase&)>;
 class MiniTest
 {
 private:
+    static std::string JsonString(const std::string& value)
+    {
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string result = "\"";
+        for (unsigned char c : value)
+        {
+            if (c == '"' || c == '\\')
+            {
+                result += '\\';
+                result += static_cast<char>(c);
+            }
+            else if (c < 0x20u)
+            {
+                result += "\\u00";
+                result += hex[c >> 4u];
+                result += hex[c & 15u];
+            }
+            else
+                result += static_cast<char>(c);
+        }
+        return result + '"';
+    }
+
     inline static std::map<std::string, TestCaseCallback> m_cases;
     inline static TestBeforeCallback m_beforeEach;
 
@@ -158,6 +181,7 @@ public:
                     testCase.m_beforeEach();
                 }
 
+                const char* status = "passed";
                 try
                 {
                     std::cout << "\033[33m" << "  [Run]: " << "\033[0m" << testName << " ";
@@ -166,6 +190,7 @@ public:
                     if (!testCase.m_failReason.empty())
                     {
                         failedCount++;
+                        status = "failed";
                         std::cout << "\033[31m" << "  [Failed]" << "\033[0m" << std::endl;
                         for (const auto& reason : testCase.m_failReason)
                         {
@@ -179,11 +204,13 @@ public:
                 }
                 catch (const std::exception& ex)
                 {
+                    status = "error";
                     std::cout << "  [Error]: " << ex.what() << std::endl;
                     failedCount++;
                 }
                 catch (...)
                 {
+                    status = "error";
                     failedCount++;
                     std::cerr << "  [Error]: <unknown>" << std::endl;
                 }
@@ -192,6 +219,9 @@ public:
                 {
                     testCase.m_afterEach();
                 }
+                const std::string record = "\n[TestResult] {\"suite\":" + JsonString(suiteName) +
+                    ",\"name\":" + JsonString(testName) + ",\"status\":\"" + status + "\"}\n";
+                std::cout << record << std::flush;
             }
 
             if (testCase.m_after)
@@ -200,11 +230,16 @@ public:
             }
         }
 
-        std::cout << "\n========================================" << std::endl;
+        std::cout << std::dec << "\n========================================" << std::endl;
         std::cout << "Total Tests: " << totalTests << std::endl;
         std::cout << "Passed: " << (totalTests - failedCount) << std::endl;
         std::cout << "Failed: " << failedCount << std::endl;
         std::cout << "========================================" << std::endl;
+
+        const std::string summary = "\n[TestSummary] {\"total\":" + std::to_string(totalTests) +
+            ",\"passed\":" + std::to_string(totalTests - failedCount) +
+            ",\"failed\":" + std::to_string(failedCount) + "}\n";
+        std::cout << summary << std::flush;
 
         return failedCount;
     }

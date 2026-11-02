@@ -28,7 +28,7 @@ int main(int argc, char **argv)
     PS2Runtime runtime;
     auto *ram = runtime.memory().getRDRAM();
     R5900Context ctx;
-    auto p = profile(mode == "legacy" ? MpegAbi::Legacy118 : MpegAbi::Work19A0);
+    auto p = profile((mode == "legacy" || mode.rfind("legacy-", 0) == 0) ? MpegAbi::Legacy118 : MpegAbi::Work19A0);
     mpegWrite32(ram, p.guards[0].address, p.guards[0].instruction);
     if (mode != "unconfigured")
         CHECK(configureMpegGameProfile(p));
@@ -80,6 +80,96 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    if (mode == "buffers")
+    {
+        const auto before = runtime.mem.ram;
+        mpegGuestWrite64(ram, PS2_RAM_SIZE - 4u, UINT64_MAX);
+        CHECK(before == runtime.mem.ram);
+        CHECK(!writeBlankMpegFrame(ram, PS2_RAM_SIZE - 16u, 16u, 16u));
+        CHECK(!writeBlankMpegFrame(ram, 0x10000u, UINT32_MAX, UINT32_MAX));
+        MpegDecodedFrame frame; frame.width = frame.height = 16; frame.rgba.resize(1024u);
+        CHECK(!writeDecodedFrameToGuest(ram, PS2_RAM_SIZE - 16u, frame));
+        frame.rgba.resize(4u);
+        CHECK(!writeDecodedFrameToGuest(ram, 0x10000u, frame));
+        CHECK(before == runtime.mem.ram);
+        return 0;
+    }
+    if (mode == "dod-picture")
+    {
+        ctx.gpr[4] = 0x20000u; ctx.gpr[5] = 0x30000u; ctx.gpr[6] = 0x4000u;
+        sceMpegCreate(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == 1u);
+        enqueueMpegDecodedFrameForTesting(ctx.gpr[4]);
+        ctx.gpr[6] = 1u;
+        for (uint32_t destination : {PS2_RAM_SIZE - 16u, 0x10007010u})
+        {
+            ctx.gpr[5] = destination;
+            const auto before = runtime.mem.ram;
+            sceMpegGetPicture(ram, &ctx, &runtime);
+            CHECK(ctx.gpr[2] == UINT32_MAX && getPlaybackState(ctx.gpr[4]).decodedFrames.size() == 1u);
+            CHECK(std::equal(before.begin(), before.begin() + 0x10000u, runtime.mem.ram.begin()));
+        }
+        return 0;
+    }
+    if (mode == "guest-work")
+    {
+        for (MpegAbi abi : {MpegAbi::Legacy118, MpegAbi::Work19A0})
+        {
+            CHECK(configureMpegGameProfile(profile(abi)));
+            for (uint32_t object : {PS2_RAM_SIZE - 4u, 0x20000u})
+            {
+                if (object == 0x20000u)
+                    mpegWrite32(ram, object + 0x40u, PS2_RAM_SIZE - 4u);
+                ctx.gpr[4] = object; ctx.gpr[5] = 0x10000u;
+                const auto before = runtime.mem.ram;
+                sceMpegReset(ram, &ctx, &runtime);
+                CHECK(ctx.gpr[2] == UINT32_MAX && runtime.mem.ram == before);
+                sceMpegGetPicture(ram, &ctx, &runtime);
+                CHECK(ctx.gpr[2] == UINT32_MAX && runtime.mem.ram == before);
+                if (abi == MpegAbi::Work19A0)
+                {
+                    sceMpegClearRefBuff(ram, &ctx, &runtime);
+                    CHECK(ctx.gpr[2] == UINT32_MAX && runtime.mem.ram == before);
+                    sceMpegGetDecodeMode(ram, &ctx, &runtime);
+                    CHECK(ctx.gpr[2] == UINT32_MAX && runtime.mem.ram == before);
+                }
+            }
+        }
+        return 0;
+    }
+    if (mode == "legacy-allocation")
+    {
+        ctx.gpr[4] = 0x20000u; ctx.gpr[5] = 0x30000u; ctx.gpr[6] = 0x4000u;
+        runtime.allocationResult = 0u;
+        const auto before = runtime.mem.ram;
+        sceMpegCreate(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == 0u && before == runtime.mem.ram && g_mpeg_stub_state.playbackByMpeg.empty());
+        sceMpegCreate(ram, &ctx, nullptr);
+        CHECK(ctx.gpr[2] == 0u && before == runtime.mem.ram);
+        return 0;
+    }
+    if (mode == "legacy-picture")
+    {
+        ctx.gpr[4] = 0x20000u; ctx.gpr[5] = PS2_RAM_SIZE - 16u;
+        enqueueMpegDecodedFrameForTesting(ctx.gpr[4]);
+        const auto before = runtime.mem.ram;
+        sceMpegGetPicture(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram);
+        CHECK(getPlaybackState(ctx.gpr[4]).decodedFrames.size() == 1u);
+        ctx.gpr[5] = 0x10000u;
+        sceMpegGetPicture(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == 0u && getPlaybackState(ctx.gpr[4]).decodedFrames.empty());
+        CHECK(std::equal(before.begin(), before.begin() + 0x100u, runtime.mem.ram.begin()));
+        return 0;
+    }
+    if (mode == "legacy-reference")
+    {
+        mpegWrite32(ram, p.referenceTable, 0xFFFFFFD8u); // +0x28 must not wrap to address zero.
+        const auto before = runtime.mem.ram;
+        sceMpegClearRefBuff(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram);
+        return 0;
+    }
     if (mode == "field")
     {
         ctx.pc = 0x24000u;
@@ -114,7 +204,8 @@ int main(int argc, char **argv)
         CHECK(!readProfileMovie(ram, &ctx, movie, flags));
         return 0;
     }
-    if (mode == "hooks" || mode == "incomplete-hooks")
+    if (mode == "hooks" || mode == "incomplete-hooks" || mode == "hook-reset-owner" ||
+        mode == "hook-release" || mode == "hook-rollback")
     {
         p.movieCount = 3; p.movieFlags = 0x9000u; p.movieFlagsStride = 8;
         for (size_t i = 0; i < p.hdEntries.size(); ++i)
@@ -128,8 +219,10 @@ int main(int argc, char **argv)
         if (mode == "incomplete-hooks")
             runtime.functions.erase(p.hdEntries.back());
         const auto before = runtime.functions;
+        if (mode == "hook-rollback")
+            runtime.blockedReplacement = p.hdEntries[5];
         dodInstallHdMovieHooks(runtime);
-        if (mode == "incomplete-hooks")
+        if (mode == "incomplete-hooks" || mode == "hook-rollback")
         {
             CHECK(before == runtime.functions && !hdHookRuntime);
             return 0;
@@ -138,6 +231,20 @@ int main(int argc, char **argv)
         const auto installed = runtime.functions;
         dodInstallHdMovieHooks(runtime);
         CHECK(runtime.functions == installed);
+        if (mode == "hook-reset-owner")
+        {
+            PS2Runtime other;
+            CHECK(!resetMpegGameProfile(nullptr));
+            CHECK(!resetMpegGameProfile(&other));
+            releaseMpegRuntime(other);
+            CHECK(runtime.functions == installed && hdHookRuntime == &runtime);
+        }
+        if (mode == "hook-release")
+        {
+            releaseMpegRuntime(runtime);
+            CHECK(runtime.functions == before && !hdHookRuntime && !g_mpeg_profile_valid);
+            return 0;
+        }
         ctx.pc = p.hdEntries[0];
         runtime.lookupFunction(ctx.pc)(ram, &ctx, &runtime);
         CHECK(ctx.gpr[2] == 42u); // No HD host support: preserve the native path.

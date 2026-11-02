@@ -61,6 +61,7 @@ The sources reference each other through relative paths, so keep the `third_part
 - Windows 10/11 x64, a CPU with SSE4.1 (PCSX2's GS)
 - Visual Studio 2022 with *Desktop development with C++* and *C++ CMake tools* (tested with MSVC 19.44, CMake 3.31)
 - git and Windows PowerShell 5.1
+- Python 3.9+ for validating named test results when running the build tests
 - About 2 GB of free disk space for dependencies and a full build
 
 ## Build
@@ -73,7 +74,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 ```
 
 `build_all.ps1` builds `kzvu.lib`, then `pcsx2gs.dll`, then PS2Recomp (`ps2_recomp.exe`, `ps2_analyzer.exe`,
-`ps2_runtime.lib`, `ps2EntryRunner.exe`, test programs), and runs the tests. Options: `-BuildDir <folder>`,
+`ps2_runtime.lib`, `ps2EntryRunner.exe`, test programs), and runs the tests. Main-suite failures are checked by suite/name/status against reviewed historical exceptions; empty/incomplete
+reports and new failures fail the build. Python 3.9+ is required for this check. Options: `-BuildDir <folder>`,
 `-Part kzvu|gs|ps2recomp`, `-NoTests`. Output goes to `build\`.
 
 The `ps2EntryRunner.exe` built here uses upstream's generic `src/main.cpp` and an empty function table: it only proves

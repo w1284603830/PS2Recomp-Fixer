@@ -659,6 +659,7 @@ PS2Runtime::~PS2Runtime()
     try
     {
         requestStop();
+        ps2_stubs::releaseMpegRuntime(*this);
         if (g_dodDiscIop == m_iopSubsystem.get())
             g_dodDiscIop = nullptr;
         g_dodEeStallWatchdog.stop();
@@ -980,12 +981,13 @@ bool PS2Runtime::initialize(const char *title)
 
 bool PS2Runtime::loadELF(const std::string &elfPath)
 {
+    if (!ps2_stubs::resetMpegGameProfile(this))
+        return false;
     // A runner configures these after loading its game/revision, never for a preceding ELF.
     ps2_stubs::resetIpuInitConfig();
     ps2_stubs::resetFontGameProfile();
     ps2_stubs::resetGsGameProfile();
     m_captureMetadataProvider = {};
-    ps2_stubs::resetMpegGameProfile(this);
     configureIoPathsFromElf(elfPath);
 
     std::ifstream file(elfPath, std::ios::binary);

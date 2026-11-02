@@ -57,6 +57,7 @@
 - Windows 10/11 x64；CPU 需支援 SSE4.1（PCSX2 GS 需要）
 - Visual Studio 2022，含「使用 C++ 的桌面開發」與「C++ CMake 工具」（實測 MSVC 19.44、CMake 3.31）
 - git、Windows PowerShell 5.1
+- Python 3.9 以上（建置測試的逐項結果檢查需要）
 - 約 2 GB 磁碟空間（相依加完整建置）
 
 ## 建置
@@ -74,6 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
   3. PS2Recomp：`ps2_recomp.exe`、`ps2_analyzer.exe`、`ps2_runtime.lib`、`ps2EntryRunner.exe` 與各測試程式
 
   建完後跑測試，輸出到 `build\`。
+- 主測試依 suite／名稱／狀態核對歷史例外；新失敗、空白／不完整報告會使建置失敗，需 Python 3.9 以上。
 - 參數：`-BuildDir <資料夾>`；只建一部分用 `-Part kzvu|gs|ps2recomp`；不跑測試加 `-NoTests`。
 - 這裡建出的 `ps2EntryRunner.exe` 用的是上游的通用 `src/main.cpp` 和空函式表，只證明執行期能連結。遊戲需要自己的產生碼和入口（見下節）。
 

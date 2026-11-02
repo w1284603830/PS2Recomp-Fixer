@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -30,7 +31,7 @@ class MpegProfileTests(unittest.TestCase):
             (directory / name).write_text('#pragma once\n#include "Common.h"\n')
         cls.exe = directory / "mpeg_tests"
         result = subprocess.run(["g++", "-std=c++20", "-O1", "-g", "-DPS2X_HAS_FFMPEG=0",
-                                 "-fsanitize=undefined", "-fno-sanitize-recover=all", "-Wall", "-Wextra",
+                                 "-fsanitize=address,undefined", *(["-fno-pie", "-no-pie"] if sys.platform.startswith("linux") else []), "-fno-sanitize-recover=all", "-Wall", "-Wextra",
                                  "-I", str(stubs), "-I", str(directory),
                                  str(ROOT / "tests/mpeg_profile_tests.cpp"), "-o", str(cls.exe)],
                                 capture_output=True, text=True)
@@ -67,3 +68,30 @@ class MpegProfileTests(unittest.TestCase):
 
     def test_movie_field_workaround_requires_explicit_profile_and_instruction(self):
         self.run_case("field")
+
+    def test_wrong_runtime_cannot_discard_installed_native_hooks(self):
+        self.run_case("hook-reset-owner")
+
+    def test_runtime_release_restores_native_hooks(self):
+        self.run_case("hook-release")
+
+    def test_partial_hook_installation_rolls_back(self):
+        self.run_case("hook-rollback")
+
+    def test_image_and_word_writes_do_not_cross_ram(self):
+        self.run_case("buffers")
+
+    def test_invalid_guest_objects_and_work_blocks_do_not_touch_memory(self):
+        self.run_case("guest-work")
+
+    def test_legacy_allocation_failure_leaves_guest_state_intact(self):
+        self.run_case("legacy-allocation")
+
+    def test_bad_picture_destination_preserves_frame_and_zero_work_preserves_kernel(self):
+        self.run_case("legacy-picture")
+
+    def test_reference_pointer_arithmetic_cannot_wrap_to_kernel(self):
+        self.run_case("legacy-reference")
+
+    def test_work19a0_rejects_bad_images_without_consuming_the_frame(self):
+        self.run_case("dod-picture")

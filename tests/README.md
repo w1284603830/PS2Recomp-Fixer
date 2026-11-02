@@ -46,3 +46,18 @@ runners must migrate profile configuration to after `loadELF`; no executable or 
 
 Game-level coverage and the failure-to-fix workflow live in [REGRESSION_TESTING.md](../docs/REGRESSION_TESTING.md)
 ([繁體中文](../docs/REGRESSION_TESTING.zh-TW.md)). A passing headless suite is one gate, not full port acceptance.
+
+## Final portability review checks
+
+MPEG and font tests now also use AddressSanitizer for image/work/header/payload bounds, allocation failure and
+corrupt reference/free pointers. The MPEG host stub models production's non-null missing-function trap, so a missing
+HD entry cannot masquerade as a native function. Hook ownership, release and partial-install rollback are exercised.
+On Linux, non-PIE binaries avoid sanitizer shadow-map collisions. In a ptraced executor without usable `/proc` thread
+access, run `ASAN_OPTIONS=detect_leaks=0 python -m unittest discover -s tests -v`; this disables leak scanning only,
+not address/undefined-behaviour checks. These tests do not establish leak freedom or game-rendering acceptance.
+
+`test_build_test_gate.py` compiles the production MiniTest header and feeds its real structured output into
+`tools/check_test_results.py`. It checks named historical failures, new failures with the same count, unexpected
+exceptions/suites, JSON escaping, zero tests, stale/truncated/duplicate reports, summary/exit inconsistencies and
+crashes. `build_all.ps1` requires Python 3.9+ for this gate and requires all configured IOP and GS-cache executables.
+The named exception list documents historical Windows observations; it does not revalidate their current causes.

@@ -1,0 +1,180 @@
+{
+  "reference": "BUILD_VERIFICATION.md: historical Windows exceptions; review current diagnostics before acceptance",
+  "failures": [
+    {
+      "suite": "CodeGenerator",
+      "name": "VU0 macro mappings cover all S1/S2 enums",
+      "status": "failed",
+      "reason": "Test environment: reads `instructions.h` relative to the working directory (fails upstream too)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/code_generator_tests.cpp"
+    },
+    {
+      "suite": "CodeGenerator",
+      "name": "VU random helpers emit line comments on separate lines",
+      "status": "failed",
+      "reason": "VRNEXT/VRINIT/VRXOR were rewritten as PCSX2's LFSR; the test looks for comment text of upstream's old implementation",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/code_generator_tests.cpp"
+    },
+    {
+      "suite": "CodeGenerator",
+      "name": "unresolved JALR marks internal labels as indirect fallback resume entries",
+      "status": "failed",
+      "reason": "Performance: only return addresses of indirect calls become entries (41)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/code_generator_tests.cpp"
+    },
+    {
+      "suite": "PS2GS",
+      "name": "GIF PACKED A+D writes DISPFB1 and DISPLAY1 privileged registers",
+      "status": "failed",
+      "reason": "Hardware: A+D addresses 0x59\u20130x5F are not GS registers (33)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_gs_tests.cpp"
+    },
+    {
+      "suite": "PS2GS",
+      "name": "GIF PACKED A+D writes DISPFB2 and DISPLAY2 privileged registers",
+      "status": "failed",
+      "reason": "Hardware: A+D addresses 0x59\u20130x5F are not GS registers (33)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_gs_tests.cpp"
+    },
+    {
+      "suite": "PS2GS",
+      "name": "GS CSR/IMR support coherent 64-bit and 32-bit access",
+      "status": "failed",
+      "reason": "Hardware: CSR event bits are write-1-to-clear, FIELD/FIFO read-only",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_gs_tests.cpp"
+    },
+    {
+      "suite": "PS2GS",
+      "name": "sceGsSyncV resumes through the scheduler with deterministic field parity",
+      "status": "failed",
+      "reason": "Reads the original game's libgraph record at a fixed address (IMPROVEMENTS.md \u00a712)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_gs_tests.cpp"
+    },
+    {
+      "suite": "PS2GS",
+      "name": "sceGsSyncVCallback runs as a scheduler invocation on its callback stack",
+      "status": "failed",
+      "reason": "Handler stacks moved below the ELF so they no longer overwrite game stacks (14, 137)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_gs_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "GIF DMA chain IRQ stops only when TIE is set",
+      "status": "failed",
+      "reason": "PCSX2: GIF state persists across transfers; the test reuses one instance",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "GIF arbiter prioritizes PATH1 then PATH2 then PATH3",
+      "status": "failed",
+      "reason": "Deliberate (upstream #299): submission order, so texture uploads precede their draws; `DOD_GIF_PRIORITY_SORT=1` restores sorting (73)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF FBRST RST clears VIF1 command state",
+      "status": "failed",
+      "reason": "PCSX2: RST does not clear CYCLE/MODE/NUM/MARK (102)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF STMOD offset and difference modes apply to UNPACK data",
+      "status": "failed",
+      "reason": "PCSX2: the test never sets STCYCL, and CYCLE=0 unpacks nothing (43)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF UNPACK V4-16 sign and zero extension follow immediate bit14",
+      "status": "failed",
+      "reason": "PCSX2: the test never sets STCYCL, and CYCLE=0 unpacks nothing (43)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF UNPACK bit15 adds TOPS to destination address",
+      "status": "failed",
+      "reason": "PCSX2: the test never sets STCYCL, and CYCLE=0 unpacks nothing (43)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF UNPACK num zero uploads 256 vectors",
+      "status": "failed",
+      "reason": "PCSX2: the test never sets STCYCL, and CYCLE=0 unpacks nothing (43)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF masked UNPACK uses data row col and protect selectors",
+      "status": "failed",
+      "reason": "PCSX2: the test never sets STCYCL, and CYCLE=0 unpacks nothing (43)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF1 DIRECT finds an image continuation after packed setup",
+      "status": "failed",
+      "reason": "Hardware: data outside a DIRECT's declared size is the next VIFcode (104)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF1 DIRECT image tag can continue with raw image qwords",
+      "status": "failed",
+      "reason": "Hardware: data outside a DIRECT's declared size is the next VIFcode (104)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2Memory",
+      "name": "VIF1 packet builders keep chain qwc live before terminate",
+      "status": "failed",
+      "reason": "Original SDK: libvifpk adds the QWC once when the packet is closed (113)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_memory_tests.cpp"
+    },
+    {
+      "suite": "PS2RuntimeExpansion",
+      "name": "IPU init executes its guest helper as a scheduler invocation",
+      "status": "failed",
+      "reason": "PCSX2 IPU: IPU_CTRL.RST triggers a reset and does not read back (29, 54)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_runtime_expansion_tests.cpp"
+    },
+    {
+      "suite": "PS2RuntimeExpansion",
+      "name": "IPU init skips missing optional helper instead of dispatching the default trap",
+      "status": "failed",
+      "reason": "PCSX2 IPU: IPU_CTRL.RST triggers a reset and does not read back (29, 54)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_runtime_expansion_tests.cpp"
+    },
+    {
+      "suite": "PS2RuntimeKernel",
+      "name": "thread lifecycle, nested suspend, WAIT-SUSPEND, and wakeup count are centralized",
+      "status": "failed",
+      "reason": "Hardware: SuspendThread returns the thread id (64)",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_runtime_kernel_tests.cpp"
+    },
+    {
+      "suite": "PS2SifRpc",
+      "name": "SifInitRpc does not reset the running IOP",
+      "status": "failed",
+      "reason": "Performance: the IOP runs in 4096-cycle quanta on its own thread (77, 78); the test advances 80 cycles",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_sif_rpc_tests.cpp"
+    },
+    {
+      "suite": "PS2SifRpc",
+      "name": "SifCallRpc falls back to stack ABI when register pack is implausible",
+      "status": "error",
+      "reason": "A blocking sceSifCallRpc sleeps the caller through the scheduler as on hardware (16); the test has no scheduler loop",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_sif_rpc_tests.cpp"
+    },
+    {
+      "suite": "PS2SifRpc",
+      "name": "register bind call updates descriptors and payload",
+      "status": "error",
+      "reason": "A blocking sceSifCallRpc sleeps the caller through the scheduler as on hardware (16); the test has no scheduler loop",
+      "source": "third_party/src/PS2Recomp/ps2xTest/src/ps2_sif_rpc_tests.cpp"
+    }
+  ]
+}
