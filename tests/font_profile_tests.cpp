@@ -79,6 +79,72 @@ int main(int argc, char **argv)
         }
         return 0;
     }
+    if (mode == "source-bounds")
+    {
+        for (uint32_t source : {PS2_RAM_SIZE - 4u, PS2_RAM_SIZE - 16u, 0x50001u, 0x10002010u})
+        {
+            ctx.gpr[4] = source; ctx.gpr[5] = 0u;
+            const auto before = runtime.mem.ram;
+            sceeFontLoadFont(ram, &ctx, &runtime);
+            CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram);
+        }
+        return 0;
+    }
+    if (mode == "allocation" || mode == "load-close")
+    {
+        constexpr uint32_t source = 0x50000u;
+        ctx.gpr[4] = source; ctx.gpr[5] = 0u; ctx.gpr[7] = 0x100u;
+        fontTestWrite<uint32_t>(ram, source, 16u);
+        fontTestWrite<uint32_t>(ram, source + 4u, 16u);
+        fontTestWrite<uint32_t>(ram, source + 8u, 12u);
+        fontTestWrite<uint32_t>(ram, source + 12u, 16u);
+        std::fill(ram + source + 16u, ram + source + 16u + 16u + 0x2010u + 0xC400u, 0xA5u);
+        if (mode == "allocation")
+        {
+            for (auto allocations : {std::vector<uint32_t>{0u}, {0x180000u, 0u}, {0x180000u, 0x190000u, 0u}})
+            {
+                runtime.allocations = allocations; runtime.allocationIndex = 0u; runtime.freed.clear();
+                const auto before = runtime.mem.ram;
+                sceeFontLoadFont(ram, &ctx, &runtime);
+                CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram);
+                if (allocations.size() >= 2u)
+                    CHECK(std::find(runtime.freed.begin(), runtime.freed.end(), 0x180000u) != runtime.freed.end());
+                if (allocations.size() == 3u)
+                    CHECK(std::find(runtime.freed.begin(), runtime.freed.end(), 0x190000u) != runtime.freed.end());
+            }
+            return 0;
+        }
+        for (bool doubleByte : {false, true})
+        {
+            fontTestWrite<uint32_t>(ram, source + 8u, doubleByte ? 0x4000000Cu : 12u);
+            runtime.allocations = doubleByte ? std::vector<uint32_t>{0x180000u, 0x1B0000u} :
+                                               std::vector<uint32_t>{0x180000u, 0x190000u, 0x1B0000u};
+            runtime.allocationIndex = 0u; runtime.freed.clear(); ctx.gpr[4] = source;
+            sceeFontLoadFont(ram, &ctx, &runtime);
+            CHECK(ctx.gpr[2] == 0x100u && readTestWord(ram, p.table) == 0x180000u);
+            CHECK(readTestWord(ram, p.table + 0x20u) == (doubleByte ? 1u : 0u));
+            CHECK(readTestWord(ram, 0x180000u) == 0xA5A5A5A5u);
+            ctx.gpr[4] = 0u;
+            sceeFontClose(ram, &ctx, &runtime);
+            CHECK(ctx.gpr[2] == 0u && readTestWord(ram, p.table) == 0u);
+            CHECK(runtime.freed.size() == (doubleByte ? 1u : 2u));
+        }
+        return 0;
+    }
+    if (mode == "close-bounds")
+    {
+        ctx.gpr[4] = 0u;
+        fontTestWrite<uint32_t>(ram, p.table, PS2_RAM_SIZE - 16u);
+        auto before = runtime.mem.ram;
+        sceeFontClose(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram && runtime.freed.empty());
+        fontTestWrite<uint32_t>(ram, p.table, 0x180000u);
+        fontTestWrite<uint32_t>(ram, 0x182000u, 0xFFFFFF00u);
+        before = runtime.mem.ram;
+        sceeFontClose(ram, &ctx, &runtime);
+        CHECK(ctx.gpr[2] == UINT32_MAX && before == runtime.mem.ram && runtime.freed.empty());
+        return 0;
+    }
     CHECK(mode == "relocated");
     ctx.gpr[4] = 0x12345678u;
     sceeFontSetColour(ram, &ctx, &runtime);

@@ -2,6 +2,7 @@
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,7 +22,7 @@ class FontProfileTests(unittest.TestCase):
         shutil.copyfile(ROOT / "tests/stubs/mpeg/Common.h", directory / "Common.h")
         (directory / "ps2_stubs.h").write_text('#pragma once\n#include "Common.h"\n')
         cls.exe = directory / "font_tests"
-        result = subprocess.run(["g++", "-std=c++20", "-O1", "-fsanitize=undefined",
+        result = subprocess.run(["g++", "-std=c++20", "-O1", "-fsanitize=address,undefined", *(["-fno-pie", "-no-pie"] if sys.platform.startswith("linux") else []),
                                  "-fno-sanitize-recover=all", "-I", str(directory),
                                  str(ROOT / "tests/font_profile_tests.cpp"), "-o", str(cls.exe)],
                                 capture_output=True, text=True)
@@ -46,3 +47,15 @@ class FontProfileTests(unittest.TestCase):
 
     def test_font_ids_cannot_escape_the_configured_table(self):
         self.run_case("font-id")
+
+    def test_font_header_and_payload_bounds(self):
+        self.run_case("source-bounds")
+
+    def test_allocation_failures_preserve_font_and_release_partial_allocations(self):
+        self.run_case("allocation")
+
+    def test_loaded_single_and_double_byte_fonts_close_owned_allocations(self):
+        self.run_case("load-close")
+
+    def test_corrupt_close_pointers_cannot_escape_ram(self):
+        self.run_case("close-bounds")

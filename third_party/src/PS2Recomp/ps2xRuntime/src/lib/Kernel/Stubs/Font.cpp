@@ -165,9 +165,9 @@ namespace ps2_stubs
         }
 
         const uint8_t *fontPtr = getConstMemPtr(rdram, fontDataAddr);
-        if (!fontPtr)
+        if (!validProfileRamRange(fontDataAddr, 16u, 4u) || !fontPtr)
         {
-            setReturnS32(ctx, tbp0);
+            setReturnS32(ctx, -1);
             return;
         }
 
@@ -176,53 +176,53 @@ namespace ps2_stubs
         uint32_t raw8 = *reinterpret_cast<const uint32_t *>(fontPtr + 0x08u);
         int fontDataSz = static_cast<int>(*reinterpret_cast<const uint32_t *>(fontPtr + 0x0cu));
 
-        uint32_t pointsize = raw8;
-        uint32_t fontOff = static_cast<uint32_t>(fontId * static_cast<int>(kFontEntrySz));
-        if (raw8 & 0x40000000u)
+        const bool doubleByte = (raw8 & 0x40000000u) != 0u;
+        const uint64_t sourceBytes = 16u + static_cast<uint64_t>(static_cast<uint32_t>(fontDataSz)) +
+                                     0x2010u + (doubleByte ? 0u : 0xC400u);
+        if (fontDataSz < 0 || !validProfileRamRange(fontDataAddr, sourceBytes, 4u) ||
+            static_cast<uint32_t>(fontDataSz) / 16u > 0x7FFFu)
         {
-            pointsize = raw8 - 0x40000000u;
-            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
-                *reinterpret_cast<uint32_t *>(p) = 1u;
+            setReturnS32(ctx, -1);
+            return;
         }
-        else
+        const uint32_t pointsize = raw8 & ~0x40000000u;
+        const uint32_t fontOff = static_cast<uint32_t>(fontId) * kFontEntrySz;
+        const int tw = width >= 0 ? width >> 6 : (width + 0x3F) >> 6;
+        const int qwc = fontDataSz / 16;
+        const uint32_t glyphSrc = fontDataAddr + static_cast<uint32_t>(fontDataSz) + 0x10u;
+        const uint32_t glyphAlloc = runtime->guestMalloc(0x2010u, 0x40u);
+        if (!glyphAlloc || !validProfileRamRange(glyphAlloc, 0x2010u, 0x40u))
         {
-            if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
-                *reinterpret_cast<uint32_t *>(p) = 0u;
+            setReturnS32(ctx, -1);
+            return;
         }
-
-        int tw = (width >= 0) ? (width >> 6) : ((width + 0x3f) >> 6);
-        int qwc = (fontDataSz >= 0) ? (fontDataSz >> 4) : ((fontDataSz + 0xf) >> 4);
-
-        uint32_t glyphSrc = fontDataAddr + static_cast<uint32_t>(fontDataSz) + 0x10u;
-        uint32_t glyphAlloc = runtime->guestMalloc(0x2010u, 0x40u);
-        if (uint8_t *p = getMemPtr(rdram, fontProfile.table + fontOff))
-            *reinterpret_cast<uint32_t *>(p) = glyphAlloc;
-
-        if (glyphAlloc != 0u)
+        const uint32_t kernAlloc = doubleByte ? 0u : runtime->guestMalloc(0xC400u, 0x40u);
+        if (!doubleByte && (!kernAlloc || !validProfileRamRange(kernAlloc, 0xC400u, 0x40u)))
         {
-            uint8_t *dst = getMemPtr(rdram, glyphAlloc);
-            const uint8_t *src = getConstMemPtr(rdram, glyphSrc);
-            if (dst && src)
-                std::memcpy(dst, src, 0x2010u);
+            runtime->guestFree(glyphAlloc);
+            setReturnS32(ctx, -1);
+            return;
         }
-
-        uint32_t isDoubleByte = 0;
-        if (const uint8_t *p = getConstMemPtr(rdram, fontProfile.table + fontOff + 0x20u))
-            isDoubleByte = *reinterpret_cast<const uint32_t *>(p);
-        if (isDoubleByte == 0u)
+        const uint32_t packetBytes = (12u + static_cast<uint32_t>(qwc)) * 16u;
+        const uint32_t pktAddr = qwc ? runtime->guestMalloc(packetBytes, 16u) : 0u;
+        if (qwc && (!pktAddr || !validProfileRamRange(pktAddr, packetBytes, 16u)))
         {
-            uint32_t kernSrc = glyphSrc + 0x2010u;
-            uint32_t kernAlloc = runtime->guestMalloc(0xc400u, 0x40u);
-            if (glyphAlloc != 0u)
-                *reinterpret_cast<uint32_t *>(getMemPtr(rdram, glyphAlloc + 0x2000u)) = kernAlloc;
-            if (kernAlloc != 0u)
-            {
-                uint8_t *dst = getMemPtr(rdram, kernAlloc);
-                const uint8_t *src = getConstMemPtr(rdram, kernSrc);
-                if (dst && src)
-                    std::memcpy(dst, src, 0xc400u);
-            }
+            if (kernAlloc)
+                runtime->guestFree(kernAlloc);
+            runtime->guestFree(glyphAlloc);
+            setReturnS32(ctx, -1);
+            return;
         }
+        // Publish the font only after its complete source and all allocations are validated.
+        std::memcpy(getMemPtr(rdram, glyphAlloc), getConstMemPtr(rdram, glyphSrc), 0x2010u);
+        if (!doubleByte)
+        {
+            std::memcpy(getMemPtr(rdram, kernAlloc), getConstMemPtr(rdram, glyphSrc + 0x2010u), 0xC400u);
+            std::memcpy(getMemPtr(rdram, glyphAlloc + 0x2000u), &kernAlloc, 4u);
+        }
+        std::memcpy(getMemPtr(rdram, fontProfile.table + fontOff), &glyphAlloc, 4u);
+        const uint32_t isDoubleByte = doubleByte ? 1u : 0u;
+        std::memcpy(getMemPtr(rdram, fontProfile.table + fontOff + 0x20u), &isDoubleByte, 4u);
 
         auto writeFontField = [&](uint32_t off, uint32_t val)
         {
@@ -252,7 +252,6 @@ namespace ps2_stubs
             const uint32_t headerQwc = 12u;
             const uint32_t imageQwc = static_cast<uint32_t>(qwc);
             const uint32_t totalQwc = headerQwc + imageQwc;
-            uint32_t pktAddr = runtime->guestMalloc(totalQwc * 16u, 16u);
             if (pktAddr != 0u)
             {
                 uint8_t *pkt = getMemPtr(rdram, pktAddr);
@@ -290,8 +289,7 @@ namespace ps2_stubs
             }
         }
 
-        int retTbp = tbp0 + ((fontDataSz >= 0 ? fontDataSz : fontDataSz + 0x7f) >> 7);
-        setReturnS32(ctx, retTbp);
+        setReturnU32(ctx, static_cast<uint32_t>(tbp0) + static_cast<uint32_t>(fontDataSz / 128));
     }
 
 
@@ -703,11 +701,23 @@ namespace ps2_stubs
             glyphPtr = *reinterpret_cast<const uint32_t *>(p);
         if (glyphPtr != 0u)
         {
+            if (!validProfileRamRange(glyphPtr, 0x2010u, 4u))
+            {
+                setReturnS32(ctx, -1);
+                return;
+            }
+            uint32_t kernPtr = 0u;
+            uint32_t doubleByte = 0u;
+            std::memcpy(&doubleByte, getConstMemPtr(rdram, fontProfile.table + fontOff + 0x20u), 4u);
+            if (!doubleByte)
+                std::memcpy(&kernPtr, getConstMemPtr(rdram, glyphPtr + 0x2000u), 4u);
+            if (kernPtr && !validProfileRamRange(kernPtr, 0xC400u, 4u))
+            {
+                setReturnS32(ctx, -1);
+                return;
+            }
             if (runtime)
             {
-                uint32_t kernPtr = 0;
-                if (const uint8_t *kp = getConstMemPtr(rdram, glyphPtr + 0x2000u))
-                    kernPtr = *reinterpret_cast<const uint32_t *>(kp);
                 if (kernPtr != 0u)
                     runtime->guestFree(kernPtr);
                 runtime->guestFree(glyphPtr);

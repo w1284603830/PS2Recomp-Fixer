@@ -69,7 +69,9 @@ Keep the `third_party/src/<module>` layout; the sources reference each other thr
 the selected game **after** a successful load and before `run`; `run` resets MPEG playback but preserves the chosen
 profile. Do not reconfigure profiles while guest execution or callbacks are active. The existing MPEG host state
 supports one active runtime/session. Reset installed HD hooks with `resetMpegGameProfile(&runtime)` before changing
-that profile; reload on that runtime restores its original functions.
+that profile; reload on that runtime restores its original functions. Reset returns false if null or another runtime
+tries to discard installed hooks; a load is rejected before clearing the other profiles. Destroying the owning runtime
+restores its hooks. Missing entries are checked with `hasFunction`: `lookupFunction` can return a non-null error trap.
 
 The generic runner accepts unsigned decimal or `0x` addresses; trailing junk, negative values and overflow are errors.
 GParam needs a 4-byte-aligned 12-byte record in EE RAM, or zero to select the HLE record. `PS2_GS_GPARAM` and its legacy

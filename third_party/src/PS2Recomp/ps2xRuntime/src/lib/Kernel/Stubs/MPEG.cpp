@@ -593,14 +593,14 @@ namespace ps2_stubs
         uint32_t mpegRead32(const uint8_t *rdram, uint32_t addr)
         {
             uint32_t value = 0u;
-            if (rdram && (addr & PS2_RAM_MASK) <= PS2_RAM_SIZE - sizeof(value))
+            if (rdram && validProfileRamRange(addr, sizeof(value), 4u))
                 std::memcpy(&value, getConstMemPtr(rdram, addr), sizeof(value));
             return value;
         }
 
         void mpegWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
         {
-            if (rdram && (addr & PS2_RAM_MASK) <= PS2_RAM_SIZE - sizeof(value))
+            if (rdram && validProfileRamRange(addr, sizeof(value), 4u))
                 std::memcpy(getMemPtr(rdram, addr), &value, sizeof(value));
         }
 
@@ -637,6 +637,18 @@ namespace ps2_stubs
         bool usesDodMpegAbi(const uint8_t *rdram)
         {
             return g_mpeg_profile.abi == MpegAbi::Work19A0 && matchesMpegGameProfile(rdram);
+        }
+
+        bool readMpegGuestWork(const uint8_t *rdram, uint32_t object, uint32_t &work, bool required = true)
+        {
+            work = 0u;
+            if (!rdram || !object || !validProfileRamRange(object, 0x44u, 4u))
+                return false;
+            work = mpegRead32(rdram, object + 0x40u);
+            if (!work)
+                return !required;
+            const uint32_t bytes = g_mpeg_profile.abi == MpegAbi::Work19A0 ? 0x19A0u : 0x118u;
+            return validProfileRamRange(work, bytes, 4u);
         }
 
         bool readProfileMovie(const uint8_t *rdram, const R5900Context *ctx, uint32_t &movie, uint16_t &flags)
@@ -727,18 +739,19 @@ namespace ps2_stubs
             return (work & 0x3Fu) == 0u && allocationFits;
         }
 
-        void setDodMpegPictureDestination(uint8_t *rdram, uint32_t object,
+        bool setDodMpegPictureDestination(uint8_t *rdram, uint32_t object,
                                           uint32_t image, uint32_t macroblocks,
                                           bool rgba, uint32_t width = 0u, uint32_t height = 0u)
         {
-            const uint32_t work = mpegRead32(rdram, object + 0x40u);
-            if (work == 0u)
-                return;
+            uint32_t work;
+            if (!readMpegGuestWork(rdram, object, work))
+                return false;
             mpegWrite32(rdram, work + 0xC4u, rgba ? 1u : 0u);
             mpegWrite32(rdram, work + 0xECu, (image & 0x0FFFFFFFu) | 0x20000000u);
             mpegWrite32(rdram, work + 0xF0u, width);
             mpegWrite32(rdram, work + 0xF4u, height);
             mpegWrite32(rdram, work + 0xF8u, macroblocks);
+            return true;
         }
 
         void resetDodMpegHardware(PS2Runtime *runtime)
@@ -1862,13 +1875,25 @@ namespace ps2_stubs
             dispatchStreamCallbacks(rdram, ctx, runtime, events);
         }
 
-        void writeBlankMpegFrame(uint8_t *rdram, uint32_t destAddr, uint32_t width, uint32_t height)
+        bool validMpegImageRange(uint32_t destination, uint32_t width, uint32_t height)
+        {
+            if (!destination || !width || !height || width > PS2_RAM_SIZE / 4u || height > PS2_RAM_SIZE / 4u)
+                return false;
+            const uint64_t paddedWidth = (static_cast<uint64_t>(width) + 15u) & ~15ull;
+            const uint64_t paddedHeight = (static_cast<uint64_t>(height) + 15u) & ~15ull;
+            return validProfileRamRange(destination, paddedWidth * paddedHeight * 4u, 1u);
+        }
+
+        bool writeBlankMpegFrame(uint8_t *rdram, uint32_t destAddr, uint32_t width, uint32_t height)
         {
             if (!rdram || destAddr == 0u)
             {
-                return;
+                return false;
             }
 
+            if (!validMpegImageRange(destAddr, width == 0u ? kStubMovieWidth : width,
+                                     height == 0u ? kStubMovieHeight : height))
+                return false;
             const uint32_t outWidth = align16(width == 0u ? kStubMovieWidth : width);
             const uint32_t outHeight = align16(height == 0u ? kStubMovieHeight : height);
             const uint32_t macroblockColumns = outWidth / 16u;
@@ -1894,17 +1919,21 @@ namespace ps2_stubs
                     }
                 }
             }
+            return true;
         }
 
-        void writeDecodedFrameToGuest(uint8_t *rdram, uint32_t destAddr, const MpegDecodedFrame &frame)
+        bool writeDecodedFrameToGuest(uint8_t *rdram, uint32_t destAddr, const MpegDecodedFrame &frame)
         {
             if (!rdram || destAddr == 0u || frame.rgba.empty() || frame.width <= 0 || frame.height <= 0)
             {
-                return;
+                return false;
             }
 
             const uint32_t width = static_cast<uint32_t>(frame.width);
             const uint32_t height = static_cast<uint32_t>(frame.height);
+            if (!validMpegImageRange(destAddr, width, height) ||
+                static_cast<uint64_t>(width) * height * 4u > frame.rgba.size())
+                return false;
             const uint32_t outWidth = align16(width);
             const uint32_t outHeight = align16(height);
             const uint32_t macroblockColumns = outWidth / 16u;
@@ -1950,6 +1979,7 @@ namespace ps2_stubs
                     }
                 }
             }
+            return true;
         }
 
         void resetMpegStubStateUnlocked()
@@ -2055,9 +2085,10 @@ namespace ps2_stubs
             const uint32_t mpegAddr = getRegU32(ctx, 4);
             const uint32_t imageAddr = getRegU32(ctx, 5);
             const uint32_t macroblockCapacity = getRegU32(ctx, 6);
-            const uint32_t work = mpegRead32(rdram, mpegAddr + 0x40u);
-            setDodMpegPictureDestination(rdram, mpegAddr, imageAddr, macroblockCapacity, true);
-            if (work == 0u || mpegRead32(rdram, work + 0x878u) != 0u)
+            uint32_t work;
+            if (!runtime || !readMpegGuestWork(rdram, mpegAddr, work) ||
+                !setDodMpegPictureDestination(rdram, mpegAddr, imageAddr, macroblockCapacity, true) ||
+                mpegRead32(rdram, work + 0x878u) != 0u)
             {
                 setReturnS32(ctx, -1);
                 return;
@@ -2098,9 +2129,9 @@ namespace ps2_stubs
                     const auto &front = playback.decodedFrames.front();
                     const uint64_t required = static_cast<uint64_t>(align16(static_cast<uint32_t>(front.width))) *
                                               align16(static_cast<uint32_t>(front.height)) / 256u;
-                    const uint64_t imageBytes = required * 1024u;
                     if (front.width <= 0 || front.height <= 0 || required > macroblockCapacity ||
-                        imageAddr == 0u || imageBytes > PS2_RAM_SIZE - (imageAddr & PS2_RAM_MASK))
+                        !validMpegImageRange(imageAddr, static_cast<uint32_t>(front.width),
+                                            static_cast<uint32_t>(front.height)))
                     {
                         // A wrong movie header must not overwrite the next guest allocation.
                         setReturnS32(ctx, -1);
@@ -2232,8 +2263,13 @@ namespace ps2_stubs
                mpegRead32(rdram, ctx->pc) == g_mpeg_profile.movieFieldReadInstruction;
     }
 
-    void resetMpegGameProfile(PS2Runtime *runtime)
+    bool resetMpegGameProfile(PS2Runtime *runtime)
     {
+        if (hdHookRuntime && runtime != hdHookRuntime)
+        {
+            std::fprintf(stderr, "[MPEG] HD profile reset requires its owning runtime; native entries preserved\n");
+            return false;
+        }
         if (runtime && runtime == hdHookRuntime)
             for (const auto &[address, original] : hdNativeFunctions)
                 runtime->replaceFunction(address, original);
@@ -2244,6 +2280,13 @@ namespace ps2_stubs
         g_mpeg_profile_valid = false;
         g_mpeg_profile_warned = false;
         resetMpegStubState();
+        return true;
+    }
+
+    void releaseMpegRuntime(PS2Runtime &runtime)
+    {
+        if (hdHookRuntime == &runtime)
+            resetMpegGameProfile(&runtime);
     }
 
     void resetMpegStubState()
@@ -2419,8 +2462,8 @@ namespace ps2_stubs
 
         if (usesDodMpegAbi(rdram))
         {
-            const uint32_t work = mpegRead32(rdram, mpegAddr + 0x40u);
-            if (work == 0u || callbackType >= 7u)
+            uint32_t work;
+            if (!readMpegGuestWork(rdram, mpegAddr, work) || callbackType >= 7u)
             {
                 setReturnU32(ctx, 0u);
                 return;
@@ -2476,47 +2519,42 @@ namespace ps2_stubs
         dodMpegTrace("sceMpegClearRefBuff", ctx);
         (void)ctx;
         (void)runtime;
+        std::array<uint32_t, 6> references{};
+        size_t index = 0u;
         if (usesDodMpegAbi(rdram))
         {
-            const uint32_t work = mpegRead32(rdram, getRegU32(ctx, 4) + 0x40u);
+            uint32_t work;
+            if (!readMpegGuestWork(rdram, getRegU32(ctx, 4), work))
+            {
+                setReturnS32(ctx, -1);
+                return;
+            }
             for (uint32_t offset : {0x1C8u, 0x1D8u, 0x1E8u, 0x1CCu, 0x1DCu, 0x1ECu})
-            {
-                const uint32_t reference = mpegRead32(rdram, work + offset);
-                if (work != 0u && reference != 0u)
-                    mpegWrite32(rdram, reference + 0x28u, 0u);
-            }
-            setReturnU32(ctx, 1u);
-            return;
+                references[index++] = mpegRead32(rdram, work + offset);
         }
-        for (uint32_t offset : {0u, 12u, 24u, 4u, 16u, 28u})
-        {
-            const uint32_t addr = g_mpeg_profile.referenceTable + offset;
-            uint8_t *p = getMemPtr(rdram, addr);
-            if (!p)
-                continue;
-            uint32_t ptr = *reinterpret_cast<uint32_t *>(p);
-            if (ptr != 0u)
+        else
+            for (uint32_t offset : {0u, 12u, 24u, 4u, 16u, 28u})
+                references[index++] = mpegRead32(rdram, g_mpeg_profile.referenceTable + offset);
+        for (uint32_t reference : references)
+            if (reference && !validProfileRamRange(reference, 0x2Cu, 4u))
             {
-                uint8_t *q = getMemPtr(rdram, ptr + 0x28u);
-                if (q)
-                    *reinterpret_cast<uint32_t *>(q) = 0u;
+                setReturnS32(ctx, -1);
+                return;
             }
-        }
+        for (uint32_t reference : references)
+            if (reference)
+                mpegWrite32(rdram, reference + 0x28u, 0u);
         setReturnU32(ctx, 1u);
     }
 
     static void mpegGuestWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
     {
-        if (uint8_t *p = getMemPtr(rdram, addr))
-            *reinterpret_cast<uint32_t *>(p) = value;
+        mpegWrite32(rdram, addr, value);
     }
     static void mpegGuestWrite64(uint8_t *rdram, uint32_t addr, uint64_t value)
     {
-        if (uint8_t *p = getMemPtr(rdram, addr))
-        {
-            *reinterpret_cast<uint32_t *>(p) = static_cast<uint32_t>(value);
-            *reinterpret_cast<uint32_t *>(p + 4) = static_cast<uint32_t>(value >> 32);
-        }
+        if (rdram && validProfileRamRange(addr, sizeof(value), 4u))
+            std::memcpy(getMemPtr(rdram, addr), &value, sizeof(value));
     }
 
     void sceMpegCreate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -2549,9 +2587,16 @@ namespace ps2_stubs
 
         const uint32_t uVar3 = (param_2 + 3u) & 0xFFFFFFFCu;
         const uint32_t alignment = uVar3 - param_2;
-        if (!rdram || !param_1 || !param_2 ||
+        if (!runtime || !rdram || !param_1 || !param_2 ||
             !validProfileRamRange(param_1, 0x44u, 4u) ||
             !validProfileRamRange(param_2, param_3, 1u) || param_3 < alignment + 0x118u)
+        {
+            setReturnU32(ctx, 0u);
+            return;
+        }
+
+        const uint32_t allocResult = runtime->guestMalloc(0x600u, 8u);
+        if (!allocResult || !validProfileRamRange(allocResult, 0x600u, 8u))
         {
             setReturnU32(ctx, 0u);
             return;
@@ -2573,7 +2618,6 @@ namespace ps2_stubs
         mpegGuestWrite32(rdram, puVar4 + 0x8, a1_init);
         mpegGuestWrite32(rdram, puVar4 + 0xC, a1_init);
 
-        const uint32_t allocResult = runtime ? runtime->guestMalloc(0x600, 8u) : (uVar3 + 0x200u);
         mpegGuestWrite32(rdram, uVar3 + 0x44, allocResult);
 
         // param_1[0..2] = 0; param_1[4..0xe] = 0xffffffff/0 as per decompilation
@@ -2863,8 +2907,20 @@ namespace ps2_stubs
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         if (usesDodMpegAbi(rdram))
         {
-            // 0x10BA30 writes three out parameters, not a scalar mode return.
-            const uint32_t work = mpegRead32(rdram, mpegAddr + 0x40u);
+            // This ABI writes three out parameters, not a scalar mode return.
+            uint32_t work;
+            if (!readMpegGuestWork(rdram, mpegAddr, work))
+            {
+                setReturnS32(ctx, -1);
+                return;
+            }
+            for (uint32_t index = 0u; index < 3u; ++index)
+                if (const uint32_t destination = getRegU32(ctx, 5u + index);
+                    destination && !validProfileRamRange(destination, 4u, 4u))
+                {
+                    setReturnS32(ctx, -1);
+                    return;
+                }
             for (uint32_t index = 0u; index < 3u; ++index)
             {
                 const uint32_t destination = getRegU32(ctx, 5u + index);
@@ -2890,6 +2946,12 @@ namespace ps2_stubs
         }
         const uint32_t mpegAddr = getRegU32(ctx, 4);
         const uint32_t imageAddr = getRegU32(ctx, 5);
+        uint32_t guestWork;
+        if (!runtime || !readMpegGuestWork(rdram, mpegAddr, guestWork, false))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
         const bool dodAbi = usesDodMpegAbi(rdram);
         if (dodAbi)
             setDodMpegPictureDestination(rdram, mpegAddr, imageAddr, getRegU32(ctx, 6), true);
@@ -2976,6 +3038,14 @@ namespace ps2_stubs
                         });
                 }
 
+                const auto &next = playback.decodedFrames.front();
+                if (next.width <= 0 || next.height <= 0 ||
+                    !validMpegImageRange(imageAddr, static_cast<uint32_t>(next.width), static_cast<uint32_t>(next.height)) ||
+                    static_cast<uint64_t>(next.width) * next.height * 4u > next.rgba.size())
+                {
+                    setReturnS32(ctx, -1);
+                    return;
+                }
                 frame = std::move(playback.decodedFrames.front());
                 playback.decodedFrames.pop_front();
                 playback.width = static_cast<uint32_t>(frame.width);
@@ -3007,14 +3077,18 @@ namespace ps2_stubs
             }
         }
 
+        if (!validMpegImageRange(imageAddr, width, height))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
         mpegGuestWrite32(rdram, mpegAddr + 0x00u, width);
         mpegGuestWrite32(rdram, mpegAddr + 0x04u, height);
         mpegGuestWrite32(rdram, mpegAddr + 0x08u, frameCount);
 
         if (!dodAbi)
         {
-            const uint32_t iVar1 = mpegRead32(rdram, mpegAddr + 0x40u);
-            if (uint8_t *inner = getMemPtr(rdram, iVar1))
+            if (uint8_t *inner = guestWork ? getMemPtr(rdram, guestWork) : nullptr)
             {
                 *reinterpret_cast<uint32_t *>(inner + 0xb0) = 1;
                 *reinterpret_cast<uint32_t *>(inner + 0xd8) = (getRegU32(ctx, 5) & 0x0FFFFFFFu) | 0x20000000u;
@@ -3161,6 +3235,12 @@ namespace ps2_stubs
         (void)runtime;
         const uint32_t param_1 = getRegU32(ctx, 4);
         const bool dodAbi = usesDodMpegAbi(rdram);
+        uint32_t inner;
+        if (!readMpegGuestWork(rdram, param_1, inner, false))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
         bool hdStopped = false;
         {
             std::lock_guard<std::mutex> lock(g_mpeg_stub_mutex);
@@ -3181,14 +3261,11 @@ namespace ps2_stubs
             }
             playback = std::move(resetState);
         }
-        uint8_t *base = getMemPtr(rdram, param_1);
-        if (!base)
+        if (!inner)
         {
+            setReturnS32(ctx, 0);
             return;
         }
-        uint32_t inner = *reinterpret_cast<uint32_t *>(base + 0x40);
-        if (inner == 0u)
-            return;
         if (dodAbi)
         {
             resetDodMpegHardware(runtime);
@@ -3323,16 +3400,25 @@ namespace ps2_stubs
             hdNativeGate<MpegEntry::GetPictureRAW8xy>,
         };
         for (uint32_t address : g_mpeg_profile.hdEntries)
-            if (!address || !runtime.lookupFunction(address))
+            if (!address || !runtime.hasFunction(address))
                 return;
         hdInstalledEntries = g_mpeg_profile.hdEntries;
-        hdHookRuntime = &runtime;
+        for (uint32_t address : hdInstalledEntries)
+            hdNativeFunctions[address] = runtime.lookupFunction(address);
         for (size_t i = 0; i < hdInstalledEntries.size(); ++i)
         {
             const uint32_t address = hdInstalledEntries[i];
-            hdNativeFunctions[address] = runtime.lookupFunction(address);
-            runtime.replaceFunction(address, gates[i]);
+            if (!runtime.replaceFunction(address, gates[i]))
+            {
+                for (size_t j = 0; j < i; ++j)
+                    runtime.replaceFunction(hdInstalledEntries[j], hdNativeFunctions.at(hdInstalledEntries[j]));
+                hdNativeFunctions.clear();
+                hdInstalledEntries = {};
+                std::fprintf(stderr, "[MPEG] HD hook installation failed; native entries restored\n");
+                return;
+            }
         }
+        hdHookRuntime = &runtime;
     }
 
     bool dodHdMpegDeleteIfOwned(uint8_t* rdram,R5900Context* ctx,PS2Runtime* runtime)

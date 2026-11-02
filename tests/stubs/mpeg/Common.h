@@ -72,11 +72,27 @@ public:
     PS2Memory mem;
     EeScheduler scheduler;
     std::map<uint32_t, RecompiledFunction> functions;
+    uint32_t blockedReplacement = 0;
+    uint32_t allocationResult = 0x180000u;
+    std::vector<uint32_t> allocations;
+    size_t allocationIndex = 0;
+    std::vector<uint32_t> freed;
     PS2Memory &memory() { return mem; }
     EeScheduler &eeScheduler() { return scheduler; }
-    uint32_t guestMalloc(uint32_t, uint32_t) { return 0x180000u; }
-    void guestFree(uint32_t) {}
-    bool hasFunction(uint32_t address) { return functions.count(address); }
-    RecompiledFunction lookupFunction(uint32_t address) { return functions.count(address) ? functions[address] : nullptr; }
-    bool replaceFunction(uint32_t address, RecompiledFunction function) { functions[address] = function; return true; }
+    uint32_t guestMalloc(uint32_t, uint32_t)
+    {
+        return allocations.empty() ? allocationResult : allocations.at(allocationIndex++);
+    }
+    void guestFree(uint32_t address) { freed.push_back(address); }
+    bool hasFunction(uint32_t address) { return functions.count(address) && functions[address]; }
+    static void missingFunction(uint8_t *, R5900Context *ctx, PS2Runtime *) { setReturnS32(ctx, -99); }
+    // Production lookup returns a non-null diagnostic trap for missing entries.
+    RecompiledFunction lookupFunction(uint32_t address) { return hasFunction(address) ? functions[address] : missingFunction; }
+    bool replaceFunction(uint32_t address, RecompiledFunction function)
+    {
+        if (address == blockedReplacement)
+            return false;
+        functions[address] = function;
+        return true;
+    }
 };

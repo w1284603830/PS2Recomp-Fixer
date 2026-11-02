@@ -23,6 +23,14 @@ if (-not $cmake) {
     }
 }
 if (-not $cmake) { throw 'cmake not found (install Visual Studio 2022 with C++ CMake tools)' }
+$testPython = $null
+if (($Part -in 'all', 'ps2recomp') -and -not $NoTests) {
+    $testPython = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (-not $testPython) { $testPython = (Get-Command python3 -ErrorAction SilentlyContinue).Source }
+    if (-not $testPython) { throw 'Python 3 is required to validate named test results (or explicitly use -NoTests)' }
+    & $testPython -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'Python 3.9 or later is required for test validation' }
+}
 $gen = @('-G', 'Visual Studio 17 2022', '-A', 'x64')
 
 function Step([string]$name, [string[]]$configure, [string[]]$targets) {
@@ -83,10 +91,23 @@ if ($Part -in 'all', 'ps2recomp') {
         finally { Pop-Location }
         Get-Content (Join-Path $BuildDir 'ps2x_tests.log') -Tail 4
         "   exit $code (failed tests)"
+        & $testPython (Join-Path $root 'tools\check_test_results.py') (Join-Path $BuildDir 'ps2x_tests.log') --exit-code $code
+        if ($LASTEXITCODE -ne 0) {
+            $ErrorActionPreference = 'Stop'
+            throw 'ps2x_tests has new failures, an incomplete report, or an inconsistent exit code'
+        }
         # The top-level CMakeLists has no enable_testing(), so CTest sees nothing: run the suites directly.
         $failed = 0
         "== IOP tests"
-        foreach ($e in Get-ChildItem (Join-Path $BuildDir 'ps2recomp\ps2xIOP\Release') -Filter '*_tests.exe') {
+        $iopTargets = [regex]::Matches((Get-Content -Raw (Join-Path $src 'PS2Recomp\ps2xIOP\CMakeLists.txt')),
+                                       'add_executable\((\S+_tests)\s')
+        if ($iopTargets.Count -eq 0) { throw 'no IOP test targets found' }
+        $iopTests = @($iopTargets | ForEach-Object {
+            $path = Join-Path $BuildDir "ps2recomp\ps2xIOP\Release\$($_.Groups[1].Value).exe"
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "missing IOP test executable: $path" }
+            Get-Item -LiteralPath $path
+        })
+        foreach ($e in $iopTests) {
             Push-Location $e.DirectoryName
             try { $out = & $e.FullName 2>&1 | ForEach-Object { "$_" }; $code = $LASTEXITCODE } finally { Pop-Location }
             "   {0}: exit {1} | {2}" -f $e.Name, $code, ($out | Select-Object -Last 1)
@@ -98,12 +119,14 @@ if ($Part -in 'all', 'ps2recomp') {
         $n = 0; $bad = 0
         foreach ($s in $suites) {
             $exe = Join-Path $BuildDir "ps2recomp\ps2xTest\gs_cache\Release\$($s.Groups[1].Value).exe"
+            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "missing GS cache test executable: $exe" }
             foreach ($t in ($s.Groups[2].Value -split '\s+' | Where-Object { $_ })) {
                 & $exe $t *> $null; $n++
                 if ($LASTEXITCODE -ne 0) { $bad++; "   FAIL $($s.Groups[1].Value) $t" }
             }
         }
         "   {0}/{1} passed" -f ($n - $bad), $n
+        if ($n -eq 0) { throw 'no GS cache tests found' }
         if ($bad) { $failed++ }
         $ErrorActionPreference = 'Stop'
         if ($failed) { throw "$failed test suite(s) failed" }

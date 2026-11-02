@@ -1,5 +1,12 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-03, final portability review:** fixed MPEG exact-entry detection, hook ownership/release/rollback,
+dynamic image/work/reference bounds and allocation failure. Font loading validates complete payloads and allocations;
+font close checks owned pointers and distinguishes single/double-byte resources. MiniTest emits structured results;
+the build checks named exceptions, report completeness and native exit codes, and rejects missing IOP/GS test binaries.
+Current host validation is described in `tests/README.md` and `docs/FINAL_REVIEW_2026-11-03.md`; the PowerShell/MSVC
+build and real-game acceptance have not been rerun here. The historical Windows results below are not a new pass.
+
 **2026-11-03, address portability:** IPU table defaults, MPEG callbacks/globals/movie hooks, font table/GP offsets,
 the movie FIELD instruction and capture-state addresses are now explicit per-port configuration. `loadELF` clears the
 preceding configuration; runners must reapply it after loading. The previous full Windows build results below predate
