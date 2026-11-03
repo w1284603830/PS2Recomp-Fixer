@@ -9,6 +9,7 @@
 #include "GS/GSExtra.h"
 #include "GS/GSPerfMon.h"
 #include "GS/GSUtil.h"
+#include "GS/HostTuning.h"
 #include "Host.h"
 
 #include "common/BitUtils.h"
@@ -203,6 +204,21 @@ bool GSDevice11::Create(GSVSyncMode vsync_mode, bool allow_present_throttle)
 	}
 	else
 		Console.Error("D3D11: Failed to obtain adapter name.");
+
+	// Optional per-port host tuning, independent of game identity and GPU model.
+	// https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgidevice1-setmaximumframelatency
+	if (const auto latency = GSHostTuning::FrameLatency(std::getenv("PS2_DXGI_MAX_FRAME_LATENCY")); latency.has_value())
+	{
+		wil::com_ptr_nothrow<IDXGIDevice1> dxgi_device1;
+		if (m_dev.try_query_to(&dxgi_device1))
+		{
+			const HRESULT latency_hr = dxgi_device1->SetMaximumFrameLatency(*latency);
+			if (FAILED(latency_hr))
+				Console.Error("D3D11: SetMaximumFrameLatency(%u) failed: %08X", *latency, static_cast<unsigned>(latency_hr));
+		}
+		else
+			Console.Warning("D3D11: IDXGIDevice1 unavailable; frame-latency override ignored.");
+	}
 
 	BOOL allow_tearing_supported = false;
 	hr = m_dxgi_factory->CheckFeatureSupport(

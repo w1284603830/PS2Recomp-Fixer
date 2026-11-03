@@ -17,6 +17,7 @@
 #include "Host.h"
 #include "IconsFontAwesome.h"
 #include "GS/GSExtra.h"
+#include "GS/HostTuning.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "GS/Renderers/HW/DoDTextureExclusions.h"
@@ -28,6 +29,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <mutex>
@@ -196,6 +198,7 @@ namespace GSTextureReplacements
 	static void DodTrimCache();
 	static void DodClearState();
 	static void DodLoadPrefetchList(const std::string& texture_dir);
+	static void LoadUiPreloadList(const std::string& texture_dir);
 	static void DodHandleScenePrefetch();
 }; // namespace GSTextureReplacements
 
@@ -550,6 +553,8 @@ void GSTextureReplacements::ReloadReplacementMap()
 			PrecacheReplacementTextures();
 		else
 			DodLoadPrefetchList(texture_dir);
+		// Independent of room lists and full-pack precaching. An absent manifest is a no-op.
+		LoadUiPreloadList(texture_dir);
 
 		// log a warning when paltex is on and preloading is off, since we'll be disabling paltex
 		if (GSConfig.GPUPaletteConversion && GSConfig.TexturePreloading != TexturePreloadingLevel::Full)
@@ -687,19 +692,33 @@ GSTexture* GSTextureReplacements::LookupReplacementTexture(const GSTextureCache:
 	else
 	{
 		// synchronous load
+		static const bool trace_sync = std::getenv("DOD_TEXTURE_TRACE") != nullptr;
+		const auto load_start = trace_sync ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 		std::optional<ReplacementTexture> replacement(LoadReplacementTexture(fnit->second, !mipmap));
 		if (!replacement.has_value())
 			return nullptr;
+		const auto load_end = trace_sync ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 
 		// insert into cache
 		std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
-		const ReplacementTexture& rtex = s_replacement_texture_cache.emplace(name, std::move(replacement.value())).first->second;
-		DodNoteCached(name, rtex);
+		const auto [cached, inserted] = s_replacement_texture_cache.emplace(name, std::move(replacement.value()));
+		const ReplacementTexture& rtex = cached->second;
+		// A preload can finish while the synchronous fallback is decoding. Count
+		// those CPU bytes once and reuse the winner under the same cache lock.
+		if (inserted)
+			DodNoteCached(name, rtex);
+		else
+			s_dod_cache_use[name] = ++s_dod_use_tick;
 
 		// and upload to gpu
 		*alpha_minmax = rtex.alpha_minmax;
 		GSTexture* tex = CreateReplacementTexture(rtex, mipmap);
 		trace_ui(rtex, tex, "disk");
+		if (trace_sync)
+			std::fprintf(stderr, "[hd-texture] sync-load %" PRIx64 "-%" PRIx64 "-%08x load_ms=%.1f upload_ms=%.1f hd=%ux%u\n",
+				name.TEX0Hash, name.CLUTHash, name.bits,
+				std::chrono::duration<double, std::milli>(load_end - load_start).count(),
+				std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - load_end).count(), rtex.width, rtex.height);
 		return tex;
 	}
 }
@@ -904,7 +923,7 @@ void GSTextureReplacements::PrecacheReplacementTextures()
 	for (const auto& it : s_replacement_texture_filenames)
 	{
 		if (it.second.pc_ui_direct)
-			continue; // Always select UI synchronously on first use; do not queue a racing preload.
+			continue; // UI is opt-in through its own manifest; select/upload it on first use.
 		if (s_replacement_texture_cache.find(it.first) != s_replacement_texture_cache.end())
 			continue;
 
@@ -991,6 +1010,14 @@ void GSTextureReplacements::ProcessAsyncLoadedTextures()
 			break;
 
 		const auto [name, mipmap] = s_async_loaded_textures[done];
+		const auto file = s_replacement_texture_filenames.find(name);
+		if (file != s_replacement_texture_filenames.end() && file->second.pc_ui_direct)
+		{
+			// UI preloads decode into the CPU cache only. First-use lookup retains
+			// its synchronous fallback and direct upload, with no native-frame flash.
+			s_pending_async_load_textures.erase(name);
+			continue;
+		}
 		const bool prefetched = s_dod_preupload.erase(name) != 0;
 
 		// no longer pending!
@@ -1167,6 +1194,37 @@ void GSTextureReplacements::DodLoadPrefetchList(const std::string& texture_dir)
 						 "cache cap %llu MB, upload %llu MB/vsync, VRAM kept %llu MB\n",
 		rooms, names, missing, s_dod_threads, static_cast<unsigned long long>(s_dod_cache_cap >> 20),
 		static_cast<unsigned long long>(s_dod_upload_budget >> 20), static_cast<unsigned long long>(s_dod_keep_bytes >> 20));
+}
+
+void GSTextureReplacements::LoadUiPreloadList(const std::string& texture_dir)
+{
+	// Originally developed for HD texture replacement porting. Keep the loader
+	// reusable; atlas identities and memory budgets belong to the port's pack/config.
+	const auto text = FileSystem::ReadFileToString(Path::Combine(texture_dir, "ui_preload.txt").c_str());
+	if (!text.has_value())
+		return;
+	const auto list = GSHostTuning::ParseUiPreloadList(*text);
+	size_t queued = 0, skipped = list.rejected;
+	std::unordered_set<TextureName> seen;
+	std::unique_lock<std::mutex> lock(s_replacement_texture_cache_mutex);
+	for (const std::string& token : list.names)
+	{
+		const auto name = ParseReplacementName((token + ".dds").c_str());
+		if (!name.has_value()) { ++skipped; continue; }
+		const auto file = s_replacement_texture_filenames.find(*name);
+		if (file == s_replacement_texture_filenames.end() || !file->second.pc_ui_direct)
+		{
+			++skipped;
+			continue;
+		}
+		if (!seen.insert(*name).second || s_replacement_texture_cache.find(*name) != s_replacement_texture_cache.end())
+			continue;
+		// Existing worker/pending-map ownership and CPU cache cap apply unchanged.
+		QueueAsyncReplacementTextureLoad(*name, file->second, false, true);
+		++queued;
+	}
+	std::fprintf(stderr, "[hd-texture] ui preload: %zu queued, %zu skipped%s\n", queued, skipped,
+		list.truncated ? " (manifest limit reached)" : "");
 }
 
 void GSTextureReplacements::DodHandleScenePrefetch()

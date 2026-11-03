@@ -3,6 +3,7 @@
 // taken per path where the runtime submits it (PS2Memory::submitGifPacket) instead of through a raster back end, so
 // the generated code's headers stay unchanged.
 #include "dod_pcsx2_gs.h"
+#include "ps2_gs_pacing.h"
 
 #include "runtime/ps2_memory.h"
 
@@ -373,6 +374,16 @@ namespace dodpcsx2
         cgtrace::select(g_presents.load(std::memory_order_relaxed) + 1u, priv);
         const auto presentStart = std::chrono::steady_clock::now();
         g_api->vsync(&priv);
+        // Explicit diagnostic only; malformed/overflowing periods are disabled.
+        // Simulates a display/driver that limits Present, without changing guest clocks.
+        static const uint32_t testPresentUs = ps2host::boundedUnsigned(
+            std::getenv("PS2_TEST_PRESENT_PERIOD_US"), 1000000u);
+        if (testPresentUs != 0u)
+        {
+            static auto due = std::chrono::steady_clock::now();
+            due = std::max(due + std::chrono::microseconds(testPresentUs), std::chrono::steady_clock::now());
+            std::this_thread::sleep_until(due);
+        }
         const uint64_t fields = g_presents.fetch_add(1u, std::memory_order_relaxed) + 1u;
         cgtrace::vsync(fields, priv, std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - presentStart).count());
@@ -644,7 +655,7 @@ namespace dodpcsx2
                 m_vsyncsInFlight.fetch_add(1u, std::memory_order_relaxed);
                 publish();
                 std::unique_lock lock(m_mutex);
-                m_done.wait(lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
+                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
             }
             else if (m_open.size() >= kChunkQwords)
                 publish();
@@ -655,8 +666,11 @@ namespace dodpcsx2
         {
             publish();
             std::unique_lock lock(m_mutex);
-            m_done.wait(lock, [this] { return m_queue.empty() && !m_busy; });
+            m_waitTime.wait(m_done, lock, [this] { return m_queue.empty() && !m_busy; });
         }
+
+        uint64_t takeGuestWaitNs() { return m_waitTime.take(); }
+        uint32_t fieldsInFlight() const { return m_vsyncsInFlight.load(std::memory_order_relaxed); }
 
     private:
         static constexpr size_t kChunkQwords = 64u * 1024u / 16u;
@@ -670,7 +684,7 @@ namespace dodpcsx2
             QwordChunk next;
             {
                 std::unique_lock lock(m_mutex);
-                m_done.wait(lock, [this] { return m_queue.size() < kMaxChunks; });
+                m_waitTime.wait(m_done, lock, [this] { return m_queue.size() < kMaxChunks; });
                 m_queue.push_back(std::move(m_open));
                 if (!m_free.empty())
                 {
@@ -732,6 +746,24 @@ namespace dodpcsx2
                         m_vsyncsInFlight.fetch_sub(1u, std::memory_order_relaxed);
                     continue;
                 }
+                // Avoid clock reads per command unless diagnostics were requested.
+                struct SlowOp
+                {
+                    bool enabled;
+                    uint32_t op, bytes;
+                    std::chrono::steady_clock::time_point start;
+                    ~SlowOp()
+                    {
+                        if (!enabled) return;
+                        const double ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start).count();
+                        if (ms >= 10.0)
+                            std::fprintf(stderr, "[gs-slow] op=%u ms=%.1f bytes=%u field=%llu\n", op, ms, bytes,
+                                         static_cast<unsigned long long>(g_presents.load(std::memory_order_relaxed)));
+                    }
+                };
+                static const bool perf = std::getenv("DOD_PERF") != nullptr;
+                SlowOp slow{perf, header[0], header[2], perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
                 switch (header[0])
                 {
                 case kGif:
@@ -783,18 +815,30 @@ namespace dodpcsx2
         bool m_busy = false;
         bool m_stopping = false; // m_mutex; set only after the producer has stopped
         std::atomic<uint32_t> m_vsyncsInFlight{0u};
+        ps2host::GsWaitTime m_waitTime;
         uint32_t m_mxcsr = 0u; // GS thread
         std::thread m_thread;
     };
 
     GsThread *g_worker = nullptr;
 
+    bool asynchronous()
+    {
+        static const bool threaded = []() {
+            const char* value = std::getenv("DOD_GS_THREAD");
+            return !(value && *value == '0');
+        }();
+        return active() && threaded;
+    }
+
+    uint64_t takeGuestWaitNs() { return g_worker ? g_worker->takeGuestWaitNs() : 0u; }
+    uint32_t fieldsInFlight() { return g_worker ? g_worker->fieldsInFlight() : 0u; }
+
     GsThread *gsThread()
     {
         static GsThread *const thread = []() -> GsThread *
         {
-            const char *v = std::getenv("DOD_GS_THREAD");
-            if (v && *v == '0')
+            if (!asynchronous())
             {
                 std::fprintf(stderr, "[pcsx2-gs] GS on the game thread (DOD_GS_THREAD=0)\n");
                 return nullptr;
@@ -1018,6 +1062,9 @@ namespace dodpcsx2
     void hostTick() {}
     void shutdown() {}
     bool active() { return false; }
+    bool asynchronous() { return false; }
+    uint64_t takeGuestWaitNs() { return 0u; }
+    uint32_t fieldsInFlight() { return 0u; }
     bool hdCgSupported() { return false; }
     const wchar_t* hdCgDefaultRoot() { return L""; }
     void hdCgFrame(const void*, uint32_t) {}

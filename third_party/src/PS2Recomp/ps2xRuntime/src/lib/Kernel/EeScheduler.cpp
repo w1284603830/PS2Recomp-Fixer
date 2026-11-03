@@ -1,6 +1,7 @@
 #include "runtime/ee_scheduler.h"
 #include "../ps2_iop_post.h"
 #include "../gs/dod_pcsx2_gs.h"
+#include "ps2_gs_pacing.h"
 
 extern bool g_ps2GuestUnwinding;
 void dodCallHistTick(uint64_t field); // [DoD] ps2_runtime.cpp
@@ -2586,6 +2587,48 @@ void EeScheduler::processPendingEvents()
     applyPendingPreemption();
 }
 
+namespace
+{
+    // A blocked GS producer has advanced no guest cycles. Move the outstanding
+    // host deadlines by that measured wait, instead of treating it as guest debt.
+    // Extra queue draining is a port-specific tuning choice, disabled by default.
+    template <class Mutex, class Deadlines, class Update>
+    void forgiveGsWait(Mutex& mutex, Deadlines& deadlines, Update&& update, bool afterVsync = false)
+    {
+        static const bool legacy = []() {
+            const char* value = std::getenv("PS2_GS_WAIT_PACING");
+            return value && std::strcmp(value, "legacy") == 0;
+        }();
+        static const uint32_t drainUs = ps2host::boundedUnsigned(std::getenv("PS2_GS_DRAIN_US"), 2000u);
+        const uint64_t waited = dodpcsx2::takeGuestWaitNs();
+        const uint32_t inFlight = afterVsync ? dodpcsx2::fieldsInFlight() : 0u;
+        static const bool perf = std::getenv("DOD_PERF") != nullptr;
+        if (perf && (waited != 0u || afterVsync))
+        {
+            static thread_local uint64_t totalNs = 0u, waits = 0u, fields = 0u, depth = 0u;
+            static thread_local auto start = std::chrono::steady_clock::now();
+            totalNs += waited;
+            waits += waited != 0u;
+            if (afterVsync) { ++fields; depth += inFlight; }
+            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+            if (seconds >= 5.0)
+            {
+                std::fprintf(stderr, "[perf:gs-wait] interval=%.3fs waits=%llu blocked_ms=%.1f depth_avg=%.2f pacing=%s drain_us=%u\n",
+                             seconds, static_cast<unsigned long long>(waits), totalNs / 1e6,
+                             fields ? static_cast<double>(depth) / fields : 0.0, legacy ? "legacy" : "compensate", drainUs);
+                totalNs = waits = fields = depth = 0u;
+                start = std::chrono::steady_clock::now();
+            }
+        }
+        const uint32_t drain = inFlight >= 2u ? drainUs : 0u;
+        if (legacy || (waited == 0u && drain == 0u))
+            return;
+        std::lock_guard lock(mutex);
+        ps2host::shiftHostDeadlines(deadlines, waited, drain);
+        update();
+    }
+}
+
 void EeScheduler::processDueDeadlines()
 {
     if (!dodEventPumpAlways())
@@ -2595,6 +2638,7 @@ void EeScheduler::processDueDeadlines()
         if (next == 0u || m_eeCycle < next)
             return;
     }
+    forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); });
     DodVBlankPerfBatch perfBatch;
     for (;;)
     {
@@ -2714,6 +2758,7 @@ void EeScheduler::processEvent(const EeEvent &event)
             m_runtime.memory().gs().csr.fetch_and(~0x2000ull, std::memory_order_acq_rel);
         }
         dodpcsx2::vsync(m_runtime.memory().gs()); // [DoD] PCSX2's GS composes and presents the field
+        forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
         dodCallHistTick(m_vsyncTick);
         {
             // PS2_RAM_DUMP=<dir>: every 300 fields, EE RAM to <dir>\tick_<n>.bin, to find the game's own counters
@@ -3050,6 +3095,7 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
 
 void EeScheduler::waitForEvent()
 {
+    forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); });
     std::unique_lock lock(m_eventMutex);
     if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
     {

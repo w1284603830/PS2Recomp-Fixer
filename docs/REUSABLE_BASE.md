@@ -66,7 +66,7 @@ constants; game locations are supplied by profiles or the reference runner.
 - GParam uses strict address parsing and RAM validation. Capture metadata comes from an optional runner callback.
 - ELF loading clears the preceding profile; runners configure the selected game after a successful load.
 
-The complete headless suite passes 47 tests, including production IPU/MPEG/font translation units and the actual
-generic runner compiled with GCC/UndefinedBehaviorSanitizer. The distributable upstream patch matches the vendored
-source. This is not a new Windows/MSVC build or evidence of game/codec/font-rendering acceptance. Existing runners
+Headless coverage includes production IPU/MPEG/font translation units, the actual generic runner and shared host
+timing/options helpers compiled with GCC and sanitizers. The ordered upstream patch series reproduces the vendored
+source byte for byte. This is not a new Windows/MSVC build or evidence of game/codec/font-rendering acceptance. Existing runners
 must follow the migration instructions in [GAME_PORTING.md](GAME_PORTING.md#5-address-configuration-and-migration).
