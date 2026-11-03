@@ -31,6 +31,8 @@ typedef struct Pcsx2GsOpenParams
     //   blending=0..5 (minimum ... maximum),
     //   texture_dir=<folder holding replacements/> (HD textures, PCSX2's names and formats: PNG, DDS),
     //   texture_precache=0/1 (load all of them at start instead of as the game uses them)
+    //   game_id=<id>, game_revision=<revision>, particle_edges_profile=<reviewed id|off>
+    //   Particle edges default off; all three identities must match. HPO alone never selects a profile.
     const char *options;
 } Pcsx2GsOpenParams;
 
@@ -165,7 +167,8 @@ typedef const Pcsx2GsApi *(*Pcsx2GsGetApiFn)(uint32_t version);
 // (dod_draws.tsv + dod_draws_summary.txt), each frame's output and, without PCSX2GS_DOD_CAPTURE_LIGHT, PCSX2's
 // per-draw info of the next `frames` frames (1-8), started at the next vsync; images as PNG. Any thread.
 #define PCSX2GS_DOD_CAPTURE_LIGHT 1u
-// A/B (with frames = 2): the second frame draws without the particle fix (same moment, fix on / off).
+// A/B (frames = 2): baseline then forced-off frame. A disabled/unqualified profile stays off in both.
+// Adjacent frames can differ in animation/RT contents; this is not frozen-state replay.
 #define PCSX2GS_DOD_CAPTURE_AB 2u
 typedef void (*Pcsx2GsDodCaptureFn)(const char *dir, uint32_t frames, uint32_t flags);
 

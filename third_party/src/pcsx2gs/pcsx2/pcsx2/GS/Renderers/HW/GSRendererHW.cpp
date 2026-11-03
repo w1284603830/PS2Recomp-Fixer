@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/Renderers/HW/GSRendererHW.h"
+#include "GS/ParticleEdges.h"
 #include "GS/DoDHdCg.h"
 #include "common/ScopedGuard.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
@@ -2781,86 +2782,31 @@ void GSRendererHW::RoundSpriteOffset()
 	}
 }
 
-// [DoD] Thin lines when upscaling (PCSX2 #5851 / #6396) along the game's effect particles (smoke, fire, sparks...):
-// sprites in the 3D scene that sample an atlas (several tiles in one texture, REPEAT wrapping) with a bilinear filter.
-// The GS fills the native pixels [ceil(min), ceil(max)) of each axis and samples once per pixel. Upscaled, the
-// outermost internal pixels sample closer to the sprite's edge than any native sample does:
-//  - a shrunk sprite (several texels per native pixel) then reads the tile's outer texels, which the GS skips between
-//    its samples (the dark L along the smoke in the user's F8 capture of room 0x283);
-//  - any sprite then lets the filter reach past its tile (the neighbouring tile, or the far side of the texture). On
-//    the PS2 that blend fills the whole outer native pixel and reads as a soft edge; upscaled it is a sharp line.
-// Each sprite of such a draw is put on the native pixels it fills, and its texture coordinates run from the native
-// first sample (first internal pixel) to the native last sample (last internal pixel), both kept half a texel inside
-// the sprite's texture rectangle (half a texel of the coarsest mip level when the filter uses levels). With the
-// positions on whole pixels, NativeWTexOffset's sprite shift (DetermineVSConfig) does not apply: internal pixel j
-// samples native j / scale. Called before real_rect, which grows to the pixels the sprites now fill (target validity).
-// Only these draws: a native texture (not a render target: the game's masks, blur and down-sampling passes keep their
-// deliberate half-texel offsets; the first version rewrote them and left fringes at character edges), bilinear, a real
-// depth test with every Z below the HUD's 0xFFFA-0xFFFC layer (HUD and text keep PCSX2's handling: the first version
-// cut the soul orb's ring flat; post-processing runs at Z ALWAYS). STQ sprites need one Q for both vertices.
-// The game draws the same effect atlases (0x20E0 P8 256x512...) with and without mip filtering (TEX1 MMIN >= 2 / 0-1):
-// the second version took only the first, and the purple smoke over room 0x283 kept its lines (10-28 regression,
-// F8 draw table). Every sprite of this kind in the 220-room sweep is an effect sprite (shrunk 3-40 texels per pixel).
-// Returns "applied", or why the draw was left alone (the F8 capture's draw table).
-const char* GSRendererHW::DoDNativeParticleEdges(const GSTextureCache::Source* tex, float rtscale)
+// Native first/last sample transform. Eligibility, HUD exclusion and mip inset come
+// from the explicitly selected game/revision profile (GS/ParticleEdgeProfiles/).
+// Selection and exclusions are not evidence of visual acceptance.
+const char* GSRendererHW::ApplyParticleEdges(const ParticleEdges::Profile& profile, float rtscale)
 {
-	if (!m_process_texture || !tex)
-		return "no-texture";
-	if (tex->m_target || tex->m_from_target)
-		return "rt-source";
-	if (!m_vt.IsLinear())
-		return "nearest";
-	if (!m_cached_ctx.TEST.ZTE || m_cached_ctx.TEST.ZTST == ZTST_NEVER || m_cached_ctx.TEST.ZTST == ZTST_ALWAYS)
-		return "no-ztest";
 	const u32 count = m_vertex->next;
+	if (count < 2 || (count & 1u)) return "bad-vertices";
 	GSVertex* v = &m_vertex->buff[0];
 	const bool fst = PRIM->FST;
 	for (u32 i = 0; i < count; i++)
 	{
-		if (v[i].XYZ.Z >= 0xFF00u)
-			return "hud-z"; // the HUD layer
-		if (!fst && (i & 1) && (v[i].RGBAQ.Q == 0.0f || v[i - 1].RGBAQ.Q != v[i].RGBAQ.Q))
-			return "q-varies";
+		if (const char* reason = ParticleEdges::VertexSkipReason(profile, v[i].XYZ.Z, fst, (i & 1u) != 0,
+			(i & 1u) ? v[i - 1].RGBAQ.Q : v[i].RGBAQ.Q, v[i].RGBAQ.Q))
+			return reason;
 	}
 	const int ox = m_context->XYOFFSET.OFX;
 	const int oy = m_context->XYOFFSET.OFY;
 	const float tw = static_cast<float>(1 << m_cached_ctx.TEX0.TW);
 	const float th = static_cast<float>(1 << m_cached_ctx.TEX0.TH);
-	// texels: half a texel of the coarsest level the filter reads (level 0 only without mip filtering, MMIN 0 / 1)
-	const int levels = m_context->TEX1.MMIN >= 2 ? std::min<int>(m_context->TEX1.MXL, 6) : 0;
-	const float inset = 0.5f * static_cast<float>(1 << levels);
+	const float inset = ParticleEdges::Inset(profile, m_context->TEX1.MMIN, m_context->TEX1.MXL);
 	const auto texels = [&](const GSVertex& p, float q, float& u, float& w) {
 		u = fst ? p.U / 16.0f : p.ST.S / q * tw;
 		w = fst ? p.V / 16.0f : p.ST.T / q * th;
 	};
 
-	// One axis of one sprite: positions p0 / p1 (1/16 pixel, offset removed), texture coordinates c0 / c1 (texels)
-	// -> positions q0 / q1 on the native pixel grid and their texture coordinates d0 / d1.
-	const auto axis = [&](int p0, int p1, float c0, float c1, int& q0, int& q1, float& d0, float& d1) {
-		const int n0 = (std::min(p0, p1) + 15) >> 4; // native pixels [n0, n1)
-		const int n1 = (std::max(p0, p1) + 15) >> 4;
-		q0 = (p0 <= p1 ? n0 : n1) << 4;
-		q1 = (p0 <= p1 ? n1 : n0) << 4;
-		d0 = c0;
-		d1 = c1;
-		if (n1 <= n0)
-			return; // fills no pixel
-		const float slope = (c1 - c0) / static_cast<float>(p1 - p0); // texels per 1/16 pixel
-		float a = c0 + slope * static_cast<float>((n0 << 4) - p0); // native first sample
-		float b = c0 + slope * static_cast<float>(((n1 - 1) << 4) - p0); // native last sample
-		const float lo = std::min(c0, c1) + inset;
-		const float hi = std::max(c0, c1) - inset;
-		if (lo <= hi) // a texture rectangle wider than one texel: stay half a texel inside it
-		{
-			a = std::clamp(a, lo, hi);
-			b = std::clamp(b, lo, hi);
-		}
-		const float n = static_cast<float>(n1 - n0);
-		const float s0 = a; // at n0: the first internal pixel samples a
-		const float s1 = a + (b - a) * n / (n - 1.0f / rtscale); // at n1: the last one (n1 - 1 / scale) samples b
-		d0 = p0 <= p1 ? s0 : s1;
-		d1 = p0 <= p1 ? s1 : s0;
-	};
 	const auto to_xy = [](int origin, int q) { return static_cast<u16>(std::clamp(origin + q, 0, 0xFFFF)); };
 	const auto to_uv = [](float d) { return static_cast<u16>(std::clamp(static_cast<int>(std::lround(d * 16.0f)), 0, 0x3FFF)); };
 
@@ -2874,8 +2820,8 @@ const char* GSRendererHW::DoDNativeParticleEdges(const GSTextureCache::Source* t
 		texels(v0, q, u0, w0);
 		texels(v1, q, u1, w1);
 		int x0, x1, y0, y1;
-		axis(v0.XYZ.X - ox, v1.XYZ.X - ox, u0, u1, x0, x1, u0, u1);
-		axis(v0.XYZ.Y - oy, v1.XYZ.Y - oy, w0, w1, y0, y1, w0, w1);
+		ParticleEdges::TransformAxis(v0.XYZ.X - ox, v1.XYZ.X - ox, u0, u1, rtscale, inset, x0, x1, u0, u1);
+		ParticleEdges::TransformAxis(v0.XYZ.Y - oy, v1.XYZ.Y - oy, w0, w1, rtscale, inset, y0, y1, w0, w1);
 		if (x0 != x1 && y0 != y1)
 			filled = filled.runion(GSVector4i(std::min(x0, x1), std::min(y0, y1), std::max(x0, x1), std::max(y0, y1)).sra32<4>());
 		v0.XYZ.X = to_xy(ox, x0);
@@ -2935,13 +2881,16 @@ namespace
 		s_dod_sprite_log = nullptr;
 		if (std::FILE* f = std::fopen(s_dod_draw_summary.c_str(), "w"))
 		{
-			std::fprintf(f, "# 新鬼武者 F8 截取：每幀的繪製分類（細節在 dod_draws.tsv，一個 draw 一行）\n"
-							"# 類別 3d=立體模型（三角形＋深度測試） particle=場景特效粒子（煙、火、火花、光：貼圖方塊＋雙線性＋mip＋深度測試）\n"
-							"#      world-sprite=場景特效方塊、貼圖沒有 mip（MMIN<2；細線修正同樣處理） sprite=其他貼圖方塊（最近點取樣或沒有深度測試）\n"
-							"#      hud=介面層（Z>=0xFF00：血條、魂珠、字幕、選單） post=後處理（讀取畫面本身：遮罩、模糊、縮小、複製）\n"
-							"#      fill=無貼圖（清畫面、淡入淡出、純色） 2d-tri=無深度測試的三角形（字幕底、提示框） line/point=線／點 shuffle=通道搬移 cg=高清過場動畫\n"
-							"# 細線修正（粒子邊緣對齊原生像素）：applied=已套用；其他=沒套用的原因（not-sprite 非方塊、rt-source 讀畫面、no-ztest、hud-z、\n"
-							"#      nearest 最近點取樣、no-texture、q-varies、skipped 被略過、native-scale 原生解析度、shuffle、env-off=DOD_PARTICLE_EDGES=0 關閉、ab-off=同一刻對照的關閉幀）\n\n");
+			const auto* profile = ParticleEdges::session.profile;
+			std::fprintf(f, "# GS capture: draw classification is diagnostic, not visual acceptance.\n"
+				"# game=%s revision=%s particle_profile=%s state=%s\n"
+				"# particle/world-sprite: textured scene sprites; hud classification uses the selected profile only.\n"
+				"# edges: profile-off, profile-invalid, profile-unknown, profile-unsupported,\n"
+				"# profile-identity-missing, profile-identity-mismatch, env-off, hpo, native-scale,\n"
+				"# not-sprite, shuffle, no-texture, rt-source, nearest, no-ztest, hud-z, q-varies, bad-vertices,\n"
+				"# bad-scale, skipped, ab-off, applied. Only applied means the transform ran.\n\n",
+				profile ? profile->game : "-", profile ? profile->revision : "-", profile ? profile->id : "off",
+				ParticleEdges::SessionSkipReason() ? ParticleEdges::SessionSkipReason() : "selected");
 			for (const DoDDrawLogFrame& fr : s_dod_draw_frames)
 			{
 				std::fprintf(f, "PCSX2 frame %lld: %u draws (draw %llu..%llu)\n  kinds:", fr.frame, fr.draws,
@@ -2962,6 +2911,16 @@ namespace
 	}
 }
 
+void GSRendererHW::ResetParticleEdgeSession()
+{
+	DoDDrawLogClose();
+	s_dod_ab_off_frame = -1;
+	s_dod_draw_last_frame = 0;
+	s_dod_draw_frames.clear();
+	s_dod_sprites_before.clear();
+	s_dod_draw_summary.clear();
+}
+
 void GSRendererHW::DoDDrawLogOpen(const std::string& path, int last_frame, int ab_off_frame)
 {
 	DoDDrawLogClose();
@@ -2976,7 +2935,7 @@ void GSRendererHW::DoDDrawLogOpen(const std::string& path, int last_frame, int a
 									   "fixed_u0\tfixed_v0\tfixed_u1\tfixed_v1\n");
 	std::fprintf(s_dod_draw_log, "frame\tdraw\tkind\tedges\tprim\tverts\tindices\tx0\ty0\tx1\ty1\tgrown\tfbp\tfbw\tfpsm\tfbmsk\t"
 								 "zbp\tzpsm\tzte\tztst\tzmsk\tzmin\tzmax\ttme\tsource\thd\ttbp0\ttbw\ttpsm\ttw\tth\ttfx\ttcc\t"
-								 "mmag\tmmin\tmxl\tlinear\tfst\tabe\talpha\tate\tatst\taref\tafail\tdate\tfge\tscale\ttexsize\n");
+								 "mmag\tmmin\tmxl\tlinear\tfst\tabe\talpha\tate\tatst\taref\tafail\tdate\tfge\tscale\ttexsize\tgame_id\tgame_revision\tparticle_profile\n");
 }
 
 void GSRendererHW::DoDDrawLogVsync(int frame)
@@ -3014,7 +2973,8 @@ void GSRendererHW::DoDLogDraw(const GSTextureCache::Target* rt, const GSTextureC
 		kind = "fill";
 	else if (from_rt)
 		kind = "post";
-	else if (m_vt.m_max.p.z >= 65280.0f)
+	else if (ParticleEdges::session.profile && ParticleEdges::session.profile->excludeHud &&
+		m_vt.m_max.p.z >= static_cast<float>(ParticleEdges::session.profile->hudZMinimum))
 		kind = "hud";
 	else if (m_vt.m_primclass == GS_SPRITE_CLASS)
 		kind = !m_vt.IsLinear() || !ztest ? "sprite" : m_context->TEX1.MMIN >= 2 ? "particle" : "world-sprite";
@@ -3044,7 +3004,7 @@ void GSRendererHW::DoDLogDraw(const GSTextureCache::Target* rt, const GSTextureC
 	std::fprintf(s_dod_draw_log,
 		"%lld\t%llu\t%s\t%s\t%s\t%u\t%u\t%d\t%d\t%d\t%d\t%d\t0x%x\t%u\t%s\t0x%x\t"
 		"0x%x\t%s\t%u\t%u\t%u\t%.0f\t%.0f\t%u\t%s\t%d\t0x%x\t%u\t%s\t%u\t%u\t%u\t%u\t"
-		"%u\t%u\t%u\t%d\t%u\t%u\t%u%u%u%u/%u\t%u\t%u\t%u\t%u\t%u\t%u\t%.2f\t%dx%d\n",
+		"%u\t%u\t%u\t%d\t%u\t%u\t%u%u%u%u/%u\t%u\t%u\t%u\t%u\t%u\t%u\t%.2f\t%dx%d\t%s\t%s\t%s\n",
 		frame, static_cast<unsigned long long>(s_n), kind, edges, prim, m_vertex->next, m_index->tail, m_r.x, m_r.y, m_r.z, m_r.w,
 		!m_r.eq(rect_before), m_cached_ctx.FRAME.Block(), m_cached_ctx.FRAME.FBW, GSUtil::GetPSMName(m_cached_ctx.FRAME.PSM),
 		m_cached_ctx.FRAME.FBMSK, m_cached_ctx.ZBUF.Block(), GSUtil::GetPSMName(m_cached_ctx.ZBUF.PSM), test.ZTE, test.ZTST,
@@ -3052,7 +3012,10 @@ void GSRendererHW::DoDLogDraw(const GSTextureCache::Target* rt, const GSTextureC
 		GSUtil::GetPSMName(tex0.PSM), tex0.TW, tex0.TH, tex0.TFX, tex0.TCC, m_context->TEX1.MMAG, m_context->TEX1.MMIN,
 		m_context->TEX1.MXL, m_vt.IsLinear(), PRIM->FST, PRIM->ABE, alpha.A, alpha.B, alpha.C, alpha.D, alpha.FIX, test.ATE,
 		test.ATST, test.AREF, test.AFAIL, test.DATE, PRIM->FGE, rt ? rt->GetScale() : 0.0f, t ? t->GetWidth() : 0,
-		t ? t->GetHeight() : 0);
+		t ? t->GetHeight() : 0,
+		ParticleEdges::session.profile ? ParticleEdges::session.profile->game : "-",
+		ParticleEdges::session.profile ? ParticleEdges::session.profile->revision : "-",
+		ParticleEdges::session.profile ? ParticleEdges::session.profile->id : "off");
 
 	// Each sprite as the game sent it and as drawn (native pixels, offset removed; texels): the line check compares the
 	// image along these edges.
@@ -3075,7 +3038,7 @@ void GSRendererHW::DoDLogDraw(const GSTextureCache::Target* rt, const GSTextureC
 	}
 }
 
-// A sprite's texture coordinates in texels (u0 v0 u1 v1; the second vertex's Q for both, as DoDNativeParticleEdges).
+// A sprite's texture coordinates in texels (u0 v0 u1 v1; the second vertex's Q for both, as ApplyParticleEdges).
 GSVector4 GSRendererHW::DoDSpriteTexels(const GSVertex& v0, const GSVertex& v1) const
 {
 	if (PRIM->FST)
@@ -5606,10 +5569,8 @@ void GSRendererHW::Draw()
 		}
 	}
 
-	// [DoD] effect particles on the native pixel grid, sampling inside their atlas tile, when upscaled (thin lines,
-	// PCSX2 #5851 / #6396), see DoDNativeParticleEdges; before real_rect, which it widens. DOD_PARTICLE_EDGES=0
-	// (diagnostics: A/B tests) leaves them as PCSX2 draws them. The F8 capture logs each decision (DoDLogDraw).
-	static const bool dod_edges_off = [] { const char* v = std::getenv("DOD_PARTICLE_EDGES"); return v && v[0] == '0'; }();
+	// No HPO value or environment "on" value can select a game/revision profile.
+	// The force-off switch is sampled afresh at each GS open; F8 reports actual decisions.
 	const GSVector4i dod_rect_before = m_r;
 	if (s_dod_draw_log && m_vt.m_primclass == GS_SPRITE_CLASS)
 	{
@@ -5624,12 +5585,22 @@ void GSRendererHW::Draw()
 			s_dod_sprites_before.push_back(DoDSpriteTexels(v[i], v[i + 1]));
 		}
 	}
-	const char* dod_edges = skip_draw ? "skipped" : m_vt.m_primclass != GS_SPRITE_CLASS ? "not-sprite" :
-		(!rt || rt->GetScale() <= 1.0f) ? "native-scale" : (m_texture_shuffle || m_channel_shuffle) ? "shuffle" :
-		GSConfig.UserHacks_HalfPixelOffset != GSHalfPixelOffset::NativeWTexOffset ? "hpo" : dod_edges_off ? "env-off" :
-		(s_dod_ab_off_frame >= 0 && g_perfmon.GetFrame() == s_dod_ab_off_frame) ? "ab-off" : nullptr;
+	const ParticleEdges::Profile* particleProfile = ParticleEdges::session.profile;
+	const char* dod_edges = ParticleEdges::SessionSkipReason();
 	if (!dod_edges)
-		dod_edges = DoDNativeParticleEdges(src, rt->GetScale());
+	{
+		static_assert(static_cast<int>(GSHalfPixelOffset::NativeWTexOffset) == 5);
+		const ParticleEdges::Draw draw{skip_draw, m_vt.m_primclass == GS_SPRITE_CLASS, rt != nullptr,
+			rt ? rt->GetScale() : 0.0f, m_texture_shuffle || m_channel_shuffle,
+			static_cast<int>(GSConfig.UserHacks_HalfPixelOffset), m_process_texture && src,
+			src && (src->m_target || src->m_from_target), m_vt.IsLinear(),
+			m_cached_ctx.TEST.ZTE != 0, static_cast<int>(m_cached_ctx.TEST.ZTST)};
+		dod_edges = ParticleEdges::DrawSkipReason(*particleProfile, draw);
+		if (!dod_edges && s_dod_ab_off_frame >= 0 && g_perfmon.GetFrame() == s_dod_ab_off_frame)
+			dod_edges = "ab-off";
+		if (!dod_edges)
+			dod_edges = ApplyParticleEdges(*particleProfile, rt->GetScale());
+	}
 	if (s_dod_draw_log)
 		DoDLogDraw(rt, src, dod_rect_before, dod_edges);
 

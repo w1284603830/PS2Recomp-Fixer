@@ -32,7 +32,7 @@
 - 大量可選診斷（`PS2_*` 環境變數，原本的 `DOD_*` 名稱仍可用）與離線分析工具。
 - 通用的 F2 金手指面板：項目由各遊戲自己的 `cheats.ini` 提供，本倉庫不附任何遊戲的金手指。
 
-完整清單：[IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md)（英文 [IMPROVEMENTS.md](IMPROVEMENTS.md)）。PS2Recomp 的逐行差異以[有順序的補丁組](patches/README.md)提供：對上游 `eb8688b` 先套用保留的基礎補丁，再套用通用主機維護增量補丁；庫內源碼已包含整組修改。
+完整清單：[IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md)（英文 [IMPROVEMENTS.md](IMPROVEMENTS.md)）。PS2Recomp 的逐行差異以[有順序的補丁組](patches/README.md)提供：對上游 `eb8688b` 先套用保留的基礎補丁，再依清單套用維護增量補丁；庫內源碼已包含整組修改。
 
 ## 目錄
 
@@ -118,6 +118,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 
 主機節奏補償、DXGI 佇列控制及 UI 圖集預解碼見 [HOST_TIMING.md](docs/HOST_TIMING.md)。額外排空等待、DXGI 上限與圖集清單需由各遊戲實測配置；未提供清單不會自動預載。既有 SPU2 混響精度保留，調校後仍須按下方指南驗證冷／熱載入、音畫同步、輸入與畫面，不能以單一顯卡結果宣稱所有遊戲通過。
 UI 預解碼這段差異最初是為**高清紋理移植**而做的優化；基底只提供共用載入機制，各遊戲自行提供素材、圖集清單與記憶體預算。
+
+粒子邊緣修正預設關閉，需明確匹配遊戲、版本與 profile，不能僅因 HPO 相同而啟用。《夢之曙光》參數已隔離為選用參考配置，《鬼武者3》必須提供自己的配置與驗證。設定及驗證限制見 [PARTICLE_EDGE_PROFILES.md](docs/PARTICLE_EDGE_PROFILES.md)。
 
 ### 完整回歸，以及如何依結果修正
 

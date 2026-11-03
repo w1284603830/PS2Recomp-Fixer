@@ -22,6 +22,7 @@ dozens of test hooks): a reference for what a finished runner can do, not a temp
 |---|---|---|
 | Boot ELF, disc image, window title/size | `game.ini` `elf`, `iso`, `title`, `window` | |
 | PCSX2 per-game GS fixes (`GameIndex.yaml`: blending level, half pixel offset, native scaling, bilinear upscale...) | `gs_options`, e.g. `blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2` | Nothing is applied by default. Keys: `Bridge.cpp` `ApplyOptions`. Look your game up in PCSX2's `GameIndex.yaml`. |
+| Particle-edge workaround | `gs_options`: matching `game_id`, `game_revision`, `particle_edges_profile` | Default off; HPO is not game identity. See [PARTICLE_EDGE_PROFILES.md](PARTICLE_EDGE_PROFILES.md). The DoD reference is optional; every other game/revision needs its own qualified profile. |
 | Guest address of libgraph's GParam record (what the game's `sceGsGetGParam` returns) | `game.ini` `gparam`, `PS2_GS_GPARAM=0x...`, or `ps2_stubs::setGsGParamAddress()` | Without it `sceGsSyncV` uses the HLE's own record. Needed when the game's libgraph runs natively and updates its own record. |
 | libipu tables (IQ, VQ, optional D4_CHCR helper) | `game.ini` `ipu_iq`, `ipu_vq`, `ipu_d4_chcr`, or `ps2_stubs::dodConfigureIpuInit()` | No default addresses; unconfigured/invalid HLE init returns -1 before touching guest state. |
 | MPEG library ABI and globals | `ps2_stubs::configureMpegGameProfile()` after `loadELF` | Explicit supported ABI, instruction guards, callbacks and globals. Unknown/mismatched profiles never fall through to another game's layout. |

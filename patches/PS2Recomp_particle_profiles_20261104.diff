@@ -1,0 +1,21 @@
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+index 6fcac7d..9adba97 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+@@ -987 +987 @@ namespace dodpcsx2
+-                         ab ? "A/B (1 snapshot; frame output of two frames: the first with the particle fix, the second without)"
++                         ab ? "A/B (1 snapshot; baseline frame and forced-off frame; baseline may already be profile-disabled)"
+@@ -989 +989 @@ namespace dodpcsx2
+-                         edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "on",
++                         edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "see GS draw log (profile/env/draw gates; not assumed enabled)",
+diff --git a/ps2xRuntime/src/lib/gs/pcsx2gs_api.h b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
+index e61e66f..9f73d9c 100644
+--- a/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
++++ b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
+@@ -33,0 +34,2 @@ typedef struct Pcsx2GsOpenParams
++    //   game_id=<id>, game_revision=<revision>, particle_edges_profile=<reviewed id|off>
++    //   Particle edges default off; all three identities must match. HPO alone never selects a profile.
+@@ -168 +170,2 @@ typedef const Pcsx2GsApi *(*Pcsx2GsGetApiFn)(uint32_t version);
+-// A/B (with frames = 2): the second frame draws without the particle fix (same moment, fix on / off).
++// A/B (frames = 2): baseline then forced-off frame. A disabled/unqualified profile stays off in both.
++// Adjacent frames can differ in animation/RT contents; this is not frozen-state replay.

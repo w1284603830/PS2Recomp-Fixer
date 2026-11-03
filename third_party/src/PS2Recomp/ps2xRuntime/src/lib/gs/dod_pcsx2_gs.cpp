@@ -984,9 +984,9 @@ namespace dodpcsx2
                             "particle edge fix %s\ndraw dump %s\n",
                          gameInfo ? gameInfo : "", g_lastScene.load(), static_cast<unsigned long long>(g_presents.load()),
                          g_scale, g_options.c_str(),
-                         ab ? "A/B (1 snapshot; frame output of two frames: the first with the particle fix, the second without)"
+                         ab ? "A/B (1 snapshot; baseline frame and forced-off frame; baseline may already be profile-disabled)"
                          : light ? "light (1 snapshot, frame output)" : "full",
-                         edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "on",
+                         edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "see GS draw log (profile/env/draw gates; not assumed enabled)",
                          capture ? "draws\\: dod_draws_summary.txt (each frame's draws by effect kind), dod_draws.tsv (one line per draw), frame PNGs"
                          : dumpNow ? "draws\\ (old pcsx2gs.dll: per-draw info, BMP; no draw table)"
                                    : "no (pcsx2gs.dll lacks pcsx2gs_dod_capture)");

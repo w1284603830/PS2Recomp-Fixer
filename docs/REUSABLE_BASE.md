@@ -26,9 +26,11 @@ universal PS2 definitions. An implementation must preserve the relationship betw
 vertex/texture coordinate transform; simply accepting HPO4 is not sufficient evidence of correctness.
 
 At audited public commit `311f718106ec88450a002175a9eafbc57978f26b`, the legacy renderer still has the HPO5 gate
-and no independent per-game opt-in. The default-off/profile separation is tracked in GitHub issue #3; it is not
-implemented by the address-portability changes below. The existing `PS2_PARTICLE_EDGES=0` switch (legacy `DOD_PARTICLE_EDGES=0`)
-can disable the heuristic when using a runtime/DLL combination supporting that switch.
+and no independent per-game opt-in. The separate Issue #3 implementation now defaults off, matches explicit game,
+revision and profile IDs, and clears selection/capture state at GS session boundaries. Its optional DoD policy is
+isolated; no Onimusha 3 policy is supplied. See [PARTICLE_EDGE_PROFILES.md](PARTICLE_EDGE_PROFILES.md). The
+`PS2_PARTICLE_EDGES=0` switch (legacy `DOD_PARTICLE_EDGES=0`) remains a force-off control. This is configuration
+isolation, not evidence that other games had visible defects or that their visuals have passed.
 
 ## Public-source portability audit, 2026-11-02
 
