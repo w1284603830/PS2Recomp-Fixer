@@ -6,10 +6,10 @@
 #include <Windows.h>
 #endif
 
-dodhost::Pacer::Pacer()
+dodhost::Pacer::Pacer(bool asynchronousGs) : asynchronousGs(asynchronousGs)
 {
 #ifdef _WIN32
-    if (enabled)
+    if (enabled || asynchronousGs)
     {
         timer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002,
                                        TIMER_MODIFY_STATE | SYNCHRONIZE);
@@ -28,7 +28,23 @@ dodhost::Pacer::~Pacer()
 }
 void dodhost::Pacer::wait()
 {
-    if (!enabled) return;
+    if (!enabled)
+    {
+        if (!asynchronousGs) return;
+        // The asynchronous GS already paces presentation. Block the window/input
+        // pump briefly instead of burning a core; guest and audio clocks are independent.
+#ifdef _WIN32
+        LARGE_INTEGER due;
+        due.QuadPart = -10000; // Relative 1 ms, without a spin tail.
+        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+            WaitForSingleObject(timer, INFINITE);
+        else
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#else
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+#endif
+        return;
+    }
     const auto target = schedule.advance(Clock::now());
 #ifdef _WIN32
     const auto margin = highResolution ? std::chrono::microseconds(100)

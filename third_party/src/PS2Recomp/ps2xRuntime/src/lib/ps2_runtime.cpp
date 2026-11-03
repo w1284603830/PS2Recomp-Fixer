@@ -2873,7 +2873,7 @@ void PS2Runtime::run()
     // Only one worker exists, so a slow disk cannot grow an unbounded queue.
     std::thread frameCaptureWorker;
     std::atomic<bool> frameCaptureBusy{false};
-    dodhost::Pacer hostPacer;
+    dodhost::Pacer hostPacer(dodpcsx2::asynchronous());
     while (!isStopRequested() && !gameThreadFinished.load(std::memory_order_acquire))
     {
         const uint64_t hostFrameStart = dodperf::begin();

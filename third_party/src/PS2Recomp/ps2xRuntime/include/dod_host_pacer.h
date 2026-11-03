@@ -37,12 +37,13 @@ class Pacer
 {
     Schedule schedule{Clock::now()};
     const bool enabled = g_dodLimitHost60;
+    const bool asynchronousGs;
 #ifdef _WIN32
     void* timer = nullptr;
     bool highResolution = false;
 #endif
 public:
-    Pacer();
+    explicit Pacer(bool asynchronousGs = false);
     ~Pacer();
     Pacer(const Pacer&) = delete;
     Pacer& operator=(const Pacer&) = delete;

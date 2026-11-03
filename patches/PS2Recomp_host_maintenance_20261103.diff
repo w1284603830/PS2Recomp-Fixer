@@ -1,0 +1,257 @@
+diff --git a/ps2xRuntime/include/dod_host_pacer.h b/ps2xRuntime/include/dod_host_pacer.h
+index 85c27eb..99ac6a3 100644
+--- a/ps2xRuntime/include/dod_host_pacer.h
++++ b/ps2xRuntime/include/dod_host_pacer.h
+@@ -39,0 +40 @@ class Pacer
++    const bool asynchronousGs;
+@@ -45 +46 @@ public:
+-    Pacer();
++    explicit Pacer(bool asynchronousGs = false);
+diff --git a/ps2xRuntime/include/ps2_gs_pacing.h b/ps2xRuntime/include/ps2_gs_pacing.h
+new file mode 100644
+index 0000000..af1ef42
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_gs_pacing.h
+@@ -0,0 +1,67 @@
++#pragma once
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdint>
++#include <limits>
++
++// Host scheduling only: none of these helpers advances an EE/IOP/SPU clock.
++namespace ps2host
++{
++using Clock = std::chrono::steady_clock;
++
++inline uint32_t boundedUnsigned(const char* text, uint32_t maximum)
++{
++    if (!text || !*text)
++        return 0;
++    uint32_t value = 0;
++    for (const char* p = text; *p; ++p)
++    {
++        if (*p < '0' || *p > '9')
++            return 0;
++        const uint32_t digit = static_cast<uint32_t>(*p - '0');
++        if (digit > maximum || value > (maximum - digit) / 10u)
++            return 0;
++        value = value * 10u + digit;
++    }
++    return value;
++}
++
++class GsWaitTime
++{
++    std::atomic<uint64_t> nanoseconds{0};
++
++public:
++    // Producer thread only. An already-satisfied predicate contributes no time.
++    template <class ConditionVariable, class Lock, class Predicate>
++    void wait(ConditionVariable& cv, Lock& lock, Predicate pred)
++    {
++        if (pred())
++            return;
++        const auto start = Clock::now();
++        cv.wait(lock, pred);
++        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - start).count();
++        if (elapsed > 0)
++            nanoseconds.fetch_add(static_cast<uint64_t>(elapsed), std::memory_order_relaxed);
++    }
++
++    uint64_t take() { return nanoseconds.exchange(0, std::memory_order_relaxed); }
++};
++
++// Preserve the guest deadline cycles/order. Saturate at the clock's maximum
++// rather than overflowing if a diagnostic supplies an extreme duration.
++template <class Deadlines>
++void shiftHostDeadlines(Deadlines& deadlines, uint64_t waitedNs, uint32_t drainUs)
++{
++    const uint64_t maximum = static_cast<uint64_t>(std::numeric_limits<int64_t>::max());
++    const uint64_t drainNs = static_cast<uint64_t>(drainUs) * 1000u;
++    const auto offset = std::chrono::duration_cast<Clock::duration>(std::chrono::nanoseconds(
++        static_cast<int64_t>(std::min(waitedNs, maximum - drainNs) + drainNs)));
++    for (auto& item : deadlines)
++    {
++        const auto latest = Clock::time_point::max() - offset;
++        item.hostDeadline = item.hostDeadline > latest ? Clock::time_point::max() : item.hostDeadline + offset;
++    }
++}
++}
+diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+index b94002a..f0b7028 100644
+--- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
++++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+@@ -3,0 +4 @@
++#include "ps2_gs_pacing.h"
+@@ -2588,0 +2590,42 @@ void EeScheduler::processPendingEvents()
++namespace
++{
++    // A blocked GS producer has advanced no guest cycles. Move the outstanding
++    // host deadlines by that measured wait, instead of treating it as guest debt.
++    // Extra queue draining is a port-specific tuning choice, disabled by default.
++    template <class Mutex, class Deadlines, class Update>
++    void forgiveGsWait(Mutex& mutex, Deadlines& deadlines, Update&& update, bool afterVsync = false)
++    {
++        static const bool legacy = []() {
++            const char* value = std::getenv("PS2_GS_WAIT_PACING");
++            return value && std::strcmp(value, "legacy") == 0;
++        }();
++        static const uint32_t drainUs = ps2host::boundedUnsigned(std::getenv("PS2_GS_DRAIN_US"), 2000u);
++        const uint64_t waited = dodpcsx2::takeGuestWaitNs();
++        const uint32_t inFlight = afterVsync ? dodpcsx2::fieldsInFlight() : 0u;
++        static const bool perf = std::getenv("DOD_PERF") != nullptr;
++        if (perf && (waited != 0u || afterVsync))
++        {
++            static thread_local uint64_t totalNs = 0u, waits = 0u, fields = 0u, depth = 0u;
++            static thread_local auto start = std::chrono::steady_clock::now();
++            totalNs += waited;
++            waits += waited != 0u;
++            if (afterVsync) { ++fields; depth += inFlight; }
++            const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
++            if (seconds >= 5.0)
++            {
++                std::fprintf(stderr, "[perf:gs-wait] interval=%.3fs waits=%llu blocked_ms=%.1f depth_avg=%.2f pacing=%s drain_us=%u\n",
++                             seconds, static_cast<unsigned long long>(waits), totalNs / 1e6,
++                             fields ? static_cast<double>(depth) / fields : 0.0, legacy ? "legacy" : "compensate", drainUs);
++                totalNs = waits = fields = depth = 0u;
++                start = std::chrono::steady_clock::now();
++            }
++        }
++        const uint32_t drain = inFlight >= 2u ? drainUs : 0u;
++        if (legacy || (waited == 0u && drain == 0u))
++            return;
++        std::lock_guard lock(mutex);
++        ps2host::shiftHostDeadlines(deadlines, waited, drain);
++        update();
++    }
++}
++
+@@ -2597,0 +2641 @@ void EeScheduler::processDueDeadlines()
++    forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); });
+@@ -2716,0 +2761 @@ void EeScheduler::processEvent(const EeEvent &event)
++        forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
+@@ -3052,0 +3098 @@ void EeScheduler::waitForEvent()
++    forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); });
+diff --git a/ps2xRuntime/src/lib/dod_host_pacer.cpp b/ps2xRuntime/src/lib/dod_host_pacer.cpp
+index 660af6f..c0cc619 100644
+--- a/ps2xRuntime/src/lib/dod_host_pacer.cpp
++++ b/ps2xRuntime/src/lib/dod_host_pacer.cpp
+@@ -9 +9 @@
+-dodhost::Pacer::Pacer()
++dodhost::Pacer::Pacer(bool asynchronousGs) : asynchronousGs(asynchronousGs)
+@@ -12 +12 @@ dodhost::Pacer::Pacer()
+-    if (enabled)
++    if (enabled || asynchronousGs)
+@@ -31 +31,17 @@ void dodhost::Pacer::wait()
+-    if (!enabled) return;
++    if (!enabled)
++    {
++        if (!asynchronousGs) return;
++        // The asynchronous GS already paces presentation. Block the window/input
++        // pump briefly instead of burning a core; guest and audio clocks are independent.
++#ifdef _WIN32
++        LARGE_INTEGER due;
++        due.QuadPart = -10000; // Relative 1 ms, without a spin tail.
++        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
++            WaitForSingleObject(timer, INFINITE);
++        else
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++#else
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++#endif
++        return;
++    }
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+index 21f755e..6fcac7d 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+@@ -5,0 +6 @@
++#include "ps2_gs_pacing.h"
+@@ -375,0 +377,10 @@ namespace dodpcsx2
++        // Explicit diagnostic only; malformed/overflowing periods are disabled.
++        // Simulates a display/driver that limits Present, without changing guest clocks.
++        static const uint32_t testPresentUs = ps2host::boundedUnsigned(
++            std::getenv("PS2_TEST_PRESENT_PERIOD_US"), 1000000u);
++        if (testPresentUs != 0u)
++        {
++            static auto due = std::chrono::steady_clock::now();
++            due = std::max(due + std::chrono::microseconds(testPresentUs), std::chrono::steady_clock::now());
++            std::this_thread::sleep_until(due);
++        }
+@@ -647 +658 @@ namespace dodpcsx2
+-                m_done.wait(lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
++                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
+@@ -658 +669 @@ namespace dodpcsx2
+-            m_done.wait(lock, [this] { return m_queue.empty() && !m_busy; });
++            m_waitTime.wait(m_done, lock, [this] { return m_queue.empty() && !m_busy; });
+@@ -660,0 +672,3 @@ namespace dodpcsx2
++        uint64_t takeGuestWaitNs() { return m_waitTime.take(); }
++        uint32_t fieldsInFlight() const { return m_vsyncsInFlight.load(std::memory_order_relaxed); }
++
+@@ -673 +687 @@ namespace dodpcsx2
+-                m_done.wait(lock, [this] { return m_queue.size() < kMaxChunks; });
++                m_waitTime.wait(m_done, lock, [this] { return m_queue.size() < kMaxChunks; });
+@@ -734,0 +749,18 @@ namespace dodpcsx2
++                // Avoid clock reads per command unless diagnostics were requested.
++                struct SlowOp
++                {
++                    bool enabled;
++                    uint32_t op, bytes;
++                    std::chrono::steady_clock::time_point start;
++                    ~SlowOp()
++                    {
++                        if (!enabled) return;
++                        const double ms = std::chrono::duration<double, std::milli>(
++                            std::chrono::steady_clock::now() - start).count();
++                        if (ms >= 10.0)
++                            std::fprintf(stderr, "[gs-slow] op=%u ms=%.1f bytes=%u field=%llu\n", op, ms, bytes,
++                                         static_cast<unsigned long long>(g_presents.load(std::memory_order_relaxed)));
++                    }
++                };
++                static const bool perf = std::getenv("DOD_PERF") != nullptr;
++                SlowOp slow{perf, header[0], header[2], perf ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{}};
+@@ -785,0 +818 @@ namespace dodpcsx2
++        ps2host::GsWaitTime m_waitTime;
+@@ -791,0 +825,12 @@ namespace dodpcsx2
++    bool asynchronous()
++    {
++        static const bool threaded = []() {
++            const char* value = std::getenv("DOD_GS_THREAD");
++            return !(value && *value == '0');
++        }();
++        return active() && threaded;
++    }
++
++    uint64_t takeGuestWaitNs() { return g_worker ? g_worker->takeGuestWaitNs() : 0u; }
++    uint32_t fieldsInFlight() { return g_worker ? g_worker->fieldsInFlight() : 0u; }
++
+@@ -796,2 +841 @@ namespace dodpcsx2
+-            const char *v = std::getenv("DOD_GS_THREAD");
+-            if (v && *v == '0')
++            if (!asynchronous())
+@@ -1020,0 +1065,3 @@ namespace dodpcsx2
++    bool asynchronous() { return false; }
++    uint64_t takeGuestWaitNs() { return 0u; }
++    uint32_t fieldsInFlight() { return 0u; }
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
+index d997041..36cb673 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
+@@ -35,0 +36,2 @@ namespace dodpcsx2
++    // Main thread, after attach: presentation uses a separate GS worker.
++    bool asynchronous();
+@@ -57,0 +60,4 @@ namespace dodpcsx2
++    // Game thread only: consume measured producer waits, once per pacing update.
++    uint64_t takeGuestWaitNs();
++    // Game thread only: fields queued but not yet presented (zero in synchronous mode).
++    uint32_t fieldsInFlight();
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 968507c..fed7255 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -2876 +2876 @@ void PS2Runtime::run()
+-    dodhost::Pacer hostPacer;
++    dodhost::Pacer hostPacer(dodpcsx2::asynchronous());

@@ -17,13 +17,22 @@ timeout so a regression to a billions-of-stores loop fails promptly.
 
 These tests do not replace the Windows/MSVC full build or in-game validation described in `BUILD_VERIFICATION.md`.
 
+## Host timing and pack manifests
+
+`test_host_timing.py` compiles production host pacing/options helpers with C++20, threads and UndefinedBehaviorSanitizer.
+It covers a genuinely blocked producer versus an already-satisfied wait, consume-once timing, host-only deadline
+shifts and overflow, the asynchronous idle wait, absolute host scheduling, bounded numeric/DXGI options and UI manifest
+whitespace/BOM/deduplication/path/size limits. It does not exercise a Windows GS worker, DXGI calls, PNG decoding or GPU
+uploads. See [HOST_TIMING.md](../docs/HOST_TIMING.md) for the required per-port timing, cache and listening checks.
+
 ## Audio and patch parity
 
 Requires `g++` (resampler: C++17 + UndefinedBehaviorSanitizer; SPU2: C++20). The resampler checks output rates,
 DC gain, stereo isolation, impulse delay, invalid steps and frequency response. On POSIX, initialization also
 runs with a 128 KiB stack, NRVO and compiler folding of trigonometric calls disabled, to detect large temporary
 coefficient tables during actual runtime construction. A patch parity check also verifies that the distributable
-upstream diff still matches the vendored source.
+upstream patch series still matches the vendored source, by reversing/reapplying the ordered patches and comparing
+every file byte for byte. The original base patch stays unchanged; later shared changes are carried by a small delta.
 
 On x86 with SSSE3, the production private SPU2 FIR is compared 2,560,000 times against the instruction sequence
 in pinned PCSX2 `646df006a4`, `pcsx2/SPU2/ReverbResample.cpp`, SSE path. This verifies per-tap rounding, saturating

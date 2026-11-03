@@ -35,8 +35,9 @@ current boundaries and source audit: [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.
 - Many opt-in diagnostics (`PS2_*` environment variables; the original `DOD_*` names still work) and offline analysis tools
 - A generic F2 cheat panel driven by your game's own `cheats.ini` (no game's cheats are shipped)
 
-Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line: `patches/PS2Recomp_vs_upstream_eb8688b.diff`
-(applies with `git apply -p1` to upstream `eb8688b`).
+Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line PS2Recomp changes are distributed as
+[an ordered patch series](patches/README.md) for upstream `eb8688b`: apply the retained base patch, then the shared
+host-maintenance delta. The checked-in vendored source already contains the complete series.
 
 ## Layout
 
@@ -110,6 +111,11 @@ that the runtime links. A game needs its own generated code and entry point (bel
 `docs/DoD_BUILD.md` has the exact commands used for the original port.
 
 ## Tests
+
+Host pacing/latency controls and pack-owned UI decode preloading are documented in
+[HOST_TIMING.md](docs/HOST_TIMING.md). Queue-drain intervals, DXGI overrides and texture lists require per-port
+qualification; existing SPU2/reverb precision is retained. Apply the regression guide below after tuning them.
+UI predecoding originated as an HD texture replacement porting optimization; its pack and atlas list remain port-owned.
 
 Results of a clean build on 2026-10-27 ([BUILD_VERIFICATION.md](BUILD_VERIFICATION.md)):
 

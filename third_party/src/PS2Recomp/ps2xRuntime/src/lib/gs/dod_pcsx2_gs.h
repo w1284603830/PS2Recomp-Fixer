@@ -33,6 +33,8 @@ namespace dodpcsx2
     void shutdown();
     // PCSX2's GS is the image source (attach succeeded). Any thread.
     bool active();
+    // Main thread, after attach: presentation uses a separate GS worker.
+    bool asynchronous();
     // Game-thread, ordered before the corresponding native framebuffer uploads.
     bool hdCgSupported();
     const wchar_t* hdCgDefaultRoot();
@@ -55,6 +57,10 @@ namespace dodpcsx2
     void requestLineCapture(const char *dir, bool light, bool ab, const char *gameInfo);
     // Fields presented so far (any thread).
     uint64_t presents();
+    // Game thread only: consume measured producer waits, once per pacing update.
+    uint64_t takeGuestWaitNs();
+    // Game thread only: fields queued but not yet presented (zero in synchronous mode).
+    uint32_t fieldsInFlight();
     // Any thread: the game's scene changed (0x7E1344); the GS loads and uploads that room's HD textures ahead
     // (pcsx2gs_dod_prefetch_scene; nothing with a DLL that lacks it).
     void prefetchScene(uint32_t scene);

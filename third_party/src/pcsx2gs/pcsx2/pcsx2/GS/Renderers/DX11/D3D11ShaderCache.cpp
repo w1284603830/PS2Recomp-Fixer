@@ -14,6 +14,10 @@
 #include "common/Path.h"
 
 #include <d3dcompiler.h>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #pragma pack(push, 1)
 struct CacheIndexEntry
@@ -406,8 +410,18 @@ wil::com_ptr_nothrow<ID3D11ComputeShader> D3D11ShaderCache::GetComputeShader(ID3
 wil::com_ptr_nothrow<ID3DBlob> D3D11ShaderCache::CompileAndAddShaderBlob(const CacheIndexKey& key,
 	const std::string_view shader_code, const D3D_SHADER_MACRO* macros, const char* entry_point)
 {
+	static const bool trace_compile = []() {
+		const char* value = std::getenv("PS2_SHADER_TIMING");
+		return value && std::strcmp(value, "1") == 0;
+	}();
+	const auto begin = trace_compile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
 	wil::com_ptr_nothrow<ID3DBlob> blob =
 		D3D::CompileShader(key.shader_type, m_shader_model, m_debug, shader_code, macros, entry_point);
+	if (trace_compile)
+		std::fprintf(stderr, "[shader-timing] compile start_ns=%lld ms=%.3f type=%u source_bytes=%zu entry=%s success=%u\n",
+			static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(begin.time_since_epoch()).count()),
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count(),
+			static_cast<unsigned>(key.shader_type), shader_code.size(), entry_point, blob ? 1u : 0u);
 	if (!blob)
 		return {};
 
