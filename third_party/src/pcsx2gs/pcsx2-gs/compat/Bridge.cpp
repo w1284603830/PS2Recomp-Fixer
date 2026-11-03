@@ -4,6 +4,7 @@
 
 #include "Config.h"
 #include "GS/GS.h"
+#include "GS/ParticleEdges.h"
 #include "GS/DoDWidescreen.h"
 #include "GS/DoDHdCg.h"
 #include "GS/DoDHdStatic.h"
@@ -48,6 +49,19 @@ namespace
     long long g_dumpField = -1;
     long long g_fields = 0;
     int g_dumpFrames = 1;
+
+    void ResetParticleSession()
+    {
+        // Close draw evidence while its old identity is still available, then
+        // discard the profile and queued A/B requests before another game opens.
+        GSRendererHW::ResetParticleEdgeSession();
+        ParticleEdges::Reset();
+        std::lock_guard lock(g_dodDumpMutex);
+        g_dodDumpPending = false;
+        g_dodDumpFlags = 0;
+        g_dodDumpDir.clear();
+        g_dodDumpFrames = 1;
+    }
 
     // PCSX2 applies per-game fixes (blending level, half pixel offset, native scaling, bilinear upscale...) from its
     // game database, GameIndex.yaml. The GS has no serial to look up, so a port passes its game's entry through the
@@ -210,8 +224,20 @@ namespace
 
     int Open(const Pcsx2GsOpenParams *params)
     {
-        if (g_open || !params || !params->hwnd)
+        if (g_open)
             return 0;
+        ResetParticleSession();
+        if (!params || !params->hwnd)
+            return 0;
+        ScopedGuard rollbackParticleState([] {
+            ResetParticleSession();
+        });
+        ParticleEdges::BeginSession(params->options, std::getenv("PS2_PARTICLE_EDGES"), std::getenv("DOD_PARTICLE_EDGES"));
+        const auto* particleProfile = ParticleEdges::session.profile;
+        std::fprintf(stderr, "[particle-edges] state=%s game=%s revision=%s profile=%s\n",
+            ParticleEdges::SessionSkipReason() ? ParticleEdges::SessionSkipReason() : "selected (draw qualification required)",
+            particleProfile ? particleProfile->game : "-", particleProfile ? particleProfile->revision : "-",
+            particleProfile ? particleProfile->id : "off");
         g_window = {};
         g_window.type = WindowInfo::Type::Win32;
         g_window.window_handle = params->hwnd;
@@ -243,6 +269,7 @@ namespace
             return 0;
         }
         g_open = true;
+        rollbackParticleState.Cancel();
         DoDHdStatic::Configure();
         // [DoD] The host's GS thread runs until the process exits, so Close() never runs and the thread is already
         // gone (killed mid-frame) when the DLL unloads: the static renderer's and texture cache's destructors then
@@ -267,6 +294,7 @@ namespace
 
     void Close()
     {
+        ResetParticleSession();
         if (!g_open)
             return;
         DoDHdCg::Clear();

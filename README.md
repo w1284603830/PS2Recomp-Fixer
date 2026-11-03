@@ -37,7 +37,7 @@ current boundaries and source audit: [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.
 
 Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line PS2Recomp changes are distributed as
 [an ordered patch series](patches/README.md) for upstream `eb8688b`: apply the retained base patch, then the shared
-host-maintenance delta. The checked-in vendored source already contains the complete series.
+maintenance deltas listed there. The checked-in vendored source already contains the complete series.
 
 ## Layout
 
@@ -111,6 +111,10 @@ that the runtime links. A game needs its own generated code and entry point (bel
 `docs/DoD_BUILD.md` has the exact commands used for the original port.
 
 ## Tests
+
+Particle-edge workarounds now default off and require matching explicit game, revision and profile IDs; HPO alone
+cannot enable them. The optional Dawn of Dreams reference policy is isolated, and Onimusha 3 requires its own profile
+and validation. See [PARTICLE_EDGE_PROFILES.md](docs/PARTICLE_EDGE_PROFILES.md) for configuration and evidence limits.
 
 Host pacing/latency controls and pack-owned UI decode preloading are documented in
 [HOST_TIMING.md](docs/HOST_TIMING.md). Queue-drain intervals, DXGI overrides and texture lists require per-port

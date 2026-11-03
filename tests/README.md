@@ -17,6 +17,21 @@ timeout so a regression to a billions-of-stores loop fails promptly.
 
 These tests do not replace the Windows/MSVC full build or in-game validation described in `BUILD_VERIFICATION.md`.
 
+## Per-game particle policies
+
+`test_particle_edges.py` compiles production policy headers and the actual renderer gate/transform and Bridge
+Open/Close/reset function bodies against recording GS services, using C++20 and UndefinedBehaviorSanitizer.
+Thirteen cases cover no/valid/invalid/mismatched profiles, strict option parsing, force-off alias precedence,
+session/environment/capture reset, failed and duplicate opens, repeated game switches, draw/vertex exclusions,
+profile-owned sampling parameters and numeric compatibility. A frozen public legacy function from main `05807db`
+provides an independent differential baseline for 12,000 synthetic draws, including applied FST/STQ and mip/base-only
+paths. The production files supply the tested bodies at build time; the tests do not redefine those implementations.
+
+The fixture deliberately substitutes platform/GS types and host services. It does not compile the complete Windows
+GS translation units/DLL, load commercial game data, render pixels or certify visual compatibility. A synthetic
+session trace is an operator-observed simulation, not a real-game or GUI test. See
+[the separate verification record](../docs/PARTICLE_EDGE_REVIEW_2026-11-04.md).
+
 ## Host timing and pack manifests
 
 `test_host_timing.py` compiles production host pacing/options helpers with C++20, threads and UndefinedBehaviorSanitizer.
