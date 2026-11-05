@@ -167,7 +167,8 @@ typedef const Pcsx2GsApi *(*Pcsx2GsGetApiFn)(uint32_t version);
 // (dod_draws.tsv + dod_draws_summary.txt), each frame's output and, without PCSX2GS_DOD_CAPTURE_LIGHT, PCSX2's
 // per-draw info of the next `frames` frames (1-8), started at the next vsync; images as PNG. Any thread.
 #define PCSX2GS_DOD_CAPTURE_LIGHT 1u
-// A/B (frames = 2): baseline then forced-off frame. A disabled/unqualified profile stays off in both.
+// A/B: first half baseline, last half forced off (4..8 draw frames; host requests 8).
+// A disabled/unqualified profile stays off in both. Inspect nonempty frames and applied draws.
 // Adjacent frames can differ in animation/RT contents; this is not frozen-state replay.
 #define PCSX2GS_DOD_CAPTURE_AB 2u
 typedef void (*Pcsx2GsDodCaptureFn)(const char *dir, uint32_t frames, uint32_t flags);

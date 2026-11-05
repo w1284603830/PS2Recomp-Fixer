@@ -52,6 +52,7 @@ namespace
     ImFont *g_osdFont = nullptr;
 
     std::string g_textureSerial; // SetTextureFolder: the pack folder's name
+    std::string g_gameTitle;
 
     // In-game menu (set_menu / menu_input): drawn by RenderOSD on the GS thread, input applied in NewFrame.
     std::mutex g_menuMutex;
@@ -289,7 +290,11 @@ void pcsx2gs::SetTextureFolder(const std::string &folder)
 {
     std::filesystem::path path(folder);
     while (!path.empty() && !path.has_filename())
-        path = path.parent_path();
+    {
+        const auto parent = path.parent_path();
+        if (parent == path) { path.clear(); break; } // a filesystem root has no pack basename
+        path = parent;
+    }
     if (path.filename() == "replacements")
         path = path.parent_path();
     EmuFolders::Textures = path.parent_path().string();
@@ -299,6 +304,11 @@ void pcsx2gs::SetTextureFolder(const std::string &folder)
 void pcsx2gs::SetVerticalFrequency(double hz)
 {
     g_verticalFrequency = hz;
+}
+
+void pcsx2gs::SetGameTitle(const std::string &title)
+{
+    g_gameTitle = title;
 }
 
 // --- configuration and emulator state the GS reads ---
@@ -450,12 +460,12 @@ bool VMManager::HasValidVM()
 // the name of the folder given (a pack folder named anything, e.g. kept beside PCSX2's own).
 std::string VMManager::GetDiscSerial()
 {
-    return g_textureSerial.empty() ? std::string("SLPM-66275") : g_textureSerial; // [DoD]
+    return g_textureSerial; // pack namespace; no fabricated disc identity
 }
 
 std::string VMManager::GetTitle(bool prefer_en)
 {
-    return "Shin Onimusha: Dawn of Dreams"; // [DoD]
+    return g_gameTitle.empty() ? std::string("PS2Recomp port") : g_gameTitle;
 }
 
 u32 VMManager::GetDiscCRC()
@@ -757,7 +767,8 @@ bool g_dodDumpPng = false;
 
 bool GSPng::Save(GSPng::Format fmt, const std::string &file, const u8 *image, int w, int h, int pitch, int compression, bool rb_swapped)
 {
-    if (!image || w <= 0 || h <= 0)
+    if (!image || w <= 0 || h <= 0 || pitch <= 0 ||
+        static_cast<size_t>(pitch) < static_cast<size_t>(w) * (fmt == R8I_PNG ? 1u : 4u))
         return false;
     std::string name = file;
     const size_t dot = name.find_last_of('.');
@@ -785,8 +796,18 @@ bool GSPng::Save(GSPng::Format fmt, const std::string &file, const u8 *image, in
                 d[3] = fmt == RGBA_PNG ? s[3] : 255;
             }
         }
-        return GSTextureReplacements::SavePNGImage(name + ".png", static_cast<u32>(w), static_cast<u32>(h), rgba.data(),
-                                                   static_cast<u32>(w) * 4u);
+        const bool rgbSaved = GSTextureReplacements::SavePNGImage(name + ".png", static_cast<u32>(w), static_cast<u32>(h),
+            rgba.data(), static_cast<u32>(w) * 4u);
+        if (fmt != RGB_A_PNG) return rgbSaved;
+        for (int y = 0; y < h; ++y) for (int x = 0; x < w; ++x)
+        {
+            const u8 alpha = image[static_cast<size_t>(y) * pitch + static_cast<size_t>(x) * 4u + 3u];
+            u8* dst = &rgba[(static_cast<size_t>(y) * w + x) * 4u];
+            dst[0] = dst[1] = dst[2] = alpha; dst[3] = 255;
+        }
+        const bool alphaSaved = GSTextureReplacements::SavePNGImage(name + "_alpha.png", static_cast<u32>(w),
+            static_cast<u32>(h), rgba.data(), static_cast<u32>(w) * 4u);
+        return rgbSaved && alphaSaved;
     }
     name += ".bmp";
     FILE *f = std::fopen(name.c_str(), "wb");

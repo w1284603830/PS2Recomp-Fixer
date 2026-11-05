@@ -21,7 +21,7 @@ These tests do not replace the Windows/MSVC full build or in-game validation des
 
 `test_particle_edges.py` compiles production policy headers and the actual renderer gate/transform and Bridge
 Open/Close/reset function bodies against recording GS services, using C++20 and UndefinedBehaviorSanitizer.
-Thirteen cases cover no/valid/invalid/mismatched profiles, strict option parsing, force-off alias precedence,
+Fifteen cases cover no/valid/invalid/mismatched profiles, strict option parsing, force-off alias precedence,
 session/environment/capture reset, failed and duplicate opens, repeated game switches, draw/vertex exclusions,
 profile-owned sampling parameters and numeric compatibility. A frozen public legacy function from main `05807db`
 provides an independent differential baseline for 12,000 synthetic draws, including applied FST/STQ and mip/base-only
@@ -85,3 +85,15 @@ not address/undefined-behaviour checks. These tests do not establish leak freedo
 exceptions/suites, JSON escaping, zero tests, stale/truncated/duplicate reports, summary/exit inconsistencies and
 crashes. `build_all.ps1` requires Python 3.9+ for this gate and requires all configured IOP and GS-cache executables.
 The named exception list documents historical Windows observations; it does not revalidate their current causes.
+
+## Neutral host and asset adapters
+
+`test_neutral_base.py` compiles the production pad translation unit, presentation/input policy and HD asset headers,
+PNG saver and host identity functions with recording services and UBSan. It covers independent acknowledgements,
+menu/source changes, stale tokens, concurrent publication/reads, movie transition combinations, explicit format
+selection/reset, relocated HD buffers, sparse-signature collisions, packet arithmetic, split alpha, pitch and write
+failures. It requires no commercial game assets or real window/device. Particle lifecycle cases additionally exercise
+actual Bridge reset paths and the bounded A/B force-off window. See `docs/NEUTRAL_BASE_MIGRATION.md` for port acceptance.
+
+The cloud CI workflow also compiles the full Windows GS DLL. Read the actual CI result before claiming a Windows
+build passed; recording-service tests and Linux syntax checks cover different boundaries. No user-PC build is needed.

@@ -6,7 +6,6 @@
 #include "ImGui/FullscreenUI.h"
 #include "ImGui/ImGuiManager.h"
 #include "GS/GS.h"
-#include "GS/DoDWidescreen.h"
 #include "GS/GSCapture.h"
 #include "GS/GSExtra.h"
 #include "GS/GSGL.h"
@@ -452,21 +451,6 @@ void GSvsync(u32 field, bool registers_written)
 	// Do not move the flush into the VSync() method. It's here because EE transfers
 	// get cleared in HW VSync, and may be needed for a buffered draw (FFX FMVs).
 	g_gs_renderer->Flush(GSState::VSYNC);
-    if (g_dodWidescreen)
-    {
-        const auto* regs = g_gs_renderer->m_regs;
-        const bool wide = (regs->PMODE.EN1 && DoDWide::world[regs->DISP[0].DISPFB.FBP]) ||
-                          (regs->PMODE.EN2 && DoDWide::world[regs->DISP[1].DISPFB.FBP]);
-        EmuConfig.CurrentAspectRatio = wide ? AspectRatioType::R16_9 : AspectRatioType::R4_3;
-        static int previous = -1;
-        if (previous != int(wide))
-        {
-            std::fprintf(stderr, "[widescreen-present] field=%llu aspect=%s fb=%x/%x pmode=%x\n",
-                g_dodGsField, wide ? "16:9" : "4:3", unsigned(regs->DISP[0].DISPFB.FBP),
-                unsigned(regs->DISP[1].DISPFB.FBP), unsigned(regs->PMODE.U64));
-            previous = int(wide);
-        }
-    }
 	g_gs_renderer->VSync(field, registers_written, g_gs_renderer->IsIdleFrame());
 }
 

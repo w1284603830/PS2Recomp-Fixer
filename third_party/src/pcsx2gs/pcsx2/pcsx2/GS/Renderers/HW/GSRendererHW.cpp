@@ -3,6 +3,7 @@
 
 #include "GS/Renderers/HW/GSRendererHW.h"
 #include "GS/ParticleEdges.h"
+#include "GS/HostTuning.h"
 #include "GS/DoDHdCg.h"
 #include "common/ScopedGuard.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
@@ -81,8 +82,8 @@ bool GSRendererHW::CanUpscale()
 float GSRendererHW::GetUpscaleMultiplier()
 {
 	// Keep scanout/merge and the CG field targets on the same scale. A target-only
-	// override would crop a 7x texture into the user's smaller 2x merge surface.
-	return DoDHdCg::Active() ? std::max(7.0f, GSConfig.UpscaleMultiplier) : GSConfig.UpscaleMultiplier;
+	// override must agree with the explicitly configured merge scale.
+	return DoDHdCg::Active() ? std::max(static_cast<float>(GSHostTuning::portOptions.hdMinimumScale), GSConfig.UpscaleMultiplier) : GSConfig.UpscaleMultiplier;
 }
 
 void GSRendererHW::Reset(bool hardware_reset)
@@ -2866,7 +2867,7 @@ namespace
 	std::vector<GSVector4> s_dod_sprites_before; // native pixels, the draw's offset removed; then texels (u0 v0 u1 v1)
 	std::string s_dod_draw_summary;
 	int s_dod_draw_last_frame = 0;
-	int s_dod_ab_off_frame = -1; // the A/B capture: this frame draws without the particle fix
+	int s_dod_ab_off_frame = -1; // first forced-off frame in the bounded A/B capture window
 	std::vector<DoDDrawLogFrame> s_dod_draw_frames;
 
 	void DoDDrawLogClose()
@@ -3053,7 +3054,8 @@ void GSRendererHW::Draw()
 {
     const auto cgSavedNativeScaling = GSConfig.UserHacks_NativeScaling;
     const ScopedGuard cgRestoreScaling([&] { GSConfig.UserHacks_NativeScaling = cgSavedNativeScaling; });
-    if (DoDHdCg::Active()) GSConfig.UserHacks_NativeScaling = GSNativeScaling::Off;
+    if (DoDHdCg::Active() && GSHostTuning::portOptions.hdDisableNativeScaling)
+        GSConfig.UserHacks_NativeScaling = GSNativeScaling::Off;
 	static u32 num_skipped_channel_shuffle_draws = 0;
 	GSVertexBuff& vtx_buff = *m_vertex;
 	GSIndexBuff& idx_buff = *m_index;
@@ -5596,7 +5598,7 @@ void GSRendererHW::Draw()
 			src && (src->m_target || src->m_from_target), m_vt.IsLinear(),
 			m_cached_ctx.TEST.ZTE != 0, static_cast<int>(m_cached_ctx.TEST.ZTST)};
 		dod_edges = ParticleEdges::DrawSkipReason(*particleProfile, draw);
-		if (!dod_edges && s_dod_ab_off_frame >= 0 && g_perfmon.GetFrame() == s_dod_ab_off_frame)
+		if (!dod_edges && s_dod_ab_off_frame >= 0 && g_perfmon.GetFrame() >= s_dod_ab_off_frame && g_perfmon.GetFrame() <= s_dod_draw_last_frame)
 			dod_edges = "ab-off";
 		if (!dod_edges)
 			dod_edges = ApplyParticleEdges(*particleProfile, rt->GetScale());

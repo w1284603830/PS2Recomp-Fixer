@@ -40,7 +40,7 @@
 #endif
 
 #if DOD_HAS_PCSX2_GS
-#include "dod_cg_cadence.h"
+#include "ps2_gs_trace.h"
 #endif
 
 extern "C" void ps2_ipu_report(void); // ipu/ps2_ipu.c
@@ -371,7 +371,6 @@ namespace dodpcsx2
             g_height = height;
             g_api->resize(width, height);
         }
-        cgtrace::select(g_presents.load(std::memory_order_relaxed) + 1u, priv);
         const auto presentStart = std::chrono::steady_clock::now();
         g_api->vsync(&priv);
         // Explicit diagnostic only; malformed/overflowing periods are disabled.
@@ -479,7 +478,7 @@ namespace dodpcsx2
     void resetDirect()
     {
         cgtrace::submitted(0, 0, false);
-        for (auto& path : cgtrace::state.paths) path = {};
+        cgtrace::reset();
         if (g_open)
             g_api->reset();
     }
@@ -502,79 +501,8 @@ namespace dodpcsx2
     // 64 KB chunk; full chunks, and the open one at every vsync, go to the GS thread in order. At most two fields
     // may wait for the GS thread (PCSX2's VsyncQueueSize); the game thread waits beyond that, and readFifo waits
     // for everything queued before it. The game thread's MXCSR travels with each command.
-    // [DoD] DoD renders its interlaced fields (SMODE2 FFMD, 224-line fields at 60 fps) with the 3D half a line apart on
-    // alternate fields (XYOFFSET OFY x.5 on one buffer, x.0 on the other) for a TV that puts odd fields one scanline
-    // lower; its 2D is drawn at the same place on both. PCSX2 shows the fields progressive (SYNCV left as the port sets
-    // it), so the 3D shook by a line from field to field. This takes the half line out of the copy of the GIF stream
-    // that PCSX2's GS gets (the game's memory and state are untouched): every field lines up. A tag walker per GIF
-    // path, because tags continue across transfers. DOD_GS_FIELD_OFFSET=keep sends the stream as it is.
-    struct GifFieldOffsetFix
-    {
-        uint32_t left = 0u;
-        uint32_t nreg = 1u;
-        uint32_t idx = 0u;
-        uint32_t flg = 0u;
-        uint8_t regs[16]{};
-    };
-    GifFieldOffsetFix g_fieldFix[4];
-
-    bool fieldOffsetFixOn()
-    {
-        static const bool on = []() { const char *v = std::getenv("DOD_GS_FIELD_OFFSET"); return !(v && std::strcmp(v, "keep") == 0); }();
-        return on;
-    }
-
-    void fixFieldOffsets(uint32_t path, uint8_t *data, uint32_t bytes)
-    {
-        GifFieldOffsetFix &st = g_fieldFix[path & 3u];
-        for (uint32_t pos = 0u; pos + 16u <= bytes; pos += 16u)
-        {
-            uint64_t lo = 0u;
-            uint64_t hi = 0u;
-            std::memcpy(&lo, data + pos, 8u);
-            std::memcpy(&hi, data + pos + 8u, 8u);
-            if (st.left == 0u)
-            {
-                const uint32_t nloop = static_cast<uint32_t>(lo & 0x7FFFu);
-                st.flg = static_cast<uint32_t>((lo >> 58u) & 3u);
-                st.nreg = static_cast<uint32_t>((lo >> 60u) & 0xFu);
-                if (st.nreg == 0u)
-                    st.nreg = 16u;
-                for (uint32_t i = 0u; i < 16u; ++i)
-                    st.regs[i] = static_cast<uint8_t>((hi >> (4u * i)) & 0xFu);
-                st.idx = 0u;
-                st.left = st.flg == 0u ? nloop * st.nreg : st.flg == 1u ? (nloop * st.nreg + 1u) / 2u : nloop;
-                continue;
-            }
-            if (st.flg == 0u)
-            {
-                if (st.regs[st.idx % st.nreg] == 0xEu) // A+D
-                {
-                    const uint32_t addr = static_cast<uint32_t>(hi & 0xFFu);
-                    if ((addr == 0x18u || addr == 0x19u) && ((lo >> 32u) & 0xFu) == 8u) // XYOFFSET_1/2, OFY x.5
-                    {
-                        // DOD_GS_FIELD_LOG=<n>: the first n changes (path, offset, the qword before the change)
-                        static const int logLeft = []() { const char *v = std::getenv("DOD_GS_FIELD_LOG"); return v ? std::atoi(v) : 0; }();
-                        static int logged = 0;
-                        if (logged < logLeft)
-                        {
-                            ++logged;
-                            std::fprintf(stderr, "[gs-field] path %u pos %u nreg %u idx %u left %u lo %016llX hi %016llX\n", path, pos,
-                                         st.nreg, st.idx, st.left, static_cast<unsigned long long>(lo),
-                                         static_cast<unsigned long long>(hi));
-                        }
-                        lo &= ~(0xFull << 32u);
-                        std::memcpy(data + pos, &lo, 8u);
-                    }
-                }
-                ++st.idx;
-            }
-            --st.left;
-        }
-    }
-
     // [DoD] std::vector::resize value-initializes (zero-fills) the new qwords, which push() then overwrites at once:
-    // 8% of the EE thread's memcpy/memset time in room 0x386 (RUNTIME_PATCHES row 120). New qwords stay uninitialized.
+    // Avoids redundant zero-fill in the command transport. New qwords stay uninitialized.
     template <class T>
     struct DefaultInitAllocator : std::allocator<T>
     {
@@ -648,14 +576,12 @@ namespace dodpcsx2
                 if ((bytes & 15u) != 0u) // the rest of the last qword, zero as before
                     std::memset(reinterpret_cast<uint8_t *>(&m_open[at + 1u]) + bytes, 0, 16u - (bytes & 15u));
             }
-            if (op == kGif && fieldOffsetFixOn())
-                fixFieldOffsets(arg, reinterpret_cast<uint8_t *>(&m_open[at + 1u]), bytes);
             if (op == kVsync)
             {
                 m_vsyncsInFlight.fetch_add(1u, std::memory_order_relaxed);
                 publish();
                 std::unique_lock lock(m_mutex);
-                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
+                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= m_maxFieldsInFlight; });
             }
             else if (m_open.size() >= kChunkQwords)
                 publish();
@@ -675,7 +601,10 @@ namespace dodpcsx2
     private:
         static constexpr size_t kChunkQwords = 64u * 1024u / 16u;
         static constexpr size_t kMaxChunks = 64u;
-        static constexpr uint32_t kMaxFieldsInFlight = 2u;
+        const uint32_t m_maxFieldsInFlight = [] {
+            const auto value = ps2host::boundedUnsigned(std::getenv("PS2_GS_MAX_FIELDS"), 2u);
+            return value >= 1u ? value : 2u;
+        }();
 
         void publish()
         {
@@ -888,7 +817,7 @@ namespace dodpcsx2
     // Called only by the guarded story-player hook, in game-thread order.
     void cgSubmit(uint32_t frame, bool eligible)
     {
-        if (!active() || !cgtrace::cadenceOn() || !onGsThread()) return;
+        if (!active() || !cgtrace::traceOn() || !onGsThread()) return;
         const uint64_t queued = g_queuedVsyncs.load(std::memory_order_relaxed);
         if (GsThread* thread = gsThread())
             thread->push(GsThread::kCgSubmit, (frame & 0x7fffffffu) | (eligible ? 0x80000000u : 0u),
@@ -973,7 +902,7 @@ namespace dodpcsx2
         }
         const std::string draws = std::string(dir) + "/draws";
         if (capture)
-            capture(draws.c_str(), light && !ab ? 1u : 2u,
+            capture(draws.c_str(), ab ? 8u : (light ? 1u : 2u),
                     (light ? PCSX2GS_DOD_CAPTURE_LIGHT : 0u) | (ab ? PCSX2GS_DOD_CAPTURE_AB : 0u));
         else if (dumpNow)
             dumpNow(draws.c_str(), 2u);
@@ -984,7 +913,7 @@ namespace dodpcsx2
                             "particle edge fix %s\ndraw dump %s\n",
                          gameInfo ? gameInfo : "", g_lastScene.load(), static_cast<unsigned long long>(g_presents.load()),
                          g_scale, g_options.c_str(),
-                         ab ? "A/B (1 snapshot; baseline frame and forced-off frame; baseline may already be profile-disabled)"
+                         ab ? "A/B (4 baseline + 4 forced-off draw frames; inspect populated fields and applied draws)"
                          : light ? "light (1 snapshot, frame output)" : "full",
                          edges && edges[0] == '0' ? "OFF (DOD_PARTICLE_EDGES=0)" : "see GS draw log (profile/env/draw gates; not assumed enabled)",
                          capture ? "draws\\: dod_draws_summary.txt (each frame's draws by effect kind), dod_draws.tsv (one line per draw), frame PNGs"

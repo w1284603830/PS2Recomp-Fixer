@@ -75,6 +75,12 @@ int main(int argc, char** argv)
         const auto start = dodhost::Clock::now();
         for (int i = 0; i < 8; ++i) async.wait();
         assert(dodhost::Clock::now() - start >= std::chrono::milliseconds(8));
+        g_dodLimitHost60 = true;
+        dodhost::Pacer limitedAsync(true);
+        const auto limitedStart = dodhost::Clock::now();
+        for (int i = 0; i < 8; ++i) limitedAsync.wait();
+        assert(dodhost::Clock::now() - limitedStart >= std::chrono::milliseconds(8));
+        g_dodLimitHost60 = false;
         dodhost::Pacer sync(false);
         sync.wait(); // No asynchronous-pump delay is selected for a synchronous renderer.
         const auto epoch = dodhost::Clock::time_point{};

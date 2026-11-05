@@ -121,6 +121,11 @@ UI 預解碼這段差異最初是為**高清紋理移植**而做的優化；基�
 
 粒子邊緣修正預設關閉，需明確匹配遊戲、版本與 profile，不能僅因 HPO 相同而啟用。《夢之曙光》參數已隔離為選用參考配置，《鬼武者3》必須提供自己的配置與驗證。設定及驗證限制見 [PARTICLE_EDGE_PROFILES.md](docs/PARTICLE_EDGE_PROFILES.md)。
 
+本次通用化已拆出固定遊戲標題、紋理排除、畫面比例、半行 GIF 與 CG 緩衝區判斷；遊戲專用片段與固定地址工具移至參考範例。
+新增獨立輸入讀取、可選 VBlank 提交時點、明確高清素材格式及多幀 Alpha／A-B 診斷。配置、遷移與檢測步驟見
+[通用化指南](docs/NEUTRAL_BASE_MIGRATION.md)，具體修改與分項驗證見[本次審查紀錄](docs/NEUTRAL_BASE_REVIEW_2026-11-05.md)。
+UI 預解碼仍標註為最初針對高清紋理移植所作的優化，各遊戲需提供自己的素材與驗證。
+
 ### 完整回歸，以及如何依結果修正
 
 請依 [完整回歸指南](docs/REGRESSION_TESTING.zh-TW.md)（[English](docs/REGRESSION_TESTING.md)）建立各遊戲的測試計畫，流程整理自新鬼武者與鬼武者 3 的交接：

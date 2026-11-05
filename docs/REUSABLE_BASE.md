@@ -72,3 +72,17 @@ Headless coverage includes production IPU/MPEG/font translation units, the actua
 timing/options helpers compiled with GCC and sanitizers. The ordered upstream patch series reproduces the vendored
 source byte for byte. This is not a new Windows/MSVC build or evidence of game/codec/font-rendering acceptance. Existing runners
 must follow the migration instructions in [GAME_PORTING.md](GAME_PORTING.md#5-address-configuration-and-migration).
+
+## Neutral host/rendering audit, 2026-11-05
+
+The next audit starts from main `cc3b5e17f43254db8a06c829172b14b7014e9d52`. It removes automatic reference-game
+identity, texture exclusions, per-buffer aspect classification, GIF half-line and CG scanout/cadence rewriting from
+shared defaults. Native input hooks remain port-owned; independent host readers and phase-latched presentation are
+shared opt-in mechanisms. HD page dimensions are an explicitly selected asset adapter; HCG1 remains a supported
+packet format, with full native RGB proof and no game framebuffer-bank whitelist. VU defaults no longer select
+Killzone's clamp/IbitHack settings, and fixed-range analysis scripts live in the reference runner.
+
+See [migration and test instructions](NEUTRAL_BASE_MIGRATION.md) and the [scoped review record](NEUTRAL_BASE_REVIEW_2026-11-05.md).
+This audit preserves hardware constants, identified SDK ABI layouts, upstream identity-gated game fixes and game-name
+metadata. Historical `dod` names are retained where they identify shared services. Per-game particle profiles remain
+default off; no Onimusha 3 particle policy or native hook is added.

@@ -3,7 +3,11 @@
 #include "dod_input_settings.h"
 #include "dod_gamepad.h"
 #include "ps2_cheats.h"
+#include "ps2_input_readers.h"
+#include "ps2_pad_diagnostics.h"
+#include <string_view>
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -17,10 +21,10 @@ extern "C" __declspec(dllimport) int __stdcall PostMessageW(void *window, unsign
                                                               long long lparam);
 #endif
 
-// [DoD] Host time (GetTime) when the game started a new game, set by the runner's 0x360810 hook in automated tests;
-// -1 before (DOD_TEST_AUTOSTART, below).
+// Optional runner-owned test epoch and RAM. No game address is selected here.
 std::atomic<double> g_dodTestNewGameAt{-1.0};
-std::atomic<uint8_t *> g_dodTestRdram{nullptr}; // [DoD] set by the runner: DOD_PAD_SCRIPT_FRAMES reads the game's counter
+std::atomic<uint8_t *> g_dodTestRdram{nullptr};
+std::atomic<uint64_t> g_padSessionGeneration{0};
 
 namespace
 {
@@ -44,6 +48,11 @@ namespace
     constexpr uint16_t PAD_R2 = 0x0200u;
     constexpr uint16_t PAD_L2 = 0x0100u;
 
+            static constexpr struct { const char *name; uint16_t bit; } kButtons[] = {
+                {"UP", PAD_UP}, {"DOWN", PAD_DOWN}, {"LEFT", PAD_LEFT}, {"RIGHT", PAD_RIGHT}, {"START", PAD_START},
+                {"SELECT", PAD_SELECT}, {"CROSS", PAD_CROSS}, {"CIRCLE", PAD_CIRCLE}, {"SQUARE", PAD_SQUARE},
+                {"TRIANGLE", PAD_TRIANGLE}, {"L1", PAD_L1}, {"R1", PAD_R1}, {"L2", PAD_L2}, {"R2", PAD_R2},
+                {"L3", PAD_L3}, {"R3", PAD_R3}};
     dod_input::KeyboardBindings g_keyboardBindings = dod_input::defaults();
 
     struct HostPadSnapshot
@@ -58,6 +67,16 @@ namespace
     HostPadSnapshot g_hostPadSnapshot;
     uint16_t g_pendingHostPresses = 0u;
     uint16_t g_previousHostHeld = 0u;
+    ps2input::PressReaders g_hostReaders;
+    void releaseCapturedInput() // caller holds g_hostPadMutex
+    {
+        auto* data = g_hostPadSnapshot.data;
+        data[2] = data[3] = 0xFF;
+        std::fill(data + 4, data + 8, kPadStickCenter);
+        std::fill(data + 8, data + 32, 0);
+        g_pendingHostPresses = g_previousHostHeld = 0;
+        g_hostReaders.clearPending();
+    }
 }
 
 void dodConfigureKeyboardInput(const dod_input::KeyboardBindings &bindings)
@@ -178,11 +197,6 @@ void dodPollHostPadInput()
         {
             std::vector<ScriptedPress> script;
             const char *text = std::getenv("DOD_PAD_SCRIPT");
-            static constexpr struct { const char *name; uint16_t bit; } kButtons[] = {
-                {"UP", PAD_UP}, {"DOWN", PAD_DOWN}, {"LEFT", PAD_LEFT}, {"RIGHT", PAD_RIGHT}, {"START", PAD_START},
-                {"SELECT", PAD_SELECT}, {"CROSS", PAD_CROSS}, {"CIRCLE", PAD_CIRCLE}, {"SQUARE", PAD_SQUARE},
-                {"TRIANGLE", PAD_TRIANGLE}, {"L1", PAD_L1}, {"R1", PAD_R1}, {"L2", PAD_L2}, {"R2", PAD_R2},
-                {"L3", PAD_L3}, {"R3", PAD_R3}};
             for (const char *p = text; p && *p;)
             {
                 double at = 0.0;
@@ -217,10 +231,34 @@ void dodPollHostPadInput()
             }
             return script;
         }();
-        // [DoD] DOD_TEST_AUTOSTART=1 (automated tests): from 40 s START and CIRCLE are pressed in turn every 1.5 s until
-        // the game starts a new game (the runner sets g_dodTestNewGameAt from its 0x360810 hook), and the script's
-        // times count from that moment - boot time varies from run to run.
-        static const bool autostart = std::getenv("DOD_TEST_AUTOSTART") != nullptr;
+        // Boot navigation is port-owned; setting an old auto-start variable alone
+        // never guesses START/CIRCLE or a reference game's boot delay.
+        static const std::vector<uint16_t> bootButtons = [] {
+            std::vector<uint16_t> result;
+            const char* env = std::getenv("PS2_PAD_BOOT_SEQUENCE");
+            std::string_view rest = env ? env : "";
+            while(!rest.empty()) {
+                const auto comma=rest.find(','); const auto token=rest.substr(0,comma);
+                uint16_t bit=0; for(const auto& b:kButtons) if(token==b.name) bit=b.bit;
+                if(!bit || result.size()>=16) return std::vector<uint16_t>{};
+                result.push_back(bit);
+                if(comma==std::string_view::npos) break;
+                rest.remove_prefix(comma+1);
+                if(rest.empty()) return std::vector<uint16_t>{};
+            }
+            return result;
+        }();
+        const bool autostart = !bootButtons.empty();
+        static uint64_t generation = UINT64_MAX;
+        static int64_t baseFrame = -1;
+        static double previousEpoch = -1;
+        static bool closing = false;
+        const auto currentGeneration = g_padSessionGeneration.load(std::memory_order_acquire);
+        const double epoch = g_dodTestNewGameAt.load(std::memory_order_acquire);
+        if(generation != currentGeneration || previousEpoch != epoch) {
+            generation=currentGeneration;previousEpoch=epoch;baseFrame=-1;closing=false;
+            for(auto& press:s_script) press.logged=false;
+        }
         // DOD_TEST_EXIT_AFTER=<s>: the game exits that long after the new game started, so each automated run tests
         // the same length of play however long the boot took.
         static const double exitAfter = []() { const char *v = std::getenv("DOD_TEST_EXIT_AFTER"); return v ? std::atof(v) : 0.0; }();
@@ -228,7 +266,6 @@ void dodPollHostPadInput()
         if (exitAfter > 0.0)
         {
             const double newGameAt = g_dodTestNewGameAt.load(std::memory_order_acquire);
-            static bool closing = false;
             if (!closing && newGameAt >= 0.0 && now >= newGameAt + exitAfter)
             {
                 // Close the window as the user would (WM_CLOSE): the normal shutdown stops the GS thread first.
@@ -245,37 +282,37 @@ void dodPollHostPadInput()
         }
         if (autostart)
         {
-            // DOD_TEST_AUTOSTART=<s> (more than 1): the presses start that many seconds after the boot (1 = 40 s).
-            static const double autostartAt = []() { const char *v = std::getenv("DOD_TEST_AUTOSTART"); const double s = v ? std::atof(v) : 0.0; return s > 1.0 ? s : 40.0; }();
+            static const double autostartAt = []() {
+                const char* v=std::getenv("DOD_TEST_AUTOSTART"); char* tail=nullptr;
+                const double seconds=v ? std::strtod(v,&tail) : 0;
+                return v && tail!=v && !*tail && std::isfinite(seconds) && seconds>=0 ? seconds : 0.0;
+            }();
             const double newGameAt = g_dodTestNewGameAt.load(std::memory_order_acquire);
             if (newGameAt < 0.0)
             {
                 if (now >= autostartAt)
                 {
-                    const double phase = std::fmod(now - autostartAt, 3.0);
-                    if (phase < 0.15)
-                        clearBit(PAD_START);
-                    else if (phase >= 1.5 && phase < 1.65)
-                        clearBit(PAD_CIRCLE);
+                    const double elapsed=now-autostartAt;
+                    const double step=std::floor(elapsed/1.5);
+                    if(std::fmod(elapsed,1.5)<0.15)
+                        clearBit(bootButtons[static_cast<size_t>(std::fmod(step,static_cast<double>(bootButtons.size())))]);
                 }
                 now = -1.0; // no scripted press before the new game
             }
             else
             {
                 now -= newGameAt;
-                // [DoD] DOD_PAD_SCRIPT_FRAMES=<address> (RUNTIME_PATCHES row 124): the script's seconds are game frames
-                // from the new game on (the u32 at that address, DoD's frame counter 0x817730; 60 a second), not host
-                // time. The game logic advances once per game frame and stands still while a load holds the frame, so
-                // the same script reaches the same game state here and in PCSX2 (tools/scripts/diag/pcsx2_compare.py
-                // --clock frames), although loads take different times on the two.
-                static const uint32_t frameAddr = []() {
-                    const char *v = std::getenv("DOD_PAD_SCRIPT_FRAMES");
-                    return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u;
+                // An optional frame clock needs both an explicit RAM word and
+                // its measured frequency. No game's counter or 60 Hz is assumed.
+                static const uint32_t frameAddr = ps2input::diagnosticWordAddress(std::getenv("DOD_PAD_SCRIPT_FRAMES"));
+                static const double frameHz = []() {
+                    const char* v=std::getenv("PS2_PAD_SCRIPT_HZ");char* tail=nullptr;
+                    const double hz=v?std::strtod(v,&tail):0;
+                    return v && tail!=v && !*tail && std::isfinite(hz) && hz>0 && hz<=1000 ? hz : 0.0;
                 }();
                 uint8_t *rdram = g_dodTestRdram.load(std::memory_order_acquire);
-                if (frameAddr != 0u && rdram != nullptr && frameAddr + 4u <= 0x2000000u) // within the 32 MB of RAM
+                if (frameAddr != 0u && rdram != nullptr && frameHz > 0) // within the 32 MB of RAM
                 {
-                    static int64_t baseFrame = -1;
                     uint32_t frame = 0u;
                     std::memcpy(&frame, rdram + frameAddr, 4);
                     if (baseFrame < 0)
@@ -283,7 +320,7 @@ void dodPollHostPadInput()
                         baseFrame = frame;
                         std::fprintf(stderr, "[dod-test] key script on game frames from 0x%X (frame %u)\n", frameAddr, frame);
                     }
-                    now = static_cast<double>(static_cast<uint32_t>(frame - static_cast<uint32_t>(baseFrame))) / 60.0;
+                    now = static_cast<double>(static_cast<uint32_t>(frame - static_cast<uint32_t>(baseFrame))) / frameHz;
                 }
             }
         }
@@ -332,11 +369,13 @@ void dodPollHostPadInput()
     // The F2 cheat menu (ps2_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
     // released pad (sticks centred, no queued presses).
     ps2CheatsSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
-    if (ps2CheatsMenuOpen())
+    const bool captured = ps2CheatsMenuOpen();
+    if (captured)
     {
         btns = 0xFFFFu;
         queuedPresses = 0u;
         data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
+        std::fill(data + 8, data + 32, 0);
     }
 
     // A queued down/up remains visible for this complete host publication,
@@ -345,16 +384,19 @@ void dodPollHostPadInput()
     data[2] = static_cast<uint8_t>(frameButtons);
     data[3] = static_cast<uint8_t>(frameButtons >> 8);
     std::lock_guard<std::mutex> lock(g_hostPadMutex);
+    if (captured) releaseCapturedInput();
     if (g_hostPadSnapshot.gamepad != snapshot.gamepad)
     {
         // Preserve gamepad priority: input retained from the previous source
         // must not leak through when the selected device changes.
         g_pendingHostPresses = 0u;
+        g_hostReaders.clearPending();
         g_previousHostHeld = 0u;
     }
     // Track physical held state only; a queued/frame-latched pulse must never
     // generate another rising edge when the next host frame releases it.
     const uint16_t held = static_cast<uint16_t>(~btns);
+    g_hostReaders.publish(static_cast<uint16_t>(queuedPresses | (held & ~g_previousHostHeld)));
     g_pendingHostPresses = static_cast<uint16_t>(g_pendingHostPresses | queuedPresses |
                                                 (held & ~g_previousHostHeld));
     g_previousHostHeld = held;
@@ -367,6 +409,7 @@ static bool readHostPadSnapshot(uint8_t *data, size_t size, bool consumePresses)
         return false;
 
     std::lock_guard<std::mutex> lock(g_hostPadMutex);
+    if (ps2CheatsMenuOpen()) releaseCapturedInput();
     const HostPadSnapshot &snapshot = g_hostPadSnapshot;
     std::memcpy(data, snapshot.data, sizeof(snapshot.data));
     const uint16_t pending = g_pendingHostPresses;
@@ -418,4 +461,44 @@ bool dodPeekHostPadInput(uint8_t *data, size_t size)
 bool dodReadHostPadInputForPoll(uint8_t *data, size_t size)
 {
     return readHostPadSnapshot(data, size, true);
+}
+
+ps2input::Reader ps2input::registerReader()
+{
+    std::lock_guard lock(g_hostPadMutex);
+    return g_hostReaders.add();
+}
+bool ps2input::unregisterReader(Reader token)
+{
+    std::lock_guard lock(g_hostPadMutex);
+    return g_hostReaders.remove(token);
+}
+bool ps2input::readLatest(Reader token, uint8_t* data, size_t size)
+{
+    if (!data || size < sizeof(g_hostPadSnapshot.data)) return false;
+    std::lock_guard lock(g_hostPadMutex);
+    uint16_t pending = 0;
+    if (!g_hostReaders.consume(token, pending)) return false;
+    std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));
+    if (ps2CheatsMenuOpen())
+    {
+        releaseCapturedInput();
+        std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));
+        return true;
+    }
+    // Use physical held state, not the legacy SIO2 reader's publication latch.
+    const uint16_t buttons = static_cast<uint16_t>(~(g_previousHostHeld | pending));
+    data[2] = static_cast<uint8_t>(buttons);
+    data[3] = static_cast<uint8_t>(buttons >> 8);
+    return true;
+}
+void ps2input::resetSession()
+{
+    std::lock_guard lock(g_hostPadMutex);
+    g_hostReaders.reset();
+    g_hostPadSnapshot = {};
+    g_pendingHostPresses = g_previousHostHeld = 0;
+    g_padSessionGeneration.fetch_add(1, std::memory_order_release);
+    g_dodTestNewGameAt.store(-1.0);
+    g_dodTestRdram.store(nullptr);
 }

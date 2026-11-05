@@ -1035,7 +1035,7 @@ int main(int argc, char** argv)
 	if (dirs.empty())
 		dirs.push_back(fs::path(__FILE__).parent_path() / "vu0_captures");
 
-	KzvuConfig cfg; // Killzone GameIndex: clamp mode 0, IbitHack on
+	KzvuConfig cfg; cfg.clampMode = 0; cfg.iBitHack = true; // explicit Killzone reference settings
 	cfg.vu0ClampMode = vu0Clamp;
 	std::printf("VU0 clamp mode %d\n", vu0Clamp < 0 ? cfg.clampMode : vu0Clamp);
 	std::string err;

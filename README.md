@@ -112,6 +112,12 @@ that the runtime links. A game needs its own generated code and entry point (bel
 
 ## Tests
 
+The [neutral-base migration guide](docs/NEUTRAL_BASE_MIGRATION.md) covers fresh input, independent native readers,
+opt-in VBlank submission, explicit HD formats, pack-owned exclusions and multi-field alpha/A-B diagnosis.
+Game-specific GIF/CG/aspect heuristics and fixed-range analysis scripts now live in the reference example.
+See the [review and validation limits](docs/NEUTRAL_BASE_REVIEW_2026-11-05.md); every port still needs its own regression.
+
+
 Particle-edge workarounds now default off and require matching explicit game, revision and profile IDs; HPO alone
 cannot enable them. The optional Dawn of Dreams reference policy is isolated, and Onimusha 3 requires its own profile
 and validation. See [PARTICLE_EDGE_PROFILES.md](docs/PARTICLE_EDGE_PROFILES.md) for configuration and evidence limits.

@@ -20,7 +20,7 @@
 #include "GS/HostTuning.h"
 #include "GS/GSLocalMemory.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
-#include "GS/Renderers/HW/DoDTextureExclusions.h"
+#include "GS/TextureExclusionList.h"
 #include "VMManager.h"
 
 #include <algorithm>
@@ -174,6 +174,7 @@ namespace GSTextureReplacements
 	/// be uploaded in one vsync, and any replacement unused for 30 frames was uploaded again when it came back: hitches
 	/// the player sees (2026-10-26). Now a room's replacements are loaded and uploaded while it loads (prefetch list),
 	/// uploads are spread over vsyncs, the hash cache keeps replacements longer, and the CPU copies have a cap.
+	static GSHostTuning::TextureExclusionList s_pack_exclusions;
 	static u32 s_dod_threads = 3;
 	static u64 s_dod_cache_cap = 1536ull << 20;
 	static u64 s_dod_upload_budget = 16ull << 20;
@@ -462,6 +463,8 @@ void GSTextureReplacements::ReloadReplacementMap()
 		return;
 
 	const std::string texture_dir = GetGameTextureDirectory();
+	if (const auto list = FileSystem::ReadFileToString(Path::Combine(texture_dir, "texture_exclusions.txt").c_str()); list.has_value())
+		s_pack_exclusions.load(*list);
 	const std::string replacement_dir(Path::Combine(texture_dir, TEXTURE_REPLACEMENT_SUBDIRECTORY_NAME));
 	const std::string pc_ui_dir = Path::ToNativePath(Path::Combine(replacement_dir, "pc_ui_hd"));
 	const std::string replacement_zip_name = s_current_serial + ".zip";
@@ -491,7 +494,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 	u32 dod_excluded = 0;
 	ScopedGuard log_excluded([&dod_excluded]() {
 		if (dod_excluded)
-			std::fprintf(stderr, "[hd-texture] %u replacements excluded (DoDTextureExclusions.h)\n", dod_excluded);
+			std::fprintf(stderr, "[hd-texture] %u replacements excluded (pack texture_exclusions.txt)\n", dod_excluded);
 	});
 	FileSystem::FindFiles(replacement_dir.c_str(), "*", FILESYSTEM_FIND_FILES | FILESYSTEM_FIND_HIDDEN_FILES | FILESYSTEM_FIND_RECURSIVE, &files);
 	if (FileSystem::FileExists(replacement_zip.c_str()))
@@ -522,7 +525,7 @@ void GSTextureReplacements::ReloadReplacementMap()
 				if (!entry || !GetLoader((entry_sv = entry)))
 					continue;
 				const char* entry_filename = Path::GetFileName(entry_sv).data();
-				if (DoDTextureExclusions::excluded(entry_filename))
+				if (s_pack_exclusions.excluded(entry_filename))
 					continue;
 				if (std::optional<TextureName> name = ParseReplacementName(entry_filename))
 					AddReplacementTexture(*name, entry_filename, fd.FileName, i);
@@ -531,8 +534,8 @@ void GSTextureReplacements::ReloadReplacementMap()
 		}
 		if (!GetLoader(filename))
 			continue;
-		// [DoD] Replacements that change the texture's meaning (DoDTextureExclusions.h): the game's own texture is used.
-		if (DoDTextureExclusions::excluded(filename))
+		// Only this explicitly selected pack's manifest can exclude a replacement.
+		if (s_pack_exclusions.excluded(filename))
 		{
 			++dod_excluded;
 			continue;
@@ -1111,6 +1114,7 @@ void GSTextureReplacements::DodTrimCache()
 
 void GSTextureReplacements::DodClearState()
 {
+	s_pack_exclusions.clear();
 	s_dod_cache_bytes = 0;
 	s_dod_cache_use.clear();
 	s_dod_preupload.clear();

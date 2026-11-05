@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ps2_runtime.h"
+#include "ps2_presentation_policy.h"
 
 #include <array>
 #include <atomic>
@@ -275,6 +276,10 @@ public:
     EeScheduler &operator=(const EeScheduler &) = delete;
 
     void reset(uint8_t *rdram, const R5900Context &mainContext);
+    // Configure after load, before run. Movie lifecycle updates run on the EE thread.
+    void configurePresentation(ps2host::PresentationPhase phase) { m_presentation.configure(phase); }
+    void resetPresentationProfile() { m_presentation.reset(); }
+    void setPresentationMovieActive(bool active) { m_presentation.setMovieActive(active); }
     void run();
     void requestStop();
     void postEvent(EeEvent event);
@@ -450,6 +455,7 @@ private:
     uint64_t m_eventSequence = 0;
     uint64_t m_invocationSequence = 0;
     uint64_t m_vsyncTick = 0;
+    ps2host::FieldPresentation m_presentation;
     uint32_t m_vsyncFlagAddress = 0;
     uint32_t m_vsyncTickAddress = 0;
     uint32_t m_gsVSyncCallback = 0;

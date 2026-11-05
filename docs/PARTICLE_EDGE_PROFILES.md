@@ -57,8 +57,10 @@ does not implement this gate and may silently ignore the new option keys. Keep t
 
 Startup reports selection/rejection and identity. The GS draw table appends game/revision/profile IDs and reports
 profile, environment, draw and vertex exclusions separately; only `applied` means the transform actually ran.
-The runtime capture note defers to those decisions instead of assuming "on". A/B records a baseline then a forced-off
-frame; an unconfigured baseline stays off. Adjacent frames may differ in animation/RT state and are not frozen replay.
+The runtime capture note defers to those decisions instead of assuming "on". A/B requests eight draw frames: four
+baseline then four forced off. Inspect nonempty fields and applied draws in each half; an unconfigured baseline
+stays off. Direct API A/B requests are bounded to 4..8 frames and force-off ends at capture end. Adjacent frames may
+differ in animation/RT state and are not frozen replay. See [NEUTRAL_BASE_MIGRATION.md](NEUTRAL_BASE_MIGRATION.md).
 
 Run `python -m unittest discover -s tests -p test_particle_edges.py -v`. The tests compile production policy headers,
 extracted renderer gate/transform and Bridge Open/Close/reset bodies against recording host services. Synthetic

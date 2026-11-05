@@ -5,6 +5,7 @@ Configure options before starting the runtime. Read [REGRESSION_TESTING.md](REGR
 
 | Control | Default | Purpose |
 |---|---|---|
+| `PS2_GS_MAX_FIELDS=1..2` | `2` | Host producer queue bound; invalid/zero values keep 2. Qualify the shorter queue per port. |
 | `PS2_GS_WAIT_PACING=legacy` | Measured-wait compensation | A/B against the old host-deadline policy. The asynchronous GS producer's blocked time shifts outstanding host deadlines; guest deadline cycles and event order stay intact. |
 | `PS2_GS_DRAIN_US=0..2000` | `0` | Optional extra host pacing per field while at least two fields are queued. Select and qualify this per port; no game's drain interval is universal. Ignored in legacy mode. |
 | `PS2_DXGI_MAX_FRAME_LATENCY=0..16` | No override | DX11 device queue control. `1..16` sets a limit, `0` asks DXGI to restore its default, and `default` leaves it untouched. Unsupported interfaces/API failures are reported; normal device creation continues. |
@@ -13,8 +14,8 @@ Configure options before starting the runtime. Read [REGRESSION_TESTING.md](REGR
 | `DOD_TEXTURE_TRACE=1` | Disabled | Synchronous texture decode/upload times and existing replacement-selection evidence. |
 | `PS2_SHADER_TIMING=1` | Disabled | DX11 shader compilation time, stage, entry point and success; cache keys and shader variants are unchanged. |
 
-Unsigned numeric options reject signs, trailing characters and overflow. With host limiting disabled (`fps_limit=0`),
-an asynchronous GS uses a blocking 1 ms window/input-pump wait. The synchronous GS and CPU-renderer paths retain their
+Unsigned numeric options reject signs, trailing characters and overflow. An asynchronous GS uses a blocking 1 ms
+window/input-pump wait, including with `fps_limit=60`; fresh pad/menu input is published before that wait. The synchronous GS and CPU-renderer paths retain their
 existing pacing selection. This is host polling, not a new guest frame limit.
 
 The DXGI range follows Microsoft's [IDXGIDevice1::SetMaximumFrameLatency contract](https://learn.microsoft.com/windows/win32/api/dxgi/nf-dxgi-idxgidevice1-setmaximumframelatency).

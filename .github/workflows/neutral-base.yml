@@ -1,0 +1,25 @@
+name: Neutral base regression
+on:
+  pull_request:
+  push:
+    branches: [main, codex/neutral-base-audit]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  headless:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Production code with recording host services
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: python3 -m unittest discover -s tests -v
+  windows-gs:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure full GS DLL (cloud runner)
+        run: cmake -S third_party/src/pcsx2gs/pcsx2-gs -B build/pcsx2gs -G "Visual Studio 17 2022" -A x64
+      - name: Compile full GS DLL (no game or GPU execution)
+        run: cmake --build build/pcsx2gs --config Release --target pcsx2gs --parallel 2

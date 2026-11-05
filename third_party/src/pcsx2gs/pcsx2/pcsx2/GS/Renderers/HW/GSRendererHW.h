@@ -357,7 +357,7 @@ public:
 
 	__fi static GSRendererHW* GetInstance() { return static_cast<GSRendererHW*>(g_gs_renderer.get()); }
 	// [DoD] F8 capture's draw table (Bridge.cpp; GS thread): one line per draw of PCSX2 frames up to last_frame into
-	// path, then a per-frame summary beside it; frame ab_off_frame (the A/B capture) draws without the particle fix.
+	// Path and per-frame summary. Frames [ab_off_frame,last_frame] force particles off; -1 disables A/B.
 	static void DoDDrawLogOpen(const std::string& path, int last_frame, int ab_off_frame = -1);
 	static void DoDDrawLogVsync(int frame);
 	static void ResetParticleEdgeSession();

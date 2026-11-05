@@ -44,7 +44,8 @@ namespace ps2_stubs
     void resetSifState();
 }
 
-// [DoD] Host input is sampled only by the window thread, after raylib polls events.
+#include "ps2_input_readers.h"
+// Host input is sampled only by the window thread, after raylib polls events.
 void dodPollHostPadInput();
 void dodShutdownGamepad();
 std::atomic<uint64_t> g_dodHostFrames{0}; // [DoD] host loop heartbeat (runner hang watchdog)
@@ -984,6 +985,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
     if (!ps2_stubs::resetMpegGameProfile(this))
         return false;
     // A runner configures these after loading its game/revision, never for a preceding ELF.
+    ps2input::resetSession();
+    m_eeScheduler->resetPresentationProfile();
     ps2_stubs::resetIpuInitConfig();
     ps2_stubs::resetFontGameProfile();
     ps2_stubs::resetGsGameProfile();
@@ -2951,10 +2954,10 @@ void PS2Runtime::run()
             }
             EndDrawing();
         }
+        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
+        dodPollHostPadInput(); // publish capture/menu state and fresh input before the idle wait
         hostPacer.wait();
         dodperf::end(dodperf::EndDrawing, endDrawingStart);
-        dodPollHostPadInput();
-        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
 
         // [DoD] Test launcher audio trace: F9 saves the last 60 s of sound and events (ps2_iop_host.cpp); the title
         // shows "已保存声音追踪：<folder>" for 5 s.

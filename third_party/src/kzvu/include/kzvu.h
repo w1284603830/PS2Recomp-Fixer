@@ -24,15 +24,15 @@ struct KzvuConfig
 	bool useJit = true;
 
 	// VU1 clamp mode as in PCSX2's GameIndex (vuClampMode): 0 none, 1 normal, 2 extra, 3 extra + preserve sign.
-	// Killzone's GameIndex entry uses 0. Only the recompiler clamps; the interpreter always behaves the same.
-	int clampMode = 0;
+	// Normal baseline; a port explicitly selects its verified GameIndex settings. Interpreter behavior is unchanged.
+	int clampMode = 1;
 
 	// PCSX2 gamefix IbitHack ("reduces VU recompilation"); Killzone's GameIndex entry enables it. With it, microVU
 	// reads the I-bit immediates and the immediates of IADDI/IADDIU/ISUBIU/ILW/ISW/LQ/SQ from micro memory at run
 	// time instead of baking them into the code, and leaves those lower words out of the "has this program changed"
 	// comparison. A program that differs only in those words reuses the compiled code and sees the new immediates.
 	// The catch: a change to the opcode/register fields of such a word is not detected either.
-	bool iBitHack = true;
+	bool iBitHack = false;
 
 	// PCSX2 speedhack "mVU flag hack" (on by default in PCSX2): skips status flag updates nobody reads.
 	bool flagHack = true;

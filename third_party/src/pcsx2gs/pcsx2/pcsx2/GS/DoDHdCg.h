@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 
 namespace DoDHdCg {
 struct Frame {
@@ -30,7 +31,7 @@ inline void Receive(const void* data,uint32_t bytes) {
     Frame f; std::memcpy(f.header,data,64);
     const auto* h=f.header;
     if(h[0]!=0x31474348 || h[3]!=512 || (h[4]!=288 && h[4]!=336) || h[10]!=1920 || h[11]!=1080 ||
-       h[6]!=0 || h[8]!=1920 || h[9]==0 || h[7]+h[9]>1080) return;
+       h[6]!=0 || h[8]!=1920 || h[9]==0 || h[9]>1080 || h[7]>1080-h[9]) return;
     const size_t lowBytes=512u*(h[4]/2)*4u;
     if(bytes!=64+lowBytes+1920u*1080u*4u) return;
     if(!frames.empty() && (frames.back().header[1]!=h[1] || h[2]<=frames.back().header[2])) Clear();
@@ -46,7 +47,7 @@ inline void Receive(const void* data,uint32_t bytes) {
 }
 inline void Upload(const GSLocalMemory& mem,GIFRegTEX0 tex0,GSTexture* target,float scale,
                    const GSDevice::MultiStretchRect* dirty,uint32_t n,ShaderConvertSelector shader) {
-    if(frames.empty() || (tex0.TBP0!=0 && tex0.TBP0!=0x800) || tex0.TBW!=8 ||
+    if(frames.empty() || !target || !dirty || !n || !(scale>0) || !std::isfinite(scale) || tex0.TBW<8 ||
        (tex0.PSM!=PSMCT32 && tex0.PSM!=PSMCT24)) return;
     for(auto it=frames.rbegin();it!=frames.rend();++it) {
         auto& f=*it; const int rows=f.header[4]/2;
@@ -59,6 +60,12 @@ inline void Upload(const GSLocalMemory& mem,GIFRegTEX0 tex0,GSTexture* target,fl
                 }
                 if(!match) break;
             }
+            if(!match) continue;
+            // Sparse signatures only reject candidates. Prove the entire native
+            // RGB aperture before modifying an upload, including arbitrary TBP0.
+            for(int y=0;match && y<rows;++y) for(int x=0;x<512;++x)
+                if((mem.ReadPixel32(x,top+y,tex0.TBP0,tex0.TBW)&0x00ffffffu)!=
+                   (f.preview[y*512+x]&0x00ffffffu)) { match=false; break; }
             if(!match) continue;
             std::vector<GSDevice::MultiStretchRect> rects;
             const GSVector4 aperture(0.0f,top*scale,512.0f*scale,(top+rows)*scale);
