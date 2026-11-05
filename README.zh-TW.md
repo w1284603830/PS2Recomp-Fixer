@@ -124,6 +124,9 @@ UI 預解碼這段差異最初是為**高清紋理移植**而做的優化；基�
 [通用化指南](docs/NEUTRAL_BASE_MIGRATION.md)，具體修改與分項驗證見[本次審查紀錄](docs/NEUTRAL_BASE_REVIEW_2026-11-05.md)。
 UI 預解碼仍標註為最初針對高清紋理移植所作的優化，各遊戲需提供自己的素材與驗證。
 
+《夢之曙光》參考入口的專屬配置、PR #8 前後功能差異、版本／ELF 確認與尚需單獨處理的歷史渲染邏輯，見
+[專屬適配說明](docs/DOD_RUNNER_PR8_ADAPTATION.md)。參考增強不會自動啟用，也不會寫回共用預設。
+
 ### 完整回歸，以及如何依結果修正
 
 請依 [完整回歸指南](docs/REGRESSION_TESTING.zh-TW.md)（[English](docs/REGRESSION_TESTING.md)）建立各遊戲的測試計畫，流程整理自新鬼武者與鬼武者 3 的交接：

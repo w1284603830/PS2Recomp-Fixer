@@ -17,6 +17,7 @@
 #include "../lib/gs/dod_pcsx2_gs.h"
 #include "widescreen_reference.h"
 #include "game_profile.h"
+#include "render_profile.h"
 
 bool dodKzvuInstall(PS2Runtime &runtime, const char *mode); // [DoD] ../lib/vu/dod_kzvu.cpp
 
@@ -755,15 +756,10 @@ int main(int argc, char *argv[])
         const fs::path exeDir = executableDirectory(argv[0]);
         std::map<std::string, std::string> ini = readIni(exeDir / "dod.ini");
 
-        for (int i = 1; i + 1 < argc; i += 2)
+        if(const auto error=dod_reference::applyArguments(ini,argc,argv);!error.empty())
         {
-            std::string key = argv[i];
-            if (key.rfind("--", 0) != 0)
-            {
-                std::cerr << "unknown argument: " << key << std::endl;
-                return 2;
-            }
-            ini[key.substr(2)] = argv[i + 1];
+            std::cerr << "[dod] " << error << std::endl;
+            return 2;
         }
 
         dod_input::KeyboardBindings keyboard;
@@ -821,6 +817,38 @@ int main(int argc, char *argv[])
                       << std::endl;
             return 1;
         }
+
+        // Optional reference rendering is preflighted before window/audio initialization.
+        // A checksum pins the operator-confirmed ELF; no serial/filename/HPO guesses a revision.
+        const char* extraGs = dod_reference::gsEnvironment();
+        const std::string uiSetting = dod_reference::value(ini,"ui_hd_dir");
+        const char* uiOverride = dod_reference::uiEnvironment();
+        const fs::path uiDirectory = uiSetting.empty() ? fs::path{} :
+            (uiOverride && *uiOverride ? fs::absolute(fs::path(uiOverride)) : resolveFrom(exeDir,uiSetting));
+        const auto uiUtf8 = uiDirectory.u8string();
+        const auto renderProfile = dod_reference::build(ini,extraGs?extraGs:"",dod_reference::elfCrc(elf),
+            std::string(uiUtf8.begin(),uiUtf8.end()));
+        if(!renderProfile)
+        {
+            std::cerr << "[dod-reference] " << renderProfile.error << std::endl;
+            return 2;
+        }
+        if(renderProfile.staticPages && !fs::is_regular_file(uiDirectory / "pages.tsv"))
+        {
+            std::cerr << "[dod-reference] ui_hd_dir needs a pack-owned pages.tsv" << std::endl;
+            return 2;
+        }
+        if(!renderProfile.textureDirectory.empty())
+        {
+            fs::path pack(renderProfile.textureDirectory);
+            if(pack.filename()=="replacements")pack=pack.parent_path();
+            std::error_code packError;
+            if(!fs::is_regular_file(pack / "texture_exclusions.txt",packError))
+                std::cerr << "[dod-reference] no pack exclusion manifest; audit this pack first. "
+                             "The qualified DoD_HD_CN reference list can be staged with prepare_texture_pack.py; no files were changed." << std::endl;
+        }
+        std::cerr << "[dod-reference] particle=" << (renderProfile.particleSelected?"explicit reference (draw qualification required)":"off")
+                  << " static_page_preset=" << renderProfile.staticPages << " hd_scaling_preset=" << renderProfile.hdScaling << std::endl;
 
         // The game reads its data sectors from the disc image; the boot files beside the ELF stay the CD root.
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
@@ -910,16 +938,13 @@ int main(int argc, char *argv[])
                                                                    : "pcsx2";
             // [DoD] This game's entry in PCSX2's GameIndex.yaml (SLPM-66275 / SLPM-66276): the GS no longer fixes them
             // (Bridge.cpp ApplyGameFixes); dod.ini's gs_options and the tests' overrides still come after and win.
-            std::string gsOptions = "blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2";
-            if (ini.count("gs_options") && !ini["gs_options"].empty())
-                gsOptions += ";" + ini["gs_options"];
+            std::string gsOptions = renderProfile.options;
             const char* aspectEnv = std::getenv("DOD_ASPECT");
             const std::string aspect = aspectEnv && *aspectEnv ? aspectEnv : ini.count("aspect") ? ini["aspect"] : "4:3";
             dodwide::enabled = renderer == "pcsx2" && aspect == "16:9";
             // [DoD] DOD_GS_OPTIONS (tests): more PCSX2 options after dod.ini's, e.g. its draw dumps
             // ("dump_dir=...;dump_frame=3900;dump_rt=1"); DOD_GS_SCALE: the internal resolution.
-            if (const char *extra = std::getenv("DOD_GS_OPTIONS"); extra && *extra)
-                gsOptions += (gsOptions.empty() ? "" : ";") + std::string(extra);
+            // INI and environment GS overrides were already merged, in that order, during preflight.
             gsOptions += std::string(";widescreen=") + (dodwide::enabled ? "1" : "0");
             // [DoD] fullscreen = 1 is DXGI exclusive fullscreen in the desktop's own resolution and refresh rate (the
             // display settings never change; Alt+Tab returns to it). fullscreen_mode = borderless keeps the old
@@ -928,7 +953,7 @@ int main(int argc, char *argv[])
             if (exclusive)
                 gsOptions += ";exclusive_fullscreen=1";
             std::cout << "[dod] fullscreen " << (!fullscreen ? "off" : exclusive ? "exclusive (desktop mode)" : "borderless") << std::endl;
-            std::fprintf(stderr, "[widescreen] %s; camera position unchanged\n", dodwide::enabled ? "16:9 Hor+" : "4:3 original");
+            std::fprintf(stderr, "[widescreen] %s; camera position unchanged\n", dodwide::enabled ? "16:9 output (port projection hooks required; no legacy per-buffer classifier)" : "4:3 original");
             // gs_scale follows the display resolution unless dod.ini sets a number: the smallest multiple of the
             // PS2's 640x448 at least as tall as the 4:3 picture the window (or the monitor, borderless) shows, so the
             // 3D image is never upscaled: 720p -> 2, 960 or 1080 -> 3, 1440 -> 4, 2160 -> 5.

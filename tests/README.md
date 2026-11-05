@@ -97,3 +97,22 @@ actual Bridge reset paths and the bounded A/B force-off window. See `docs/NEUTRA
 
 The cloud CI workflow also compiles the full Windows GS DLL. Read the actual CI result before claiming a Windows
 build passed; recording-service tests and Linux syntax checks cover different boundaries. No user-PC build is needed.
+
+## Storage, HLE memory and VAG boundaries
+
+`test_storage_boundaries.py` compiles real VFS/ROM/path/audio translation units and extracted production HLE bodies
+with ASan/UBSan. It tests creation versus truncation, permissions, exclusive creation, ROM seek overflow, large host
+positions, disc read-only behavior, UTF-8/ISO path rules, backing-allocation boundaries, SIF mirror descriptors and
+metadata, and corrupt VAG sizes. Fixtures use temporary synthetic files/buffers and no game assets.
+
+`cmake -S tests -B build/boundaries`, build, then `ctest --test-dir build/boundaries --output-on-failure` runs the same
+portable boundary cases. For MSVC use a configured Release build and `-C Release`; the target explicitly undefines
+NDEBUG. The GitHub-hosted Windows job must actually run before claiming these platform branches passed.
+
+## Dawn of Dreams reference adapter
+
+`test_dod_reference.py` compiles the actual reference option builder and extracted runner INI/preflight bodies with UBSan and the existing production GS
+particle policy. It tests explicit revision/CRC selection, default/force-off, conflicting inputs, independent
+UI/CG flags, environment/INI order, reload independence, malformed arguments and synthetic ELF CRC against zlib.
+Pack preparation tests use temporary placeholder files and exercise dry run, explicit creation and no-overwrite.
+These fixtures do not build the full generated game runner or validate its visuals.

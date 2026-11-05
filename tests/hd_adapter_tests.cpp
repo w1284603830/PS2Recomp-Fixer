@@ -23,6 +23,17 @@ int main(int argc,char**argv){
   assert(g_gs_device->draws==(mode=="cg-match"?1u:0u));
   if(mode=="cg-match")assert(g_gs_device->last[0].wmask.key==15&&g_gs_device->last[0].src!=rect.src);
   DoDHdCg::Clear();assert(!DoDHdCg::Active());
+ }else if(mode=="cg-uniform"){
+  auto p=packet();std::fill(p.begin()+16,p.begin()+16+512*144,0xff000000);DoDHdCg::Receive(p.data(),p.size()*4);assert(!DoDHdCg::Active());
+ }else if(mode=="cg-ambiguous"){
+  auto p=packet();DoDHdCg::Receive(p.data(),p.size()*4);p[2]=2;p.back()^=1;DoDHdCg::Receive(p.data(),p.size()*4);assert(DoDHdCg::frames.size()==2);
+  GSLocalMemory mem;for(unsigned y=0;y<144;++y)for(unsigned x=0;x<512;++x)mem.pixels[y*1024+x]=p[16+y*512+x];
+  GSTexture target;GSDevice::MultiStretchRect rect;rect.dst_rect={0,0,1024,288};DoDHdCg::Upload(mem,{0,8,0},&target,2,&rect,1,ShaderConvertSelector::Copy);assert(!g_gs_device->draws);DoDHdCg::Clear();
+ }else if(mode=="static-nonfinite"){
+  DoDHdStatic::enabled=true;DoDHdStatic::Page page;page.preview=std::make_shared<const std::vector<u32>>(512*448,123);DoDHdStatic::pages.push_back(page);GSLocalMemory mem;GSDevice::MultiStretchRect rect;rect.dst_rect={0,0,512,448};auto* original=rect.src;
+  for(float scale:{0.0f,-1.0f,std::numeric_limits<float>::quiet_NaN(),std::numeric_limits<float>::infinity()})DoDHdStatic::Prepare(mem,{0,8,0},scale,&rect,1,true);
+  for(float x:{std::numeric_limits<float>::quiet_NaN(),-std::numeric_limits<float>::infinity(),1e30f}){rect.dst_rect.x=x;DoDHdStatic::Prepare(mem,{0,8,0},1,&rect,1,true);}
+  assert(rect.src==original);DoDHdStatic::Clear();
  }else if(mode=="cg-bounds"){
   auto p=packet();p[7]=UINT32_MAX;p[9]=2;DoDHdCg::Receive(p.data(),p.size()*4);assert(!DoDHdCg::Active());
   p=packet();DoDHdCg::Receive(p.data(),63);assert(!DoDHdCg::Active());DoDHdCg::Receive(p.data(),p.size()*4);assert(DoDHdCg::Active());

@@ -86,3 +86,10 @@ See [migration and test instructions](NEUTRAL_BASE_MIGRATION.md) and the [scoped
 This audit preserves hardware constants, identified SDK ABI layouts, upstream identity-gated game fixes and game-name
 metadata. Historical `dod` names are retained where they identify shared services. Per-game particle profiles remain
 default off; no Onimusha 3 particle policy or native hook is added.
+
+## Storage and memory follow-up, 2026-11-06
+
+This review fixes independently reproduced shared VFS flag/permission/seek errors and bounded HLE,
+SIF, VAG and HD content-identification paths. It adds no game defaults. See
+[the scoped findings and test record](REPOSITORY_ERROR_REVIEW_2026-11-06.md). The changes were approved for submission; cloud results belong to the corresponding PR Checks.
+This does not certify all third-party code or real-game compatibility.

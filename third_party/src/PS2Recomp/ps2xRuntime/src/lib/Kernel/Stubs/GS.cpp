@@ -1033,7 +1033,7 @@ namespace ps2_stubs
                        param_5 & 0x3u,
                        (param_2 & 2u) != 0u);
 
-        uint8_t *const ptr = getMemPtr(rdram, envAddr);
+        uint8_t *const ptr = getMemPtr(rdram, envAddr, sizeof(env));
         if (!ptr)
         {
             setReturnS32(ctx, 8);
@@ -1076,7 +1076,7 @@ namespace ps2_stubs
                        param_5 & 0x3u,
                        (param_2 & 2u) != 0u);
 
-        uint8_t *const ptr = getMemPtr(rdram, envAddr);
+        uint8_t *const ptr = getMemPtr(rdram, envAddr, sizeof(env));
         if (!ptr)
         {
             setReturnS32(ctx, 8);

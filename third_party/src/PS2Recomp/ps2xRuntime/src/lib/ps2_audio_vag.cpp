@@ -1,4 +1,4 @@
-#include "runtime/ps2_memory.h"
+#include <vector>
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
@@ -47,21 +47,23 @@ namespace ps2_vag
                             (static_cast<uint32_t>(data[0x0d]) << 16) |
                             (static_cast<uint32_t>(data[0x0e]) << 8) |
                             static_cast<uint32_t>(data[0x0f]);
-        outSampleRate = (static_cast<uint32_t>(data[0x10]) << 24) |
+        uint32_t sampleRate = (static_cast<uint32_t>(data[0x10]) << 24) |
                         (static_cast<uint32_t>(data[0x11]) << 16) |
                         (static_cast<uint32_t>(data[0x12]) << 8) |
                         static_cast<uint32_t>(data[0x13]);
-        if (outSampleRate == 0)
-            outSampleRate = 44100;
-
-        const uint32_t numBlocks = (dataSize + 15) / 16;
+        if (sampleRate == 0) sampleRate = 44100;
+        // VAG payload is complete 16-byte ADPCM blocks. Validate before reserve
+        // or pointer arithmetic; corrupt headers must not allocate from claimed sizes.
+        if (dataSize > sizeBytes - 48u || dataSize % 16u != 0u) return false;
+        const uint32_t numBlocks = dataSize / 16u;
+        outSampleRate = sampleRate;
         outPcm.clear();
-        outPcm.reserve(numBlocks * 28);
+        outPcm.reserve(static_cast<size_t>(numBlocks) * 28u);
 
         int16_t s1 = 0, s2 = 0;
         const uint8_t *block = data + 48;
 
-        for (uint32_t b = 0; b < numBlocks && (block + 16) <= data + sizeBytes; ++b, block += 16)
+        for (uint32_t b = 0; b < numBlocks; ++b, block += 16)
         {
             uint8_t shift = block[0] & 0x0F;
             if (shift > 12)
@@ -75,7 +77,7 @@ namespace ps2_vag
                 const uint8_t byte = block[2 + sampleIdx / 2];
                 const uint8_t nibble = (sampleIdx & 1) ? (byte >> 4) : (byte & 0x0F);
                 const int8_t rawSample = signExtend4(nibble);
-                const int32_t shiftedSample = rawSample << (12 - shift);
+                const int32_t shiftedSample = static_cast<int32_t>(rawSample) * (1 << (12 - shift));
 
                 int32_t filteredSample;
                 const int32_t old = s1;

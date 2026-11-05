@@ -133,6 +133,12 @@ inline bool ps2ResolveGuestPointer(uint32_t addr, uint32_t &offset, bool &scratc
     {
         phys = addr & 0x1FFFFFFFu;
     }
+    else
+    {
+        // This helper has no TLB mapping for these segments. Never alias an
+        // unsupported pointer to RDRAM offset zero.
+        return false;
+    }
 
     if (phys >= PS2_RAM_SIZE)
     {
@@ -185,6 +191,23 @@ inline const uint8_t *getConstMemPtr(const uint8_t *rdram, uint32_t addr)
         return scratchpad ? (scratchpad + offset) : nullptr;
     }
     return rdram + offset;
+}
+
+// Contiguous host spans must fit in one backing allocation. Two-argument
+// callers retain byte-pointer behavior; bulk HLE accesses provide their size.
+inline uint8_t *getMemPtr(uint8_t *rdram, uint32_t addr, size_t size)
+{
+    uint32_t offset = 0; bool scratch = false;
+    if (!rdram || !ps2ResolveGuestPointer(addr, offset, scratch) ||
+        size > static_cast<size_t>(scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE) - offset) return nullptr;
+    return getMemPtr(rdram, addr);
+}
+inline const uint8_t *getConstMemPtr(const uint8_t *rdram, uint32_t addr, size_t size)
+{
+    uint32_t offset = 0; bool scratch = false;
+    if (!rdram || !ps2ResolveGuestPointer(addr, offset, scratch) ||
+        size > static_cast<size_t>(scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE) - offset) return nullptr;
+    return getConstMemPtr(rdram, addr);
 }
 
 // PS2 GS (Graphics Synthesizer) registers

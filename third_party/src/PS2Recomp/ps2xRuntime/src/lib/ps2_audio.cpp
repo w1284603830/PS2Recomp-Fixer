@@ -95,7 +95,7 @@ void PS2AudioBackend::onVagTransfer(const uint8_t *rdram, uint32_t srcAddr, uint
         return;
 
     const uint32_t physAddr = srcAddr & PS2_RAM_MASK;
-    if (physAddr + sizeBytes > PS2_RAM_SIZE)
+    if (sizeBytes > PS2_RAM_SIZE - physAddr)
         return;
 
     std::vector<int16_t> pcm;

@@ -8,7 +8,7 @@ namespace ps2_stubs
     {
         bool readVuVec4f(uint8_t *rdram, uint32_t addr, float (&out)[4])
         {
-            const uint8_t *ptr = getConstMemPtr(rdram, addr);
+            const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
             if (!ptr)
             {
                 return false;
@@ -19,7 +19,7 @@ namespace ps2_stubs
 
         bool writeVuVec4f(uint8_t *rdram, uint32_t addr, const float (&in)[4])
         {
-            uint8_t *ptr = getMemPtr(rdram, addr);
+            uint8_t *ptr = getMemPtr(rdram, addr, sizeof(in));
             if (!ptr)
             {
                 return false;
@@ -30,7 +30,7 @@ namespace ps2_stubs
 
         bool readVuVec4i(uint8_t *rdram, uint32_t addr, int32_t (&out)[4])
         {
-            const uint8_t *ptr = getConstMemPtr(rdram, addr);
+            const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
             if (!ptr)
             {
                 return false;
@@ -41,7 +41,7 @@ namespace ps2_stubs
 
         bool writeVuVec4i(uint8_t *rdram, uint32_t addr, const int32_t (&in)[4])
         {
-            uint8_t *ptr = getMemPtr(rdram, addr);
+            uint8_t *ptr = getMemPtr(rdram, addr, sizeof(in));
             if (!ptr)
             {
                 return false;
@@ -52,7 +52,7 @@ namespace ps2_stubs
 
         bool readVuMatrix4f(uint8_t *rdram, uint32_t addr, float (&out)[16])
         {
-            const uint8_t *ptr = getConstMemPtr(rdram, addr);
+            const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
             if (!ptr)
             {
                 return false;
@@ -63,7 +63,7 @@ namespace ps2_stubs
 
         bool writeVuMatrix4f(uint8_t *rdram, uint32_t addr, const float (&in)[16])
         {
-            uint8_t *ptr = getMemPtr(rdram, addr);
+            uint8_t *ptr = getMemPtr(rdram, addr, sizeof(in));
             if (!ptr)
             {
                 return false;
@@ -386,11 +386,11 @@ namespace ps2_stubs
     {
         const uint32_t dstAddr = getRegU32(ctx, 4);
         const uint32_t srcAddr = getRegU32(ctx, 5);
-        uint8_t *dst = getMemPtr(rdram, dstAddr);
-        const uint8_t *src = getConstMemPtr(rdram, srcAddr);
+        uint8_t *dst = getMemPtr(rdram, dstAddr, sizeof(float) * 16u);
+        const uint8_t *src = getConstMemPtr(rdram, srcAddr, sizeof(float) * 16u);
         if (dst && src)
         {
-            std::memcpy(dst, src, sizeof(float) * 16u);
+            std::memmove(dst, src, sizeof(float) * 16u);
         }
         setReturnS32(ctx, 0);
     }
@@ -399,11 +399,11 @@ namespace ps2_stubs
     {
         const uint32_t dstAddr = getRegU32(ctx, 4);
         const uint32_t srcAddr = getRegU32(ctx, 5);
-        uint8_t *dst = getMemPtr(rdram, dstAddr);
-        const uint8_t *src = getConstMemPtr(rdram, srcAddr);
+        uint8_t *dst = getMemPtr(rdram, dstAddr, sizeof(float) * 4u);
+        const uint8_t *src = getConstMemPtr(rdram, srcAddr, sizeof(float) * 4u);
         if (dst && src)
         {
-            std::memcpy(dst, src, sizeof(float) * 4u);
+            std::memmove(dst, src, sizeof(float) * 4u);
         }
         setReturnS32(ctx, 0);
     }
@@ -412,11 +412,11 @@ namespace ps2_stubs
     {
         const uint32_t dstAddr = getRegU32(ctx, 4);
         const uint32_t srcAddr = getRegU32(ctx, 5);
-        uint8_t *dst = getMemPtr(rdram, dstAddr);
-        const uint8_t *src = getConstMemPtr(rdram, srcAddr);
+        uint8_t *dst = getMemPtr(rdram, dstAddr, sizeof(float) * 3u);
+        const uint8_t *src = getConstMemPtr(rdram, srcAddr, sizeof(float) * 3u);
         if (dst && src)
         {
-            std::memcpy(dst, src, sizeof(float) * 3u);
+            std::memmove(dst, src, sizeof(float) * 3u);
         }
         setReturnS32(ctx, 0);
     }

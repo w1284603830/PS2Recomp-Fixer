@@ -304,7 +304,7 @@ namespace ps2_stubs
                 return;
             }
 
-            uint8_t *dst = getMemPtr(rdram, addr);
+            uint8_t *dst = getMemPtr(rdram, addr, value.size() + 1u);
             if (!dst)
             {
                 return;

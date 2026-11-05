@@ -174,13 +174,16 @@ inline void Capture(const GSLocalMemory& mem,GIFRegTEX0 tex0,const GSDevice::Mul
 // Mutate source and UV only; caller submits the entire batch once, with original dst, wmask, filter and shader.
 inline void Prepare(const GSLocalMemory& mem,GIFRegTEX0 tex0,float scale,
                     GSDevice::MultiStretchRect* dirty,u32 n,bool replace_enabled) {
-    if(!enabled || !dirty || !n || scale<=0 || tex0.TBW!=8 ||
+    if(!enabled || !dirty || !n || !(scale>0) || !std::isfinite(scale) || tex0.TBW!=8 ||
        (tex0.PSM!=PSMCT32 && tex0.PSM!=PSMCT24)) return;
     Capture(mem,tex0,dirty,n,scale);
     if(!replace_enabled || pages.empty()) return;
     for(u32 i=0;i<n;++i) {
         const auto& d=dirty[i].dst_rect;
         const float fx0=d.x/scale,fy0=d.y/scale,fx1=d.z/scale,fy1=d.w/scale;
+        // Validate floats and native bounds before any float-to-int conversion.
+        if(!std::isfinite(fx0) || !std::isfinite(fy0) || !std::isfinite(fx1) || !std::isfinite(fy1) ||
+           fx0<0 || fy0<0 || fx1>512 || fy1>512 || fx1<=fx0 || fy1<=fy0) continue;
         const int x0=static_cast<int>(std::round(fx0)),y0=static_cast<int>(std::round(fy0));
         const int x1=static_cast<int>(std::round(fx1)),y1=static_cast<int>(std::round(fy1));
         // Exact integer native boundaries; never replace only part of a dirty rectangle.

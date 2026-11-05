@@ -427,6 +427,12 @@ namespace ps2_stubs
         const uint32_t dstAddr = getRegU32(ctx, 6);
         const int32_t sizeSigned = static_cast<int32_t>(getRegU32(ctx, 7));
 
+        if (rdAddr && !canAccessEeRange(rdram, rdAddr, 0x1cu))
+        {
+            setReturnS32(ctx, -1);
+            return;
+        }
+
         if (sizeSigned <= 0)
         {
             setReturnS32(ctx, 0);
@@ -480,11 +486,11 @@ namespace ps2_stubs
         }
 
         // SifRpcReceiveData_t keeps src/dest/size at offsets 0x10/0x14/0x18.
-        if (uint8_t *rd = getMemPtr(rdram, rdAddr))
+        if (rdAddr)
         {
-            std::memcpy(rd + 0x10u, &srcAddr, sizeof(srcAddr));
-            std::memcpy(rd + 0x14u, &dstAddr, sizeof(dstAddr));
-            std::memcpy(rd + 0x18u, &size, sizeof(size));
+            (void)writeEeRange(rdram, rdAddr + 0x10u, &srcAddr, sizeof(srcAddr));
+            (void)writeEeRange(rdram, rdAddr + 0x14u, &dstAddr, sizeof(dstAddr));
+            (void)writeEeRange(rdram, rdAddr + 0x18u, &size, sizeof(size));
         }
 
         if (runtime)
@@ -710,15 +716,12 @@ namespace ps2_stubs
         for (uint32_t i = 0; i < count; ++i)
         {
             const uint32_t entryAddr = dmatAddr + (i * static_cast<uint32_t>(sizeof(Ps2SifDmaTransfer)));
-            const uint8_t *entry = getConstMemPtr(rdram, entryAddr);
-            if (!entry)
+            Ps2SifDmaTransfer xfer{};
+            if (!readEeRange(rdram, entryAddr, &xfer, sizeof(xfer)))
             {
                 ok = false;
                 break;
             }
-
-            Ps2SifDmaTransfer xfer{};
-            std::memcpy(&xfer, entry, sizeof(xfer));
             if (xfer.size <= 0)
             {
                 continue;
