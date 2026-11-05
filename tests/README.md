@@ -116,3 +116,14 @@ particle policy. It tests explicit revision/CRC selection, default/force-off, co
 UI/CG flags, environment/INI order, reload independence, malformed arguments and synthetic ELF CRC against zlib.
 Pack preparation tests use temporary placeholder files and exercise dry run, explicit creation and no-overwrite.
 These fixtures do not build the full generated game runner or validate its visuals.
+
+## VFS path encoding
+
+`test_vfs_encoding.py` compiles production VFS/path/ROM and the optional port decoder, using independent Python codec
+fixtures for UTF-8, Shift-JIS/CP932, GBK/CP936 and Big5/CP950 common mappings. Temporary files cover read/create/save,
+explicit truncation, DBCS trail `0x5c`, invalid input, ambiguous valid UTF-8, ASCII and stateless selection.
+POSIX uses iconv with ASan/UBSan; its 27 cases do not establish Windows behavior. One Windows-native-path case is
+explicitly skipped on Linux. CMake adds all 28 to the Windows boundary job (56 total with existing cases), using Win32
+code-page APIs, the production wide-file path and Release assertions. Read the candidate CI result before claiming
+Windows passed. None of these fixtures exercises libmc, IOP filesystem bypasses or real game saves; see
+[scope and test matrix](../docs/VFS_PATH_ENCODING_REVIEW_2026-11-06.md).

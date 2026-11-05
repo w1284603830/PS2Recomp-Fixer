@@ -9,6 +9,10 @@ Recent host/rendering boundary changes and migration instructions are in
 pack-owned exclusions, explicit HD asset formats and multi-field alpha/A-B diagnosis. Follow that guide before
 reusing a reference runner's settings.
 
+VFS host paths require UTF-8. Decode independently identified legacy encodings **before** splitting separators;
+a DBCS trail byte can be `0x5c`. The [encoding review and optional port example](VFS_PATH_ENCODING_REVIEW_2026-11-06.md)
+cover rejection, explicit conversion and separate libmc/IOP/loader boundaries. No encoding is selected by game name.
+
 ## 1. Pieces
 
 | You provide | Where |
