@@ -65,7 +65,9 @@ public:
     [[nodiscard]] int64_t seek(int32_t descriptor, int64_t offset, int whence);
 
     [[nodiscard]] bool stat(std::string_view path, const PS2VfsMounts &mounts, const PS2RomDevice &rom, PS2VfsStat &result) const;
-    // Guest host-path strings use UTF-8; legacy title encodings need a port adapter.
+    // All path entry points require strict UTF-8 (no NUL); malformed input fails
+    // before separator parsing. Decode known legacy encodings in the port first.
+    // Valid UTF-8 bytes are never guessed to be another encoding.
     [[nodiscard]] bool resolveHostPath(std::string_view path, const PS2VfsMounts &mounts, std::filesystem::path &result) const;
     [[nodiscard]] std::vector<PS2VfsDescriptorInfo> descriptors() const;
 

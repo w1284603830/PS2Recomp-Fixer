@@ -1,6 +1,7 @@
 #include "runtime/ps2_vfs.h"
 
 #include "runtime/ps2_memory.h"
+#include "runtime/ps2_path_utf8.h"
 #include "runtime/ps2_rom_device.h"
 
 #include <algorithm>
@@ -164,6 +165,7 @@ PS2Vfs::~PS2Vfs() = default;
 
 int32_t PS2Vfs::open(std::string_view path, uint32_t flags, const PS2VfsMounts &mounts, const PS2RomDevice &rom)
 {
+    if (!ps2::paths::validUtf8(path)) return -1;
     const ps2x::iop::ParsedPs2Path parsed = ps2x::iop::parsePs2Path(path);
     if (!parsed)
         return -1;
@@ -240,6 +242,7 @@ int64_t PS2Vfs::seek(int32_t descriptor, int64_t offset, int whence)
 bool PS2Vfs::stat(std::string_view path, const PS2VfsMounts &mounts, const PS2RomDevice &rom, PS2VfsStat &result) const
 {
     result = {};
+    if (!ps2::paths::validUtf8(path)) return false;
     const ps2x::iop::ParsedPs2Path parsed = ps2x::iop::parsePs2Path(path);
     if (!parsed)
         return false;
@@ -275,6 +278,7 @@ bool PS2Vfs::stat(std::string_view path, const PS2VfsMounts &mounts, const PS2Ro
 bool PS2Vfs::resolveHostPath(std::string_view path, const PS2VfsMounts &mounts, std::filesystem::path &result) const
 {
     result.clear();
+    if (!ps2::paths::validUtf8(path)) return false;
     const ps2x::iop::ParsedPs2Path parsed = ps2x::iop::parsePs2Path(path);
     if (!parsed || parsed.device == ps2x::iop::Ps2PathDevice::Rom0)
         return false;

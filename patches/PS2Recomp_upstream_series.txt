@@ -4,3 +4,4 @@ PS2Recomp_host_maintenance_20261103.diff
 PS2Recomp_particle_profiles_20261104.diff
 PS2Recomp_neutral_host_20261105.diff
 PS2Recomp_storage_bounds_20261106.diff
+PS2Recomp_path_utf8_20261106.diff
