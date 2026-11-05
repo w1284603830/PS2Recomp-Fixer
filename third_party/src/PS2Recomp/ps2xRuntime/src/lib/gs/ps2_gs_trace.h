@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <charconv>
+#include <string_view>
 #include <cstdio>
 #include <cstdlib>
 
@@ -16,15 +18,23 @@ struct State
 };
 inline State state = [] {
     State s;
-    if (const char* v = std::getenv("DOD_CG_GS_TRACE"))
+    // Static initialization precedes the runtime's environment-alias installer.
+    // Read the public name directly, with the established PS2_ precedence.
+    const char* v = std::getenv("PS2_CG_GS_TRACE");
+    if (!v) v = std::getenv("DOD_CG_GS_TRACE");
+    if (v)
     {
-        char* tail = nullptr;
-        s.first = std::strtoull(v, &tail, 10);
-        if (tail && *tail == ':')
-        {
-            const uint64_t count = std::min<uint64_t>(72000, std::strtoull(tail + 1, nullptr, 10));
-            s.end = s.first > UINT64_MAX - count ? UINT64_MAX : s.first + count;
-        }
+        const std::string_view text(v);
+        const auto colon = text.find(':');
+        if (colon == std::string_view::npos) return s;
+        const auto first = text.substr(0, colon), span = text.substr(colon + 1);
+        uint64_t count = 0;
+        const auto a = std::from_chars(first.data(), first.data() + first.size(), s.first);
+        const auto b = std::from_chars(span.data(), span.data() + span.size(), count);
+        if (first.empty() || span.empty() || a.ec != std::errc{} || b.ec != std::errc{} ||
+            a.ptr != first.data() + first.size() || b.ptr != span.data() + span.size()) return State{};
+        count = std::min<uint64_t>(72000, count);
+        s.end = s.first > UINT64_MAX - count ? UINT64_MAX : s.first + count;
     }
     return s;
 }();

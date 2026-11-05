@@ -49,6 +49,10 @@ int main(int argc,char**argv){
  }else if(mode=="address"){
   using ps2input::diagnosticWordAddress;for(auto v:{"", "0", "-1", "+1", "0x", "1junk", "0x100000000", "0xfffffffc", "33554429", "999999999999999999999"})assert(!diagnosticWordAddress(v));
   assert(diagnosticWordAddress("0x1fffffc")==0x1fffffc);assert(diagnosticWordAddress("16")==16);assert(!diagnosticWordAddress(nullptr));
+ }else if(mode=="trace-config"){
+  assert(dodpcsx2::cgtrace::state.first==12&&dodpcsx2::cgtrace::state.end==16);
+ }else if(mode=="trace-off"){
+  assert(!dodpcsx2::cgtrace::traceOn());
  }else if(mode=="trace"){
   struct Regs{std::array<uint64_t,15> regset1{};} regs;regs.regset1[9]=0x1040;const auto original=regs;
   dodpcsx2::cgtrace::state.first=1;dodpcsx2::cgtrace::state.end=4;dodpcsx2::cgtrace::submitted(32,2,true);uint8_t q[16]{};

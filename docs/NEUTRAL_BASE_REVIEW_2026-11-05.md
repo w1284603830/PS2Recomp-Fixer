@@ -16,7 +16,7 @@
 | 畫面比例、GIF、CG cadence | 移除依特定 framebuffer、深度或固定 bank 自動推斷的邏輯；歷史片段移至遊戲範例，沒有共享呼叫點。 |
 | 高清素材 | 靜態頁面需明確選擇格式及目錄；HCG1 保留明確尺寸協定，移除遊戲 bank 白名單並核對整個 RGB 區域；修正 crop 範圍加法溢位。取消自動 7×／NativeScaling 覆寫，改為可選配置。 |
 | 反饋與 clamp | 提供預設關閉的 `feedback_copy_hpo_guard`、`clamp_footprint`，各移植需獨立驗證；不加入特定 P4 粒子圖集尺寸、tile、depth 或 billboard 規則。 |
-| 診斷 | 修正 RGB_A PNG 分離 Alpha、pitch 驗證與寫入失敗回報；A/B 改為多幀兩半且強制關閉範圍止於 capture 結束；CG trace 僅觀察。 |
+| 診斷 | 修正初始化前 `PS2_` trace 選項優先順序、非法時間窗拒絕，以及 RGB_A PNG 分離 Alpha、pitch 驗證與寫入失敗回報；A/B 改為多幀兩半且強制關閉範圍止於 capture 結束；CG trace 僅觀察。 |
 | 測試輸入 | 自動導航需明確按鈕清單，沒有 START/CIRCLE／40 秒預設；frame clock 需提供地址與頻率，嚴格拒絕溢位地址，會話重置清除基準。 |
 | VU 與工具 | kzvu 預設正常 clamp、IbitHack 關閉；Killzone 測試自行選參數。11 個固定 ELF 範圍／計數器的腳本移入遊戲範例。 |
 | 既有精度 | 保留先前 IPU／MPEG／font profiles、SPU2 FIR 與輸出重採樣；不以本次輸入或渲染維護替換既有混響邏輯。 |
@@ -41,8 +41,8 @@ session reset 的呼叫路徑，並逐項審查本次 diff。保留 PS2 硬體�
 | 靜態審查 | 已核對上述共用／遊戲邊界、預設關閉、失敗回滾、重置、兩份 C API 與上游補丁一致性；靜態檢查不是畫面驗收。 |
 | 合成模擬 | 使用記錄式 host／GS 服務，涵蓋短按、獨立確認、選單、來源切換、連續會話、電影切換、搬移 buffer、稀疏採樣碰撞及 Alpha；不包含真人操作或 GPU 畫面。 |
 | 雲端實際編譯 | GCC C++20 / UBSan 編譯生產 pad translation unit、policy／HD headers、擷取／身份函式、Bridge／renderer 函式；完整 scheduler 與非 Windows backend 的 Linux 語法檢查通過；Windows 專屬 backend 分支未由此編譯。 |
-| 自動化回歸 | PASS：全庫 116 項（新增通用／素材邊界 23 項、粒子專項增至 15 項），37.9 秒；補丁反向／正向套用後逐檔位元組相同。ASan 僅關閉受執行環境限制的 leak scan。 |
-| Windows 完整編譯 | 使用者明確要求不在其電腦編譯，因此沒有啟動。新增 GitHub 雲端 GS DLL 編譯工作；執行結果須以該次 CI 為準，不能由 headless 測試推定。 |
+| 自動化回歸 | PASS：全庫 118 項（新增通用／素材邊界 25 項、粒子專項增至 15 項），35.6 秒；補丁反向／正向套用後逐檔位元組相同。ASan 僅關閉受執行環境限制的 leak scan。 |
+| Windows 完整編譯 | 使用者明確要求不在其電腦編譯，因此沒有啟動。GitHub 雲端首次完整編譯抓到移除遊戲標頭後遺漏的共用 field 計數器宣告，已補獨立宣告。更新版的實際完整編譯結果見 [PR #8 Checks](https://github.com/w1284603830/PS2Recomp-Fixer/pull/8/checks)，不能由 headless 測試推定。 |
 | 真實遊戲驗證 | NOT_RUN：未執行商業遊戲、真實 GIF replay、畫面／聽感／物理輸入延遲驗收；沒有部署遊戲 EXE／DLL。 |
 
 ## 各移植的驗收與修正流程

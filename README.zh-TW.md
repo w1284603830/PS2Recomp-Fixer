@@ -83,11 +83,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 
 1. 從光碟映像抽出開機 ELF 與 IRX：`python tools/iso_extract.py <iso> <輸出資料夾> <最大位元組>`
 2. 用 Ghidra 匯出函式表：`analyzeHeadless … -postScript ExportPS2Functions.java <toml> <csv>`（腳本在 `ps2xRecomp/tools/ghidra`）
-3. 修正函式表，依序執行：
-   1. `scan_code_pointers.py`：補只經函式指標呼叫的函式；
-   2. `fix_function_map.py`：去掉資料區的假標籤、處理不連續函式；
-   3. `scan_jump_tables.py`：補 switch 跳轉目標；
-   4. 執行時出現 `[guest-branch:missing-target]`，再用 `find_missing_function_starts.py` 補。
+3. 依該遊戲 ELF 的載入區段、程式／資料範圍、間接呼叫與 switch 目標核對函式表。
+   `scan_code_pointers.py`、`fix_function_map.py`、`scan_jump_tables.py`、`find_missing_function_starts.py`
+   含固定參考遊戲範圍，已移至 `examples/dod_runner/tools/`；其他版本需先改用自己的範圍與驗證，見[工具邊界](tools/README.md)。
 4. 辨識 SDK 函式：`ps2_analyzer <elf> analyzer.toml`，再用 `merge_stubs.py` 合併。
 5. 重編譯：`ps2_recomp <設定.toml>`，把輸出放進 `ps2xRuntime/src/runner/` 與 `ps2xRuntime/include/`。`sync_generated*.py` 只複製有變的檔，避免全部重編。
 6. 寫該遊戲的 `ps2xRuntime/src/runner/main.cpp`：複製 `examples/generic_runner/main.cpp`（設定來自 `game.ini`，見 [docs/GAME_PORTING.md](docs/GAME_PORTING.md)），或從上游 `src/main.cpp`、`examples/dod_runner/main.cpp` 開始。要用這個基底的新增功能：

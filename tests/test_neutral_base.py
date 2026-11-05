@@ -37,7 +37,7 @@ class NeutralBaseTests(unittest.TestCase):
             result=subprocess.run(cmd,capture_output=True,text=True)
             if result.returncode:raise RuntimeError(result.stderr)
     def run_case(self,exe,mode,extra=None):
-        env={k:v for k,v in os.environ.items() if not k.startswith(('DOD_PAD_','DOD_TEST_','PS2_PAD_'))}
+        env={k:v for k,v in os.environ.items() if not k.startswith(('DOD_PAD_','DOD_TEST_','PS2_PAD_','DOD_CG_','PS2_CG_'))}
         env.update(extra or {})
         result=subprocess.run([str(self.directory/exe),mode],env=env,capture_output=True,text=True,timeout=15)
         self.assertEqual(result.returncode,0,result.stderr)
@@ -68,3 +68,9 @@ class NeutralBaseTests(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
 
     def test_neutral_title_pack_identity_and_filesystem_root(self):self.run_case('host_identity','identity')
+
+    def test_trace_public_environment_precedence_before_alias_setup(self):
+        self.run_case('neutral_policy','trace-config',{'PS2_CG_GS_TRACE':'12:4','DOD_CG_GS_TRACE':'1:9'})
+    def test_trace_malformed_window_fails_closed(self):
+        for value in ('','1','-1:2','1:+2','1:2junk','1:2:3','1:18446744073709551616'):
+            self.run_case('neutral_policy','trace-off',{'PS2_CG_GS_TRACE':value,'DOD_CG_GS_TRACE':'1:9'})

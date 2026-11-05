@@ -20,6 +20,9 @@
 #include <iomanip>
 #include <bit>
 
+// Shared diagnostic counter; its declaration must not depend on a game policy header.
+extern unsigned long long g_dodGsField;
+
 u64 GSState::s_n = 0;
 u64 GSState::s_last_transfer_draw_n = 0;
 u64 GSState::s_transfer_n = 0;
