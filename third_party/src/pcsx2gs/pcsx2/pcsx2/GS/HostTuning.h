@@ -1,6 +1,8 @@
 #pragma once
 
 #include <charconv>
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -11,6 +13,41 @@
 
 namespace GSHostTuning
 {
+struct PortOptions
+{
+    bool feedbackCopyGuard = false;
+    bool clampFootprint = false;
+    bool hdDisableNativeScaling = false;
+    uint32_t hdMinimumScale = 1;
+    std::string staticPageFormat, staticPageDirectory;
+};
+inline PortOptions portOptions;
+inline void ResetPortOptions() { portOptions = {}; }
+inline bool ConfigurePortOption(std::string_view key, std::string_view text)
+{
+    if (key == "static_page_format") { portOptions.staticPageFormat = text; return true; }
+    if (key == "static_page_dir") { portOptions.staticPageDirectory = text; return true; }
+    bool* flag = key == "feedback_copy_hpo_guard" ? &portOptions.feedbackCopyGuard :
+        key == "clamp_footprint" ? &portOptions.clampFootprint :
+        key == "hd_frame_disable_native_scaling" ? &portOptions.hdDisableNativeScaling : nullptr;
+    if (flag) { *flag = text == "1"; return true; }
+    if (key != "hd_frame_min_scale") return false;
+    uint32_t value = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    portOptions.hdMinimumScale = parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() &&
+        value >= 1 && value <= 8 ? value : 1;
+    return true;
+}
+inline int FeedbackCopyMargin(float scale, bool nativeHpo)
+{
+    return portOptions.feedbackCopyGuard && nativeHpo && std::isfinite(scale) && scale > 0 && scale <= 256 ?
+        std::max(1, static_cast<int>(std::ceil(scale * 0.5f))) : 1;
+}
+inline bool PreserveClampFootprint(bool hardware, bool sprite, bool clamped)
+{
+    return portOptions.clampFootprint && hardware && sprite && clamped;
+}
+
 // IDXGIDevice1::SetMaximumFrameLatency accepts 1..16; 0 resets the driver default.
 // An absent/invalid option leaves device configuration untouched.
 inline std::optional<uint32_t> FrameLatency(const char* text)

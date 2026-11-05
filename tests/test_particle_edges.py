@@ -37,6 +37,7 @@ class ParticleEdgeTests(unittest.TestCase):
         (directory / "particle_draw_gate.inc").write_text(renderer[gate:renderer.index("\tif (s_dod_draw_log)", gate)])
         (directory / "particle_bridge_current.inc").write_text(
             function(bridge, "    void ResetParticleSession()") +
+            function(bridge, "    void ResetPortOptions()") +
             function(bridge, "    int Open(const Pcsx2GsOpenParams *params)") +
             function(bridge, "    void Close()"))
         cls.exe = directory / "particle_tests"
@@ -64,6 +65,8 @@ class ParticleEdgeTests(unittest.TestCase):
     def test_force_off_and_alias_precedence_per_session(self): self.run_case("env")
     def test_real_bridge_open_close_failed_open_and_ab_reset(self): self.run_case("lifecycle")
     def test_repeated_game_switches_clear_state(self): self.run_case("switches")
+    def test_port_options_and_pack_identity_reset_on_all_lifecycle_paths(self): self.run_case("port-lifecycle")
+    def test_ab_window_forces_off_only_bounded_last_half(self): self.run_case("capture-window")
     def test_reference_draw_and_vertex_exclusions(self): self.run_case("guards")
     def test_reference_sampling_parameters_and_geometry(self): self.run_case("sampling")
     def test_profile_data_is_independent_and_unsupported_transforms_rejected(self): self.run_case("profile-data")

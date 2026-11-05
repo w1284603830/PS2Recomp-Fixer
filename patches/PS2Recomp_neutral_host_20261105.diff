@@ -1,0 +1,797 @@
+diff --git a/ps2xRuntime/include/ps2_input_readers.h b/ps2xRuntime/include/ps2_input_readers.h
+new file mode 100644
+index 0000000..0f30882
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_input_readers.h
+@@ -0,0 +1,50 @@
++#pragma once
++#include <array>
++#include <cstddef>
++#include <cstdint>
++
++namespace ps2input
++{
++using Reader = uint64_t;
++
++// Protected by the host-pad mutex in production. Each registered native adapter
++// acknowledges its own short presses; ordinary SIO2/HLE polling is independent.
++class PressReaders
++{
++    struct Slot { Reader token = 0; uint16_t pending = 0; };
++    std::array<Slot, 8> slots{};
++    Reader next = 1;
++public:
++    Reader add()
++    {
++        for (auto& s : slots) if (!s.token)
++        {
++            if (!next) ++next;
++            s = {next++, 0};
++            return s.token;
++        }
++        return 0;
++    }
++    bool remove(Reader token)
++    {
++        for (auto& s : slots) if (token && s.token == token) { s = {}; return true; }
++        return false;
++    }
++    void publish(uint16_t edges) { for (auto& s : slots) if (s.token) s.pending |= edges; }
++    void clearPending() { for (auto& s : slots) s.pending = 0; }
++    void reset() { slots = {}; } // retain generation: old tokens must not become valid again
++    bool consume(Reader token, uint16_t& edges)
++    {
++        for (auto& s : slots) if (token && s.token == token)
++        { edges = s.pending; s.pending = 0; return true; }
++        return false;
++    }
++};
++
++Reader registerReader();
++bool unregisterReader(Reader token);
++// 32-byte normalized host snapshot. Refresh only input fields in a separately
++// validated native packet; this API does not implement a game's libpad ABI.
++bool readLatest(Reader token, uint8_t* data, size_t size);
++void resetSession(); // before execution / after load; invalidates registered readers
++}
+diff --git a/ps2xRuntime/include/ps2_pad_diagnostics.h b/ps2xRuntime/include/ps2_pad_diagnostics.h
+new file mode 100644
+index 0000000..9b7f34c
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_pad_diagnostics.h
+@@ -0,0 +1,19 @@
++#pragma once
++#include <charconv>
++#include <cstdint>
++#include <string_view>
++
++namespace ps2input
++{
++// Explicit diagnostic RAM word, not a game's global or a mapped hardware register.
++inline uint32_t diagnosticWordAddress(const char* text)
++{
++    if (!text || !*text) return 0;
++    std::string_view s(text); int radix = 10;
++    if (s.starts_with("0x") || s.starts_with("0X")) { s.remove_prefix(2); radix = 16; }
++    uint32_t value = 0;
++    const auto parsed = std::from_chars(s.data(), s.data()+s.size(), value, radix);
++    return !s.empty() && parsed.ec == std::errc{} && parsed.ptr == s.data()+s.size() &&
++        value && value <= 0x02000000u-sizeof(uint32_t) ? value : 0;
++}
++}
+diff --git a/ps2xRuntime/include/ps2_presentation_policy.h b/ps2xRuntime/include/ps2_presentation_policy.h
+new file mode 100644
+index 0000000..0162550
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_presentation_policy.h
+@@ -0,0 +1,31 @@
++#pragma once
++
++namespace ps2host
++{
++enum class PresentationPhase { Start, End };
++
++// EE-thread-owned host submission policy. It never alters guest IRQs or cycles.
++// Movie begin/end changes after Start affect the next field, not this field.
++class FieldPresentation
++{
++    PresentationPhase phase = PresentationPhase::Start;
++    bool movie = false;
++    bool pendingEnd = false;
++public:
++    void configure(PresentationPhase value) { phase = value; }
++    void setMovieActive(bool active) { movie = active; }
++    void reset() { phase = PresentationPhase::Start; movie = pendingEnd = false; }
++    void restartFieldState() { movie = pendingEnd = false; } // run restarts retain post-load configuration
++    bool atStart()
++    {
++        pendingEnd = phase == PresentationPhase::End && !movie;
++        return !pendingEnd;
++    }
++    bool atEnd()
++    {
++        const bool present = pendingEnd;
++        pendingEnd = false;
++        return present;
++    }
++};
++}
+diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
+index 915fb06..46e712e 100644
+--- a/ps2xRuntime/include/runtime/ee_scheduler.h
++++ b/ps2xRuntime/include/runtime/ee_scheduler.h
+@@ -3,0 +4 @@
++#include "ps2_presentation_policy.h"
+@@ -277,0 +279,4 @@ public:
++    // Configure after load, before run. Movie lifecycle updates run on the EE thread.
++    void configurePresentation(ps2host::PresentationPhase phase) { m_presentation.configure(phase); }
++    void resetPresentationProfile() { m_presentation.reset(); }
++    void setPresentationMovieActive(bool active) { m_presentation.setMovieActive(active); }
+@@ -452,0 +458 @@ private:
++    ps2host::FieldPresentation m_presentation;
+diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+index f0b7028..fc074c3 100644
+--- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
++++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+@@ -532,0 +533 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
++    m_presentation.restartFieldState();
+@@ -2760,2 +2761,5 @@ void EeScheduler::processEvent(const EeEvent &event)
+-        dodpcsx2::vsync(m_runtime.memory().gs()); // [DoD] PCSX2's GS composes and presents the field
+-        forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
++        if (m_presentation.atStart())
++        {
++            dodpcsx2::vsync(m_runtime.memory().gs());
++            forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
++        }
+@@ -3004,0 +3009,5 @@ void EeScheduler::processEvent(const EeEvent &event)
++        if (m_presentation.atEnd())
++        {
++            dodpcsx2::vsync(m_runtime.memory().gs());
++            forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
++        }
+diff --git a/ps2xRuntime/src/lib/dod_host_pacer.cpp b/ps2xRuntime/src/lib/dod_host_pacer.cpp
+index c0cc619..7187e14 100644
+--- a/ps2xRuntime/src/lib/dod_host_pacer.cpp
++++ b/ps2xRuntime/src/lib/dod_host_pacer.cpp
+@@ -31 +31 @@ void dodhost::Pacer::wait()
+-    if (!enabled)
++    if (!enabled || asynchronousGs)
+diff --git a/ps2xRuntime/src/lib/gs/dod_cg_cadence.h b/ps2xRuntime/src/lib/gs/dod_cg_cadence.h
+deleted file mode 100644
+index 441c8c7..0000000
+--- a/ps2xRuntime/src/lib/gs/dod_cg_cadence.h
++++ /dev/null
+@@ -1,225 +0,0 @@
+-#pragma once
+-
+-// Progressive story-CG cadence, on the GS thread. The native player submits
+-// each decoded frame every two fields, but its deferred uploads can arrive
+-// either side of a field boundary. Select the existing completed buffer on
+-// that two-field cadence instead of exposing a 3/1-field pair.
+-// DOD_CG_CADENCE=keep restores the native display selection.
+-// DOD_CG_GS_TRACE=<first field>:<count> observes uploads without GPU readback.
+-namespace dodpcsx2::cgtrace
+-{
+-inline bool cadenceOn()
+-{
+-    static const bool on = [] {
+-        const char* v = std::getenv("DOD_CG_CADENCE");
+-        return !(v && std::strcmp(v, "keep") == 0);
+-    }();
+-    return on;
+-}
+-struct Path
+-{
+-    unsigned left = 0, flag = 0, nreg = 1, index = 0;
+-    uint64_t regs = 0;
+-};
+-struct State
+-{
+-    uint64_t first = 0, end = 0, field = 0;
+-    Path paths[4];
+-    uint64_t bitblt = 0, trxpos = 0, trxreg = 0;
+-    unsigned bytes = 0, y = 0, xbytes = 0, slot = 0;
+-    bool movieRow = false;
+-    uint64_t rolling[2]{}, hash[2]{}, updates[2]{};
+-    unsigned nextRow[2]{};
+-    bool active = false, seenFrame = false, valid[2]{}, heldValid = false;
+-    uint32_t decoderFrame = 0, stable = 0, phase = 0, newestSlot = 0;
+-    uint64_t submittedField = 0, newFrameField = 0, completed[2]{}, held = 0;
+-    uint64_t corrections = 0, unavailable = 0;
+-};
+-inline State state = [] {
+-    State s;
+-    if (const char* v = std::getenv("DOD_CG_GS_TRACE"))
+-    {
+-        char* tail = nullptr;
+-        s.first = std::strtoull(v, &tail, 10);
+-        if (tail && *tail == ':')
+-            s.end = s.first + std::min<uint64_t>(72000, std::strtoull(tail + 1, nullptr, 10)); // up to 20 min: whole movies
+-    }
+-    return s;
+-}();
+-
+-inline void submitted(uint32_t frame, uint64_t queued, bool eligible)
+-{
+-    auto& s = state;
+-    if (!cadenceOn()) eligible = false;
+-    if (!eligible || !s.active || (s.seenFrame && frame < s.decoderFrame))
+-    {
+-        s.active = eligible;
+-        s.seenFrame = false;
+-        s.stable = 0;
+-        s.valid[0] = s.valid[1] = s.heldValid = false;
+-        s.nextRow[0] = s.nextRow[1] = 0;
+-        s.movieRow = false;
+-    }
+-    if (!eligible) return;
+-    s.submittedField = queued;
+-    if (!s.seenFrame || frame != s.decoderFrame)
+-    {
+-        const bool regular = s.seenFrame && frame == s.decoderFrame + 1 &&
+-                             queued == s.newFrameField + 2;
+-        s.stable = regular ? std::min(s.stable + 1, 8u) : 0;
+-        if (!regular) s.heldValid = false;
+-        s.phase = static_cast<unsigned>((queued + 1) & 1);
+-        s.newFrameField = queued;
+-        s.decoderFrame = frame;
+-        s.seenFrame = true;
+-    }
+-}
+-
+-inline void write(unsigned addr, uint64_t value)
+-{
+-    auto& s = state;
+-    if (addr == 0x50) s.bitblt = value;
+-    if (addr == 0x51) s.trxpos = value;
+-    if (addr == 0x52) s.trxreg = value;
+-    if (addr != 0x53) return;
+-    const unsigned bp = (s.bitblt >> 32) & 0x3fff;
+-    const unsigned bw = (s.bitblt >> 48) & 0x3f;
+-    const unsigned psm = (s.bitblt >> 56) & 0x3f;
+-    const unsigned w = s.trxreg & 0xfff, h = (s.trxreg >> 32) & 0xfff;
+-    s.y = (s.trxpos >> 48) & 0x7ff;
+-    s.xbytes = 0;
+-    s.bytes = w * h * 4;
+-    s.slot = bp == 0 ? 0 : 1;
+-    s.movieRow = (s.active || (s.end && s.field < s.end)) &&
+-                 (value & 3) == 0 && (bp == 0 || bp == 0x800) && bw == 8 && psm == 0 &&
+-                 w >= 512 && w <= 640 && h == 1 && s.y >= 24 && s.y < 192 &&
+-                 ((s.trxpos >> 32) & 0x7ff) == 0;
+-    if (s.movieRow && s.y == 24)
+-    {
+-        s.rolling[s.slot] = 14695981039346656037ull;
+-        s.nextRow[s.slot] = 24;
+-    }
+-    if (s.movieRow && s.nextRow[s.slot] != s.y)
+-        s.movieRow = false;
+-}
+-
+-inline void gif(unsigned path, const uint8_t* data, unsigned bytes)
+-{
+-    auto& s = state;
+-    if (!cadenceOn() && (!s.end || s.field >= s.end)) return;
+-    auto& p = s.paths[path & 3];
+-    for (unsigned pos = 0; pos + 16 <= bytes; pos += 16)
+-    {
+-        uint64_t lo, hi;
+-        std::memcpy(&lo, data + pos, 8);
+-        std::memcpy(&hi, data + pos + 8, 8);
+-        if (!p.left)
+-        {
+-            p.flag = (lo >> 58) & 3;
+-            p.nreg = (lo >> 60) & 15;
+-            if (!p.nreg) p.nreg = 16;
+-            const unsigned n = lo & 0x7fff;
+-            p.left = p.flag == 0 ? n * p.nreg : p.flag == 1 ? (n * p.nreg + 1) / 2 : n;
+-            p.index = 0;
+-            p.regs = hi;
+-            continue;
+-        }
+-        if (p.flag == 0)
+-        {
+-            if (((p.regs >> (4 * (p.index % p.nreg))) & 15) == 14)
+-                write(hi & 0xff, lo);
+-            ++p.index;
+-        }
+-        else if (p.flag == 2)
+-        {
+-            if (s.movieRow)
+-            {
+-                // Two RGB samples per 32 pixels; ignore padding past width 512.
+-                if (s.xbytes < 2048 && (s.xbytes & 127) == 0)
+-                {
+-                    s.rolling[s.slot] = (s.rolling[s.slot] ^ (lo & 0xffffff)) * 1099511628211ull;
+-                    s.rolling[s.slot] = (s.rolling[s.slot] ^ (hi & 0xffffff)) * 1099511628211ull;
+-                }
+-                // The movie overrides TRXREG.RRW with 640 but sends only
+-                // the 512 source pixels before starting the next row.
+-                if (s.xbytes + 16 >= 2048)
+-                {
+-                    s.nextRow[s.slot] = s.y + 1;
+-                    if (s.y == 191)
+-                    {
+-                        s.hash[s.slot] = s.rolling[s.slot];
+-                        ++s.updates[s.slot];
+-                        s.completed[s.slot] = s.field + 1;
+-                        s.newestSlot = s.slot;
+-                        s.valid[s.slot] = s.active;
+-                        if (s.end && s.field + 1 >= s.first && s.field + 1 < s.end)
+-                            std::fprintf(stderr, "[cg-upload] field %llu bp %X hash %016llX update %llu\n",
+-                                         s.field + 1, s.slot ? 0x800 : 0, s.hash[s.slot], s.updates[s.slot]);
+-                    }
+-                    s.movieRow = false;
+-                }
+-            }
+-            s.xbytes += 16;
+-        }
+-        --p.left;
+-        // Bulk skip image/REGLIST payloads when no sampled row is in progress.
+-        // Keep tag continuation across calls even outside a story CG.
+-        if (p.flag != 0 && !s.movieRow)
+-        {
+-            const unsigned skip = std::min(p.left, (bytes - pos - 16) / 16);
+-            pos += skip * 16;
+-            p.left -= skip;
+-            if (p.flag == 2) s.xbytes += skip * 16;
+-        }
+-    }
+-}
+-
+-inline void select(uint64_t field, Pcsx2GsPrivRegs& priv)
+-{
+-    auto& s = state;
+-    const uint64_t fb = priv.regset1[9];
+-    if (!s.active || s.stable < 8 || field > s.submittedField + 4 ||
+-        (priv.regset1[0] & 3) != 2 || (fb != 0x1000 && fb != 0x1040) ||
+-        !s.valid[s.newestSlot] || field > s.completed[s.newestSlot] + 2)
+-    {
+-        s.heldValid = false;
+-        return;
+-    }
+-    if (!s.heldValid || (field & 1) == s.phase)
+-    {
+-        s.held = s.hash[s.newestSlot];
+-        s.heldValid = true;
+-    }
+-    const unsigned original = fb == 0x1040 ? 1 : 0;
+-    unsigned selected = original;
+-    if (!s.valid[selected] || s.hash[selected] != s.held)
+-    {
+-        selected ^= 1;
+-        if (!s.valid[selected] || s.hash[selected] != s.held)
+-        {
+-            ++s.unavailable;
+-            s.heldValid = false;
+-            return; // no invented frame or replay of an overwritten buffer
+-        }
+-    }
+-    if (selected != original)
+-    {
+-        priv.regset1[9] = (fb & ~0x1ffull) | (selected ? 0x40 : 0);
+-        ++s.corrections;
+-    }
+-}
+-
+-inline void vsync(uint64_t field, const Pcsx2GsPrivRegs& priv, double presentMs)
+-{
+-    auto& s = state;
+-    s.field = field;
+-    if (!s.end || field < s.first || field >= s.end) return;
+-    const auto now = std::chrono::steady_clock::now();
+-    static const auto start = now;
+-    const double ms = std::chrono::duration<double, std::milli>(now - start).count();
+-    std::fprintf(stderr, "[cg-gs] field %llu fb1 %llX fb2 %llX pmode %llX h0 %016llX h1 %016llX u0 %llu u1 %llu ms %.3f present %.3f active %u stable %u phase %u corrections %llu unavailable %llu\n",
+-                 field, priv.regset1[7], priv.regset1[9], priv.regset1[0],
+-                 s.hash[0], s.hash[1], s.updates[0], s.updates[1], ms, presentMs,
+-                 unsigned(s.active), s.stable, s.phase, s.corrections, s.unavailable);
+-}
+-}
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+index 9adba97..cdd1ace 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+@@ -43 +43 @@
+-#include "dod_cg_cadence.h"
++#include "ps2_gs_trace.h"
+@@ -374 +373,0 @@ namespace dodpcsx2
+-        cgtrace::select(g_presents.load(std::memory_order_relaxed) + 1u, priv);
+@@ -482 +481 @@ namespace dodpcsx2
+-        for (auto& path : cgtrace::state.paths) path = {};
++        cgtrace::reset();
+@@ -505,71 +503,0 @@ namespace dodpcsx2
+-    // [DoD] DoD renders its interlaced fields (SMODE2 FFMD, 224-line fields at 60 fps) with the 3D half a line apart on
+-    // alternate fields (XYOFFSET OFY x.5 on one buffer, x.0 on the other) for a TV that puts odd fields one scanline
+-    // lower; its 2D is drawn at the same place on both. PCSX2 shows the fields progressive (SYNCV left as the port sets
+-    // it), so the 3D shook by a line from field to field. This takes the half line out of the copy of the GIF stream
+-    // that PCSX2's GS gets (the game's memory and state are untouched): every field lines up. A tag walker per GIF
+-    // path, because tags continue across transfers. DOD_GS_FIELD_OFFSET=keep sends the stream as it is.
+-    struct GifFieldOffsetFix
+-    {
+-        uint32_t left = 0u;
+-        uint32_t nreg = 1u;
+-        uint32_t idx = 0u;
+-        uint32_t flg = 0u;
+-        uint8_t regs[16]{};
+-    };
+-    GifFieldOffsetFix g_fieldFix[4];
+-
+-    bool fieldOffsetFixOn()
+-    {
+-        static const bool on = []() { const char *v = std::getenv("DOD_GS_FIELD_OFFSET"); return !(v && std::strcmp(v, "keep") == 0); }();
+-        return on;
+-    }
+-
+-    void fixFieldOffsets(uint32_t path, uint8_t *data, uint32_t bytes)
+-    {
+-        GifFieldOffsetFix &st = g_fieldFix[path & 3u];
+-        for (uint32_t pos = 0u; pos + 16u <= bytes; pos += 16u)
+-        {
+-            uint64_t lo = 0u;
+-            uint64_t hi = 0u;
+-            std::memcpy(&lo, data + pos, 8u);
+-            std::memcpy(&hi, data + pos + 8u, 8u);
+-            if (st.left == 0u)
+-            {
+-                const uint32_t nloop = static_cast<uint32_t>(lo & 0x7FFFu);
+-                st.flg = static_cast<uint32_t>((lo >> 58u) & 3u);
+-                st.nreg = static_cast<uint32_t>((lo >> 60u) & 0xFu);
+-                if (st.nreg == 0u)
+-                    st.nreg = 16u;
+-                for (uint32_t i = 0u; i < 16u; ++i)
+-                    st.regs[i] = static_cast<uint8_t>((hi >> (4u * i)) & 0xFu);
+-                st.idx = 0u;
+-                st.left = st.flg == 0u ? nloop * st.nreg : st.flg == 1u ? (nloop * st.nreg + 1u) / 2u : nloop;
+-                continue;
+-            }
+-            if (st.flg == 0u)
+-            {
+-                if (st.regs[st.idx % st.nreg] == 0xEu) // A+D
+-                {
+-                    const uint32_t addr = static_cast<uint32_t>(hi & 0xFFu);
+-                    if ((addr == 0x18u || addr == 0x19u) && ((lo >> 32u) & 0xFu) == 8u) // XYOFFSET_1/2, OFY x.5
+-                    {
+-                        // DOD_GS_FIELD_LOG=<n>: the first n changes (path, offset, the qword before the change)
+-                        static const int logLeft = []() { const char *v = std::getenv("DOD_GS_FIELD_LOG"); return v ? std::atoi(v) : 0; }();
+-                        static int logged = 0;
+-                        if (logged < logLeft)
+-                        {
+-                            ++logged;
+-                            std::fprintf(stderr, "[gs-field] path %u pos %u nreg %u idx %u left %u lo %016llX hi %016llX\n", path, pos,
+-                                         st.nreg, st.idx, st.left, static_cast<unsigned long long>(lo),
+-                                         static_cast<unsigned long long>(hi));
+-                        }
+-                        lo &= ~(0xFull << 32u);
+-                        std::memcpy(data + pos, &lo, 8u);
+-                    }
+-                }
+-                ++st.idx;
+-            }
+-            --st.left;
+-        }
+-    }
+-
+@@ -577 +505 @@ namespace dodpcsx2
+-    // 8% of the EE thread's memcpy/memset time in room 0x386 (RUNTIME_PATCHES row 120). New qwords stay uninitialized.
++    // Avoids redundant zero-fill in the command transport. New qwords stay uninitialized.
+@@ -651,2 +578,0 @@ namespace dodpcsx2
+-            if (op == kGif && fieldOffsetFixOn())
+-                fixFieldOffsets(arg, reinterpret_cast<uint8_t *>(&m_open[at + 1u]), bytes);
+@@ -658 +584 @@ namespace dodpcsx2
+-                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= kMaxFieldsInFlight; });
++                m_waitTime.wait(m_done, lock, [this] { return m_vsyncsInFlight.load(std::memory_order_relaxed) <= m_maxFieldsInFlight; });
+@@ -678 +604,4 @@ namespace dodpcsx2
+-        static constexpr uint32_t kMaxFieldsInFlight = 2u;
++        const uint32_t m_maxFieldsInFlight = [] {
++            const auto value = ps2host::boundedUnsigned(std::getenv("PS2_GS_MAX_FIELDS"), 2u);
++            return value >= 1u ? value : 2u;
++        }();
+@@ -891 +820 @@ namespace dodpcsx2
+-        if (!active() || !cgtrace::cadenceOn() || !onGsThread()) return;
++        if (!active() || !cgtrace::traceOn() || !onGsThread()) return;
+@@ -976 +905 @@ namespace dodpcsx2
+-            capture(draws.c_str(), light && !ab ? 1u : 2u,
++            capture(draws.c_str(), ab ? 8u : (light ? 1u : 2u),
+@@ -987 +916 @@ namespace dodpcsx2
+-                         ab ? "A/B (1 snapshot; baseline frame and forced-off frame; baseline may already be profile-disabled)"
++                         ab ? "A/B (4 baseline + 4 forced-off draw frames; inspect populated fields and applied draws)"
+diff --git a/ps2xRuntime/src/lib/gs/dod_widescreen.h b/ps2xRuntime/src/lib/gs/dod_widescreen.h
+deleted file mode 100644
+index 28d1e8c..0000000
+--- a/ps2xRuntime/src/lib/gs/dod_widescreen.h
++++ /dev/null
+@@ -1,8 +0,0 @@
+-#pragma once
+-
+-// DoD: anamorphic 16:9 projection with separate 2D layout. Configuration is
+-// fixed before the game thread starts; this never changes the camera's position.
+-namespace dodwide
+-{
+-    inline bool enabled = false;
+-}
+diff --git a/ps2xRuntime/src/lib/gs/pcsx2gs_api.h b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
+index 9f73d9c..d689e1f 100644
+--- a/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
++++ b/ps2xRuntime/src/lib/gs/pcsx2gs_api.h
+@@ -170 +170,2 @@ typedef const Pcsx2GsApi *(*Pcsx2GsGetApiFn)(uint32_t version);
+-// A/B (frames = 2): baseline then forced-off frame. A disabled/unqualified profile stays off in both.
++// A/B: first half baseline, last half forced off (4..8 draw frames; host requests 8).
++// A disabled/unqualified profile stays off in both. Inspect nonempty frames and applied draws.
+diff --git a/ps2xRuntime/src/lib/gs/ps2_gs_trace.h b/ps2xRuntime/src/lib/gs/ps2_gs_trace.h
+new file mode 100644
+index 0000000..89b3318
+--- /dev/null
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_trace.h
+@@ -0,0 +1,68 @@
++#pragma once
++#include <algorithm>
++#include <cstdint>
++#include <charconv>
++#include <string_view>
++#include <cstdio>
++#include <cstdlib>
++
++// Optional caller-supplied frame metadata. This observer never selects a
++// framebuffer, changes privileged registers, or imposes a two-field cadence.
++namespace dodpcsx2::cgtrace
++{
++struct State
++{
++    uint64_t first = 0, end = 0, queued = 0, gifBytes = 0;
++    uint32_t frame = 0;
++    bool active = false;
++};
++inline State state = [] {
++    State s;
++    // Static initialization precedes the runtime's environment-alias installer.
++    // Read the public name directly, with the established PS2_ precedence.
++    const char* v = std::getenv("PS2_CG_GS_TRACE");
++    if (!v) v = std::getenv("DOD_CG_GS_TRACE");
++    if (v)
++    {
++        const std::string_view text(v);
++        const auto colon = text.find(':');
++        if (colon == std::string_view::npos) return s;
++        const auto first = text.substr(0, colon), span = text.substr(colon + 1);
++        uint64_t count = 0;
++        const auto a = std::from_chars(first.data(), first.data() + first.size(), s.first);
++        const auto b = std::from_chars(span.data(), span.data() + span.size(), count);
++        if (first.empty() || span.empty() || a.ec != std::errc{} || b.ec != std::errc{} ||
++            a.ptr != first.data() + first.size() || b.ptr != span.data() + span.size()) return State{};
++        count = std::min<uint64_t>(72000, count);
++        s.end = s.first > UINT64_MAX - count ? UINT64_MAX : s.first + count;
++    }
++    return s;
++}();
++inline bool traceOn() { return state.end > state.first; }
++inline void reset()
++{
++    state.queued = state.gifBytes = 0;
++    state.frame = 0;
++    state.active = false;
++}
++inline void submitted(uint32_t frame, uint64_t queued, bool active)
++{
++    state.frame = frame;
++    state.queued = queued;
++    state.active = active;
++}
++inline void gif(unsigned path, const uint8_t* data, unsigned bytes)
++{
++    if (traceOn() && path >= 1 && path <= 3 && data) state.gifBytes += bytes;
++}
++template<class Registers>
++void vsync(uint64_t field, const Registers& priv, double presentMs)
++{
++    if (!traceOn() || field < state.first || field >= state.end) return;
++    std::fprintf(stderr, "[gs-frame] field=%llu caller_frame=%u active=%d queued=%llu gif_bytes=%llu present_ms=%.3f dispfb=%llx/%llx\n",
++        static_cast<unsigned long long>(field), state.frame, state.active,
++        static_cast<unsigned long long>(state.queued), static_cast<unsigned long long>(state.gifBytes), presentMs,
++        static_cast<unsigned long long>(priv.regset1[7]), static_cast<unsigned long long>(priv.regset1[9]));
++    state.gifBytes = 0;
++}
++}
+diff --git a/ps2xRuntime/src/lib/ps2_cheats.h b/ps2xRuntime/src/lib/ps2_cheats.h
+index 50d5658..50d63da 100644
+--- a/ps2xRuntime/src/lib/ps2_cheats.h
++++ b/ps2xRuntime/src/lib/ps2_cheats.h
+@@ -12 +12 @@
+-// Window thread, once per host frame after the pad poll: F2 opens / closes the menu, its input goes to the GS while it
++// Window thread, once per host frame before publishing pad input: F2 opens / closes the menu, its input goes to the GS while it
+diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
+index d17bf4c..f30d20e 100644
+--- a/ps2xRuntime/src/lib/ps2_pad.cpp
++++ b/ps2xRuntime/src/lib/ps2_pad.cpp
+@@ -5,0 +6,3 @@
++#include "ps2_input_readers.h"
++#include "ps2_pad_diagnostics.h"
++#include <string_view>
+@@ -6,0 +10 @@
++#include <algorithm>
+@@ -20,2 +24 @@ extern "C" __declspec(dllimport) int __stdcall PostMessageW(void *window, unsign
+-// [DoD] Host time (GetTime) when the game started a new game, set by the runner's 0x360810 hook in automated tests;
+-// -1 before (DOD_TEST_AUTOSTART, below).
++// Optional runner-owned test epoch and RAM. No game address is selected here.
+@@ -23 +26,2 @@ std::atomic<double> g_dodTestNewGameAt{-1.0};
+-std::atomic<uint8_t *> g_dodTestRdram{nullptr}; // [DoD] set by the runner: DOD_PAD_SCRIPT_FRAMES reads the game's counter
++std::atomic<uint8_t *> g_dodTestRdram{nullptr};
++std::atomic<uint64_t> g_padSessionGeneration{0};
+@@ -46,0 +51,5 @@ namespace
++            static constexpr struct { const char *name; uint16_t bit; } kButtons[] = {
++                {"UP", PAD_UP}, {"DOWN", PAD_DOWN}, {"LEFT", PAD_LEFT}, {"RIGHT", PAD_RIGHT}, {"START", PAD_START},
++                {"SELECT", PAD_SELECT}, {"CROSS", PAD_CROSS}, {"CIRCLE", PAD_CIRCLE}, {"SQUARE", PAD_SQUARE},
++                {"TRIANGLE", PAD_TRIANGLE}, {"L1", PAD_L1}, {"R1", PAD_R1}, {"L2", PAD_L2}, {"R2", PAD_R2},
++                {"L3", PAD_L3}, {"R3", PAD_R3}};
+@@ -60,0 +70,10 @@ namespace
++    ps2input::PressReaders g_hostReaders;
++    void releaseCapturedInput() // caller holds g_hostPadMutex
++    {
++        auto* data = g_hostPadSnapshot.data;
++        data[2] = data[3] = 0xFF;
++        std::fill(data + 4, data + 8, kPadStickCenter);
++        std::fill(data + 8, data + 32, 0);
++        g_pendingHostPresses = g_previousHostHeld = 0;
++        g_hostReaders.clearPending();
++    }
+@@ -181,5 +199,0 @@ void dodPollHostPadInput()
+-            static constexpr struct { const char *name; uint16_t bit; } kButtons[] = {
+-                {"UP", PAD_UP}, {"DOWN", PAD_DOWN}, {"LEFT", PAD_LEFT}, {"RIGHT", PAD_RIGHT}, {"START", PAD_START},
+-                {"SELECT", PAD_SELECT}, {"CROSS", PAD_CROSS}, {"CIRCLE", PAD_CIRCLE}, {"SQUARE", PAD_SQUARE},
+-                {"TRIANGLE", PAD_TRIANGLE}, {"L1", PAD_L1}, {"R1", PAD_R1}, {"L2", PAD_L2}, {"R2", PAD_R2},
+-                {"L3", PAD_L3}, {"R3", PAD_R3}};
+@@ -220,4 +234,28 @@ void dodPollHostPadInput()
+-        // [DoD] DOD_TEST_AUTOSTART=1 (automated tests): from 40 s START and CIRCLE are pressed in turn every 1.5 s until
+-        // the game starts a new game (the runner sets g_dodTestNewGameAt from its 0x360810 hook), and the script's
+-        // times count from that moment - boot time varies from run to run.
+-        static const bool autostart = std::getenv("DOD_TEST_AUTOSTART") != nullptr;
++        // Boot navigation is port-owned; setting an old auto-start variable alone
++        // never guesses START/CIRCLE or a reference game's boot delay.
++        static const std::vector<uint16_t> bootButtons = [] {
++            std::vector<uint16_t> result;
++            const char* env = std::getenv("PS2_PAD_BOOT_SEQUENCE");
++            std::string_view rest = env ? env : "";
++            while(!rest.empty()) {
++                const auto comma=rest.find(','); const auto token=rest.substr(0,comma);
++                uint16_t bit=0; for(const auto& b:kButtons) if(token==b.name) bit=b.bit;
++                if(!bit || result.size()>=16) return std::vector<uint16_t>{};
++                result.push_back(bit);
++                if(comma==std::string_view::npos) break;
++                rest.remove_prefix(comma+1);
++                if(rest.empty()) return std::vector<uint16_t>{};
++            }
++            return result;
++        }();
++        const bool autostart = !bootButtons.empty();
++        static uint64_t generation = UINT64_MAX;
++        static int64_t baseFrame = -1;
++        static double previousEpoch = -1;
++        static bool closing = false;
++        const auto currentGeneration = g_padSessionGeneration.load(std::memory_order_acquire);
++        const double epoch = g_dodTestNewGameAt.load(std::memory_order_acquire);
++        if(generation != currentGeneration || previousEpoch != epoch) {
++            generation=currentGeneration;previousEpoch=epoch;baseFrame=-1;closing=false;
++            for(auto& press:s_script) press.logged=false;
++        }
+@@ -231 +268,0 @@ void dodPollHostPadInput()
+-            static bool closing = false;
+@@ -248,2 +285,5 @@ void dodPollHostPadInput()
+-            // DOD_TEST_AUTOSTART=<s> (more than 1): the presses start that many seconds after the boot (1 = 40 s).
+-            static const double autostartAt = []() { const char *v = std::getenv("DOD_TEST_AUTOSTART"); const double s = v ? std::atof(v) : 0.0; return s > 1.0 ? s : 40.0; }();
++            static const double autostartAt = []() {
++                const char* v=std::getenv("DOD_TEST_AUTOSTART"); char* tail=nullptr;
++                const double seconds=v ? std::strtod(v,&tail) : 0;
++                return v && tail!=v && !*tail && std::isfinite(seconds) && seconds>=0 ? seconds : 0.0;
++            }();
+@@ -255,5 +295,4 @@ void dodPollHostPadInput()
+-                    const double phase = std::fmod(now - autostartAt, 3.0);
+-                    if (phase < 0.15)
+-                        clearBit(PAD_START);
+-                    else if (phase >= 1.5 && phase < 1.65)
+-                        clearBit(PAD_CIRCLE);
++                    const double elapsed=now-autostartAt;
++                    const double step=std::floor(elapsed/1.5);
++                    if(std::fmod(elapsed,1.5)<0.15)
++                        clearBit(bootButtons[static_cast<size_t>(std::fmod(step,static_cast<double>(bootButtons.size())))]);
+@@ -266,8 +305,7 @@ void dodPollHostPadInput()
+-                // [DoD] DOD_PAD_SCRIPT_FRAMES=<address> (RUNTIME_PATCHES row 124): the script's seconds are game frames
+-                // from the new game on (the u32 at that address, DoD's frame counter 0x817730; 60 a second), not host
+-                // time. The game logic advances once per game frame and stands still while a load holds the frame, so
+-                // the same script reaches the same game state here and in PCSX2 (tools/scripts/diag/pcsx2_compare.py
+-                // --clock frames), although loads take different times on the two.
+-                static const uint32_t frameAddr = []() {
+-                    const char *v = std::getenv("DOD_PAD_SCRIPT_FRAMES");
+-                    return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 0)) : 0u;
++                // An optional frame clock needs both an explicit RAM word and
++                // its measured frequency. No game's counter or 60 Hz is assumed.
++                static const uint32_t frameAddr = ps2input::diagnosticWordAddress(std::getenv("DOD_PAD_SCRIPT_FRAMES"));
++                static const double frameHz = []() {
++                    const char* v=std::getenv("PS2_PAD_SCRIPT_HZ");char* tail=nullptr;
++                    const double hz=v?std::strtod(v,&tail):0;
++                    return v && tail!=v && !*tail && std::isfinite(hz) && hz>0 && hz<=1000 ? hz : 0.0;
+@@ -276 +314 @@ void dodPollHostPadInput()
+-                if (frameAddr != 0u && rdram != nullptr && frameAddr + 4u <= 0x2000000u) // within the 32 MB of RAM
++                if (frameAddr != 0u && rdram != nullptr && frameHz > 0) // within the 32 MB of RAM
+@@ -278 +315,0 @@ void dodPollHostPadInput()
+-                    static int64_t baseFrame = -1;
+@@ -286 +323 @@ void dodPollHostPadInput()
+-                    now = static_cast<double>(static_cast<uint32_t>(frame - static_cast<uint32_t>(baseFrame))) / 60.0;
++                    now = static_cast<double>(static_cast<uint32_t>(frame - static_cast<uint32_t>(baseFrame))) / frameHz;
+@@ -335 +372,2 @@ void dodPollHostPadInput()
+-    if (ps2CheatsMenuOpen())
++    const bool captured = ps2CheatsMenuOpen();
++    if (captured)
+@@ -339,0 +378 @@ void dodPollHostPadInput()
++        std::fill(data + 8, data + 32, 0);
+@@ -347,0 +387 @@ void dodPollHostPadInput()
++    if (captured) releaseCapturedInput();
+@@ -352,0 +393 @@ void dodPollHostPadInput()
++        g_hostReaders.clearPending();
+@@ -357,0 +399 @@ void dodPollHostPadInput()
++    g_hostReaders.publish(static_cast<uint16_t>(queuedPresses | (held & ~g_previousHostHeld)));
+@@ -369,0 +412 @@ static bool readHostPadSnapshot(uint8_t *data, size_t size, bool consumePresses)
++    if (ps2CheatsMenuOpen()) releaseCapturedInput();
+@@ -421,0 +465,40 @@ bool dodReadHostPadInputForPoll(uint8_t *data, size_t size)
++
++ps2input::Reader ps2input::registerReader()
++{
++    std::lock_guard lock(g_hostPadMutex);
++    return g_hostReaders.add();
++}
++bool ps2input::unregisterReader(Reader token)
++{
++    std::lock_guard lock(g_hostPadMutex);
++    return g_hostReaders.remove(token);
++}
++bool ps2input::readLatest(Reader token, uint8_t* data, size_t size)
++{
++    if (!data || size < sizeof(g_hostPadSnapshot.data)) return false;
++    std::lock_guard lock(g_hostPadMutex);
++    uint16_t pending = 0;
++    if (!g_hostReaders.consume(token, pending)) return false;
++    std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));
++    if (ps2CheatsMenuOpen())
++    {
++        releaseCapturedInput();
++        std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));
++        return true;
++    }
++    // Use physical held state, not the legacy SIO2 reader's publication latch.
++    const uint16_t buttons = static_cast<uint16_t>(~(g_previousHostHeld | pending));
++    data[2] = static_cast<uint8_t>(buttons);
++    data[3] = static_cast<uint8_t>(buttons >> 8);
++    return true;
++}
++void ps2input::resetSession()
++{
++    std::lock_guard lock(g_hostPadMutex);
++    g_hostReaders.reset();
++    g_hostPadSnapshot = {};
++    g_pendingHostPresses = g_previousHostHeld = 0;
++    g_padSessionGeneration.fetch_add(1, std::memory_order_release);
++    g_dodTestNewGameAt.store(-1.0);
++    g_dodTestRdram.store(nullptr);
++}
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index fed7255..3a00e88 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -47 +47,2 @@ namespace ps2_stubs
+-// [DoD] Host input is sampled only by the window thread, after raylib polls events.
++#include "ps2_input_readers.h"
++// Host input is sampled only by the window thread, after raylib polls events.
+@@ -986,0 +988,2 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
++    ps2input::resetSession();
++    m_eeScheduler->resetPresentationProfile();
+@@ -2953,0 +2957,2 @@ void PS2Runtime::run()
++        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
++        dodPollHostPadInput(); // publish capture/menu state and fresh input before the idle wait
+@@ -2956,2 +2960,0 @@ void PS2Runtime::run()
+-        dodPollHostPadInput();
+-        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
+diff --git a/ps2xRuntime/src/lib/vu/dod_kzvu.cpp b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
+index 18ba158..4667d2f 100644
+--- a/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
++++ b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
+@@ -8 +8 @@
+-// Settings follow PCSX2's defaults for Shin Onimusha (its GameIndex entry has no VU options): clamp mode 1 (normal),
++// Settings use the normal shared baseline: clamp mode 1 (normal),

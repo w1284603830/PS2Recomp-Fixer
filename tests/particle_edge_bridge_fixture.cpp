@@ -2,6 +2,7 @@
 // services. No window, GPU, game data or commercial assets are loaded.
 #include "particle_edge_renderer_fixture.h"
 #include "pcsx2gs_api.h"
+#include "GS/HostTuning.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -23,12 +24,13 @@ struct Pcsx2Config
     AspectRatioType CurrentAspectRatio{};
 };
 Pcsx2Config EmuConfig;
-namespace pcsx2gs {void SetRenderWindow(WindowInfo){} void SetFolders(const char*,const char*){}}
+namespace pcsx2gs {std::string folder,title;void SetTextureFolder(const std::string& v){folder=v;} void SetGameTitle(const std::string& v){title=v;} void SetRenderWindow(WindowInfo){} void SetFolders(const char*,const char*){}}
 namespace DoDHdStatic {void Configure(){} void Clear(){}}
 namespace DoDHdCg {void Clear(){}}
 struct FakePointer {void* release(){return nullptr;}};
 FakePointer g_gs_renderer,g_texture_cache,g_gs_device;
-bool g_open=false,g_dodWidescreen=false,backendSucceeds=true;
+bool g_open=false,g_dodWidescreen=false,backendSucceeds=true,g_dodExclusiveFullscreen=false,g_dodDumpPng=false;
+long long g_dumpField=-1,g_fields=0;int g_dumpFrames=1;unsigned long long g_dodGsField=0;
 WindowInfo g_window;
 unsigned char g_regs[0x2000]{};
 std::mutex g_dodDumpMutex;
@@ -69,3 +71,21 @@ void QueueOldCapture()
     s_dod_draw_frames={1};s_dod_sprites_before={1};s_dod_draw_summary="old";
 }
 bool HasPendingCapture(){return g_dodDumpPending||g_dodDumpFlags||!g_dodDumpDir.empty()||g_dodDumpFrames!=1;}
+
+void DirtyPortState()
+{
+    GSHostTuning::portOptions.feedbackCopyGuard=true;
+    GSHostTuning::portOptions.clampFootprint=true;
+    GSHostTuning::portOptions.hdMinimumScale=7;
+    GSHostTuning::portOptions.staticPageFormat="old";
+    pcsx2gs::folder="old pack";pcsx2gs::title="old title";
+    g_dodWidescreen=g_dodExclusiveFullscreen=g_dodDumpPng=true;
+    g_dumpField=99;g_fields=40;g_dumpFrames=8;g_dodGsField=42;
+}
+bool PortStateClean()
+{
+    return !GSHostTuning::portOptions.feedbackCopyGuard && !GSHostTuning::portOptions.clampFootprint &&
+        GSHostTuning::portOptions.hdMinimumScale==1 && GSHostTuning::portOptions.staticPageFormat.empty() &&
+        pcsx2gs::folder.empty() && pcsx2gs::title.empty() && !g_dodWidescreen && !g_dodExclusiveFullscreen &&
+        !g_dodDumpPng && g_dumpField==-1 && !g_fields && g_dumpFrames==1 && !g_dodGsField;
+}

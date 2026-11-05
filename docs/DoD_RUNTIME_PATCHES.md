@@ -1,5 +1,9 @@
 # 對 PS2Recomp（eb8688b）的修改
 
+> 歷史遊戲專項紀錄：下列路徑、配置及驗證只描述當時版本。近期共用基底已移除自動套用的遊戲規則；
+> 固定範圍工具現位於 `examples/dod_runner/tools/`，舊 GS／CG 片段位於其 `gs_legacy/` 同層目錄。
+> 實際遷移與測試依 [通用化指南](NEUTRAL_BASE_MIGRATION.md)，不要直接套用歷史建置／部署命令。
+
 所有修改都在 `third_party/src/PS2Recomp/` 工作樹，程式碼註解以 `[DoD]` 標記。原版可由 `third_party/_downloads/PS2Recomp-eb8688b.zip` 還原比對。
 原則：照真機行為修正通用問題，不跳過流程、不假裝成功。
 

@@ -122,8 +122,8 @@ void kzvuGetACC(uint32_t[4]);  void kzvuSetACC(const uint32_t[4]);
 
 `KzvuConfig` has these settings:
 - `useJit`: microVU (default) or the interpreter.
-- `clampMode` (0-3): PCSX2's `vuClampMode`. Killzone's GameIndex entry uses 0, which is the default.
-- `iBitHack`: default on, as in Killzone's GameIndex entry.
+- `clampMode` (0-3): PCSX2's `vuClampMode`. The shared default is 1 (normal). Killzone examples explicitly select 0.
+- `iBitHack`: default off; enable only for a qualified game profile.
 - `flagHack`: PCSX2's "mVU flag hack", default on as in PCSX2.
 - `xgkickHack`: default off.
 - `xgkick` + `xgkickUser`: the XGKICK callback.
@@ -277,7 +277,8 @@ The IbitHack (on for Killzone) changes what counts as a change:
 ## Host integration sketch (not applied; ps2_runtime.cpp belongs to the main build)
 
 ```cpp
-KzvuConfig vc;                                   // useJit, clampMode 0, iBitHack on: Killzone GameIndex
+KzvuConfig vc;                                   // neutral defaults
+vc.clampMode = 0; vc.iBitHack = true;             // explicit Killzone reference profile
 vc.xgkick = [](void* u, const uint8_t* p, uint32_t n, uint32_t) {
     static_cast<PS2Memory*>(u)->submitGifPacket(GifPathId::Path1, p, n);
 };

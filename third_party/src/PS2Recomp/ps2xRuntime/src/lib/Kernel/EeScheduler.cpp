@@ -530,6 +530,7 @@ EeScheduler::~EeScheduler()
 
 void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
 {
+    m_presentation.restartFieldState();
     if (auto *perf = dodWaitPerf(this)) { *perf = {}; perf->owner = this; }
     m_executorThread = std::this_thread::get_id();
     m_rdram = rdram;
@@ -2757,8 +2758,11 @@ void EeScheduler::processEvent(const EeEvent &event)
         {
             m_runtime.memory().gs().csr.fetch_and(~0x2000ull, std::memory_order_acq_rel);
         }
-        dodpcsx2::vsync(m_runtime.memory().gs()); // [DoD] PCSX2's GS composes and presents the field
-        forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
+        if (m_presentation.atStart())
+        {
+            dodpcsx2::vsync(m_runtime.memory().gs());
+            forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
+        }
         dodCallHistTick(m_vsyncTick);
         {
             // PS2_RAM_DUMP=<dir>: every 300 fields, EE RAM to <dir>\tick_<n>.bin, to find the game's own counters
@@ -3002,6 +3006,11 @@ void EeScheduler::processEvent(const EeEvent &event)
         completeExternalWait(event.id, event.value, KE_OK);
         break;
     case EeEventType::VBlankEnd:
+        if (m_presentation.atEnd())
+        {
+            dodpcsx2::vsync(m_runtime.memory().gs());
+            forgiveGsWait(m_eventMutex, m_deadlines, [this]() { updateNextDeadline(); }, true);
+        }
         dispatchIrq(false, 3u);
         break;
     case EeEventType::Dmac:

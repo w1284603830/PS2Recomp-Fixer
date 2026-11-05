@@ -28,7 +28,7 @@ dodhost::Pacer::~Pacer()
 }
 void dodhost::Pacer::wait()
 {
-    if (!enabled)
+    if (!enabled || asynchronousGs)
     {
         if (!asynchronousGs) return;
         // The asynchronous GS already paces presentation. Block the window/input

@@ -1,5 +1,9 @@
 # 參考專案問題／修正對照表
 
+> 歷史遊戲專項紀錄：下列路徑、配置及驗證只描述當時版本。近期共用基底已移除自動套用的遊戲規則；
+> 固定範圍工具現位於 `examples/dod_runner/tools/`，舊 GS／CG 片段位於其 `gs_legacy/` 同層目錄。
+> 實際遷移與測試依 [通用化指南](NEUTRAL_BASE_MIGRATION.md)，不要直接套用歷史建置／部署命令。
+
 逐條核對參考專案（GitHub issue/PR、留言與各專案的進度文件）記錄的問題與解法，判斷新鬼武者是否受影響，並套用適用的修正。
 原始資料：`work/diag/gh/full/`（`tools/scripts/diag/fetch_gh_issues.py` 抓取，`gh_digest.py` 摘要，`fetch_pr_diffs.py` 取 PR diff）。
 

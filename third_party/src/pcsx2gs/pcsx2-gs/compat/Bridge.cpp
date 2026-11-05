@@ -5,7 +5,7 @@
 #include "Config.h"
 #include "GS/GS.h"
 #include "GS/ParticleEdges.h"
-#include "GS/DoDWidescreen.h"
+#include "GS/HostTuning.h"
 #include "GS/DoDHdCg.h"
 #include "GS/DoDHdStatic.h"
 #include "GS/GSPerfMon.h"
@@ -63,6 +63,18 @@ namespace
         g_dodDumpFrames = 1;
     }
 
+    void ResetPortOptions()
+    {
+        GSHostTuning::ResetPortOptions();
+        pcsx2gs::SetTextureFolder("");
+        pcsx2gs::SetGameTitle("");
+        g_dodWidescreen = false;
+        g_dodExclusiveFullscreen = false;
+        g_dodDumpPng = false;
+        g_dumpField = -1; g_fields = 0; g_dumpFrames = 1;
+        g_dodGsField = 0;
+    }
+
     // PCSX2 applies per-game fixes (blending level, half pixel offset, native scaling, bilinear upscale...) from its
     // game database, GameIndex.yaml. The GS has no serial to look up, so a port passes its game's entry through the
     // options string ("blending=2;half_pixel_offset=5;native_scaling=2;bilinear_upscale=2", see ApplyOptions); with
@@ -74,8 +86,7 @@ namespace
     // Pcsx2GsOpenParams::options: "key=value;key=value".
     void ApplyOptions(Pcsx2Config::GSOptions &options, const char *text)
     {
-        if (!text)
-            return;
+        if (!text) text = "";
         // [DoD] HD pack loading (GSTextureReplacements::DodConfigure): texture_threads (loader threads, 1-8),
         // texture_cache_mb (cap on the loaded CPU copies, 0 = none), texture_upload_mb (GPU uploads per vsync,
         // 0 = no limit), texture_keep_mb (replacement VRAM the hash cache keeps for a minute instead of 30 frames),
@@ -98,6 +109,8 @@ namespace
             const std::string_view key = item.substr(0, eq);
             const std::string text = std::string(item.substr(eq + 1));
             const int value = std::atoi(text.c_str());
+            if (GSHostTuning::ConfigurePortOption(key, text)) continue;
+            if (key == "game_title") { pcsx2gs::SetGameTitle(text); continue; }
             if (key == "texture_dir")
             {
                 // Replacement textures (PNG/DDS in <dir>/replacements), loaded as the game uses them.
@@ -213,6 +226,8 @@ namespace
                 options.SaveRT = value != 0;
             else if (key == "dump_tex")
                 options.SaveTexture = value != 0;
+            else if (key == "dump_alpha")
+                options.SaveAlpha = value != 0;
             else if (key == "dump_depth")
                 options.SaveDepth = value != 0;
             else if (key == "dump_output")
@@ -227,10 +242,12 @@ namespace
         if (g_open)
             return 0;
         ResetParticleSession();
+        ResetPortOptions();
         if (!params || !params->hwnd)
             return 0;
         ScopedGuard rollbackParticleState([] {
             ResetParticleSession();
+            ResetPortOptions();
         });
         ParticleEdges::BeginSession(params->options, std::getenv("PS2_PARTICLE_EDGES"), std::getenv("DOD_PARTICLE_EDGES"));
         const auto* particleProfile = ParticleEdges::session.profile;
@@ -295,12 +312,12 @@ namespace
     void Close()
     {
         ResetParticleSession();
-        if (!g_open)
-            return;
+        if (!g_open) { ResetPortOptions(); return; }
         DoDHdCg::Clear();
         DoDHdStatic::Clear();
         GSclose();
         g_open = false;
+        ResetPortOptions();
     }
 
     void Gif(const uint8_t *data, uint32_t qwc)
@@ -397,7 +414,7 @@ namespace
                 dodDrawLog = g_dodDumpDir + "/dod_draws.tsv";
                 dodDrawLogLast = GSConfig.SaveFrameStart + g_dodDumpFrames;
                 if ((g_dodDumpFlags & PCSX2GS_DOD_CAPTURE_AB) != 0 && g_dodDumpFrames >= 2)
-                    dodDrawLogAbOff = dodDrawLogLast; // the last frame: the one before it has the fix
+                    dodDrawLogAbOff = GSConfig.SaveFrameStart + g_dodDumpFrames / 2 + 1; // last half: forced off
                 std::fprintf(stderr, "[pcsx2-gs] line capture (%s): PCSX2 frames %d..%d to %s\n", light ? "light" : "full",
                              GSConfig.SaveFrameStart, GSConfig.SaveFrameStart + g_dodDumpFrames, g_dodDumpDir.c_str());
             }
@@ -426,7 +443,6 @@ namespace
     {
         DoDHdCg::Clear();
         DoDHdStatic::Clear();
-        DoDWide::reset();
         if (g_open)
         {
             GSreset(false);
@@ -591,7 +607,7 @@ extern "C" __declspec(dllexport) void pcsx2gs_dod_capture(const char *dir, uint3
         return;
     std::lock_guard<std::mutex> lock(g_dodDumpMutex);
     g_dodDumpDir = dir;
-    g_dodDumpFrames = static_cast<int>(std::clamp<uint32_t>(frames, 1u, 8u));
+    g_dodDumpFrames = static_cast<int>(std::clamp<uint32_t>(frames, (flags & PCSX2GS_DOD_CAPTURE_AB) ? 4u : 1u, 8u));
     g_dodDumpFlags = flags;
     g_dodDumpPending = true;
 }

@@ -83,11 +83,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 
 1. 從光碟映像抽出開機 ELF 與 IRX：`python tools/iso_extract.py <iso> <輸出資料夾> <最大位元組>`
 2. 用 Ghidra 匯出函式表：`analyzeHeadless … -postScript ExportPS2Functions.java <toml> <csv>`（腳本在 `ps2xRecomp/tools/ghidra`）
-3. 修正函式表，依序執行：
-   1. `scan_code_pointers.py`：補只經函式指標呼叫的函式；
-   2. `fix_function_map.py`：去掉資料區的假標籤、處理不連續函式；
-   3. `scan_jump_tables.py`：補 switch 跳轉目標；
-   4. 執行時出現 `[guest-branch:missing-target]`，再用 `find_missing_function_starts.py` 補。
+3. 依該遊戲 ELF 的載入區段、程式／資料範圍、間接呼叫與 switch 目標核對函式表。
+   `scan_code_pointers.py`、`fix_function_map.py`、`scan_jump_tables.py`、`find_missing_function_starts.py`
+   含固定參考遊戲範圍，已移至 `examples/dod_runner/tools/`；其他版本需先改用自己的範圍與驗證，見[工具邊界](tools/README.md)。
 4. 辨識 SDK 函式：`ps2_analyzer <elf> analyzer.toml`，再用 `merge_stubs.py` 合併。
 5. 重編譯：`ps2_recomp <設定.toml>`，把輸出放進 `ps2xRuntime/src/runner/` 與 `ps2xRuntime/include/`。`sync_generated*.py` 只複製有變的檔，避免全部重編。
 6. 寫該遊戲的 `ps2xRuntime/src/runner/main.cpp`：複製 `examples/generic_runner/main.cpp`（設定來自 `game.ini`，見 [docs/GAME_PORTING.md](docs/GAME_PORTING.md)），或從上游 `src/main.cpp`、`examples/dod_runner/main.cpp` 開始。要用這個基底的新增功能：
@@ -120,6 +118,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 UI 預解碼這段差異最初是為**高清紋理移植**而做的優化；基底只提供共用載入機制，各遊戲自行提供素材、圖集清單與記憶體預算。
 
 粒子邊緣修正預設關閉，需明確匹配遊戲、版本與 profile，不能僅因 HPO 相同而啟用。《夢之曙光》參數已隔離為選用參考配置，《鬼武者3》必須提供自己的配置與驗證。設定及驗證限制見 [PARTICLE_EDGE_PROFILES.md](docs/PARTICLE_EDGE_PROFILES.md)。
+
+本次通用化已拆出固定遊戲標題、紋理排除、畫面比例、半行 GIF 與 CG 緩衝區判斷；遊戲專用片段與固定地址工具移至參考範例。
+新增獨立輸入讀取、可選 VBlank 提交時點、明確高清素材格式及多幀 Alpha／A-B 診斷。配置、遷移與檢測步驟見
+[通用化指南](docs/NEUTRAL_BASE_MIGRATION.md)，具體修改與分項驗證見[本次審查紀錄](docs/NEUTRAL_BASE_REVIEW_2026-11-05.md)。
+UI 預解碼仍標註為最初針對高清紋理移植所作的優化，各遊戲需提供自己的素材與驗證。
 
 ### 完整回歸，以及如何依結果修正
 

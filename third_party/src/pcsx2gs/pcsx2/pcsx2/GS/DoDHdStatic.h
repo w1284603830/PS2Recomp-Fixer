@@ -1,6 +1,7 @@
 #pragma once
 // PC-only static page replacements. GS-thread only; RGB proof before every modified dirty upload.
 #include "GS/GSLocalMemory.h"
+#include "GS/HostTuning.h"
 #include "GS/Renderers/Common/GSDevice.h"
 #include "GS/Renderers/HW/GSTextureReplacements.h"
 #include "common/FileSystem.h"
@@ -56,11 +57,13 @@ inline bool LoadPng(const std::string& path, GSTextureReplacements::ReplacementT
 }
 inline void Configure() {
     Clear();
+    // Fixed dimensions below belong to this explicitly selected asset format.
+    if(GSHostTuning::portOptions.staticPageFormat != "page-rgba-512x448-x3-v1") return;
     const char* cap=std::getenv("DOD_UI_CAPTURE_DIR");
     if(cap && *cap && FileSystem::EnsureDirectoryExists(cap,true)) capture_dir=cap;
     const char* env=std::getenv("DOD_UI_HD_DIR");
-    const std::string program=FileSystem::GetProgramPath();
-    const std::string root=(env && *env) ? std::string(env) : Path::Combine(Path::GetDirectory(program),"ui_hd");
+    const std::string root=(env && *env) ? std::string(env) : GSHostTuning::portOptions.staticPageDirectory;
+    if(root.empty()) { enabled=!capture_dir.empty(); return; }
     auto fp=FileSystem::OpenManagedCFile(Path::Combine(root,"pages.tsv").c_str(),"rb");
     if(fp) {
         char line[2048];

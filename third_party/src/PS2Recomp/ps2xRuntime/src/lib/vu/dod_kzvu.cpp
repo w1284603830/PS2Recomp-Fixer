@@ -5,7 +5,7 @@
 //
 // Wiring (no header that generated code includes is touched): VU1 code/data memory become kzvu's buffers, MSCAL/MSCNT
 // from VIF1 run kzvu to the program's E bit, XGKICK packets go to the GIF as PATH1. All of it on the game thread.
-// Settings follow PCSX2's defaults for Shin Onimusha (its GameIndex entry has no VU options): clamp mode 1 (normal),
+// Settings use the normal shared baseline: clamp mode 1 (normal),
 // IbitHack off, mVU flag hack on.
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"

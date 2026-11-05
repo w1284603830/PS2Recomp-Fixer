@@ -4,6 +4,11 @@ This repository is the reusable part of a PS2 static-recompilation port. It cont
 rendering workarounds need an explicit profile qualified for each game/revision. A reference runner is not a universal
 set of defaults. See the [reusable-base contract](REUSABLE_BASE.md).
 
+Recent host/rendering boundary changes and migration instructions are in
+[NEUTRAL_BASE_MIGRATION.md](NEUTRAL_BASE_MIGRATION.md): independent input readers, opt-in presentation phase,
+pack-owned exclusions, explicit HD asset formats and multi-field alpha/A-B diagnosis. Follow that guide before
+reusing a reference runner's settings.
+
 ## 1. Pieces
 
 | You provide | Where |

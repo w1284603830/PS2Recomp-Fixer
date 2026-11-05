@@ -6,6 +6,8 @@
 #include <cstring>
 #include <limits>
 
+void DirtyPortState();bool PortStateClean();
+
 static const char* referenceOptions =
     "game_id=onimusha-dawn-of-dreams;game_revision=SLPM_662.75;particle_edges_profile=dod-slpm66275-native-grid-v1";
 
@@ -166,6 +168,22 @@ int main(int argc,char** argv)
             assert(BridgeOpen(nullptr));
             unchanged(renderer,&rt,&texture,"profile-off");BridgeClose();
         }
+    }
+    else if(mode=="port-lifecycle")
+    {
+        DirtyPortState();assert(!BridgeNullOpen());assert(PortStateClean());
+        DirtyPortState();assert(!BridgeOpen(nullptr,false));assert(PortStateClean());
+        DirtyPortState();assert(BridgeOpen(nullptr));assert(PortStateClean());
+        DirtyPortState();assert(!BridgeOpen(nullptr));assert(!PortStateClean());
+        BridgeClose();assert(PortStateClean());DirtyPortState();BridgeClose();assert(PortStateClean());
+    }
+    else if(mode=="capture-window")
+    {
+        ParticleEdges::BeginSession(referenceOptions,nullptr,nullptr);
+        s_dod_ab_off_frame=11;s_dod_draw_last_frame=14;
+        for(int f=7;f<=16;++f){g_perfmon.frame=f;prepare(renderer);
+            reasonIs(renderer.Draw(&rt,&texture),(f>=11&&f<=14)?"ab-off":"applied");}
+        GSRendererHW::ResetParticleEdgeSession();assert(s_dod_ab_off_frame==-1);
     }
     else if(mode=="guards")
     {

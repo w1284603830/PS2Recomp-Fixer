@@ -1,5 +1,9 @@
 ﻿# 新鬼武者 PC 移植｜建置流程（2026-10-17）
 
+> 歷史遊戲專項紀錄：下列路徑、配置及驗證只描述當時版本。近期共用基底已移除自動套用的遊戲規則；
+> 固定範圍工具現位於 `examples/dod_runner/tools/`，舊 GS／CG 片段位於其 `gs_legacy/` 同層目錄。
+> 實際遷移與測試依 [通用化指南](NEUTRAL_BASE_MIGRATION.md)，不要直接套用歷史建置／部署命令。
+
 ## 目前使用的重編譯設定（2026-10-20 更新）
 
 目前使用 `work/recomp/dod_upstream20.toml`（函式表 `dod_functions_fixed8.csv`，含 switch 表目標），輸出到 `work/recomp/out20-jumptables/`。產生碼每條指令都附原始反組譯註解，要找某個地址就 grep 這個資料夾的 `// 0x地址`。

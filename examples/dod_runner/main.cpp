@@ -15,7 +15,7 @@
 #include "../lib/dod_input_settings.h"
 #include "../lib/dod_audio_settings.h"
 #include "../lib/gs/dod_pcsx2_gs.h"
-#include "../lib/gs/dod_widescreen.h"
+#include "widescreen_reference.h"
 #include "game_profile.h"
 
 bool dodKzvuInstall(PS2Runtime &runtime, const char *mode); // [DoD] ../lib/vu/dod_kzvu.cpp

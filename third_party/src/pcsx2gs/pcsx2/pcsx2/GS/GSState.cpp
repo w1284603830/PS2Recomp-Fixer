@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0+
 
 #include "GS/GSState.h"
+#include "GS/HostTuning.h"
 #include "GS/GSDump.h"
 #include "GS/GSGL.h"
 #include "GS/GSPerfMon.h"
@@ -19,10 +20,12 @@
 #include <iomanip>
 #include <bit>
 
+// Shared diagnostic counter; its declaration must not depend on a game policy header.
+extern unsigned long long g_dodGsField;
+
 u64 GSState::s_n = 0;
 u64 GSState::s_last_transfer_draw_n = 0;
 u64 GSState::s_transfer_n = 0;
-#include "GS/DoDWidescreen.h"
 
 static __fi bool IsAutoFlushEnabled()
 {
@@ -2604,25 +2607,6 @@ void GSState::FlushPrim()
                     m_vt.m_min.p.z, m_vt.m_max.p.z);
         }
 
-        if (g_dodWidescreen && DoDWide::display(m_context->FRAME.FBP, m_context->FRAME.FBW, m_context->FRAME.PSM))
-        {
-            // A full display-buffer clear begins a new scene. Pure 2D menus
-            // have their own low-depth coordinates and must remain 4:3 too.
-            if (PRIM->PRIM == GS_SPRITE && !PRIM->TME && m_vt.m_max.p.z == 0 &&
-                m_vt.m_min.p.x <= 0 && m_vt.m_max.p.x >= 512 &&
-                m_vt.m_min.p.y <= 0 && m_vt.m_max.p.y >= 224)
-                DoDWide::world[m_context->FRAME.FBP] = false;
-            // DoD world triangles use STQ and the reversed 16-bit depth range.
-            // UI uses the reserved near-plane depths; clears/feedback use sprites.
-            if (GSUtil::GetPrimClass(PRIM->PRIM) == GS_TRIANGLE_CLASS && !PRIM->FST &&
-                m_vt.m_max.p.z > 0 && m_vt.m_max.p.z < 65000 && !m_context->ZBUF.ZMSK)
-                DoDWide::world[m_context->FRAME.FBP] = true;
-            // [DoD] 2026-10-26, the user's choice: the UI drawn over the world is stretched with the 16:9 picture, as
-            // PCSX2's widescreen patch shows it. The 10-23 version compressed the near-depth draws it took for UI back
-            // into a centered 4:3 area, but only palette textures and untextured boxes: portraits and window frames
-            // (16/32-bit textures) stayed wide while their text moved, so the party status panels came apart.
-        }
-
 		// Texel coordinate rounding
 		// Helps Manhunt (lights shining through objects).
 		// Can help with some alignment issues when upscaling too, and is for both Software and Hardware renderers.
@@ -2955,11 +2939,6 @@ void GSState::Write(const u8* mem, int len)
 
 	if (m_tr.end == 0)
 	{
-        // Native Sofdec/story CG uploads pixels directly into the display
-        // buffer. This is not a projected world frame, including paused CG.
-        if (g_dodWidescreen && (blit.DBP == 0 || blit.DBP == 0x800) && blit.DBW == 8 &&
-            blit.DPSM == PSMCT32 && m_tr.w >= 512 && m_tr.m_pos.DSAX == 0)
-            DoDWide::world[blit.DBP >> 5] = false;
 		GSVector4i r;
 
 		r = m_tr.rect;
@@ -4310,8 +4289,10 @@ GSState::PRIM_OVERLAP GSState::GetPrimitiveOverlapDrawlistImpl(bool save_drawlis
 			bboxf = bboxf.floor().xyzw(bboxf.ceil());
 			bbox = GSVector4i(bboxf);
 		}
-		// floor min, ceil max, and +1 on all sides for bilinear.
-		bbox = (bbox + GSVector4i(-0x10, -0x10, 0x1F, 0x1F)).sra32<4>();
+		// Explicit, qualified port policy; absent configuration retains the native copy guard.
+		const int margin = GSHostTuning::FeedbackCopyMargin(bbox_scale,
+			GSConfig.UserHacks_HalfPixelOffset == GSHalfPixelOffset::Native);
+		bbox = (bbox + GSVector4i(-0x10, -0x10, 0xF + margin * 16, 0xF + margin * 16)).sra32<4>();
 		return bbox;
 	};
 
@@ -6282,9 +6263,11 @@ GSState::TextureMinMaxResult GSState::GetTextureMinMax(GIFRegTEX0 TEX0, GIFRegCL
 			if (!clamp_to_tsize)
 			{
 				const u32 mask = (m_vt.m_min.t.floor() == GSVector4::zero()).mask();
-				if (mask & 1) // X == 0
+				if ((mask & 1) && !GSHostTuning::PreserveClampFootprint(GSIsHardwareRenderer(),
+					m_vt.m_primclass == GS_SPRITE_CLASS, wms == CLAMP_CLAMP || wms == CLAMP_REGION_CLAMP)) // X == 0
 					st.x = st.max(GSVector4::zero()).x;
-				if (mask & 2) // Y == 0
+				if ((mask & 2) && !GSHostTuning::PreserveClampFootprint(GSIsHardwareRenderer(),
+					m_vt.m_primclass == GS_SPRITE_CLASS, wmt == CLAMP_CLAMP || wmt == CLAMP_REGION_CLAMP)) // Y == 0
 					st.y = st.max(GSVector4::zero()).y;
 			}
 		}

@@ -9,7 +9,7 @@
 //   3. cheats.ini in the working directory
 // With no file F2 opens a panel that says so. See docs/CHEATS.md for the format. Everything starts off at each launch.
 
-// Window thread, once per host frame after the pad poll: F2 opens / closes the menu, its input goes to the GS while it
+// Window thread, once per host frame before publishing pad input: F2 opens / closes the menu, its input goes to the GS while it
 // is open, the enabled RAM writes are applied. rdram = the guest's 32 MB.
 void ps2CheatsHostTick(uint8_t *rdram);
 // While the menu is open the game gets a released pad (ps2_pad.cpp).

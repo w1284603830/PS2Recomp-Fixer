@@ -87,9 +87,10 @@ that the runtime links. A game needs its own generated code and entry point (bel
 1. Extract the boot ELF and IRX modules from your disc image: `python tools/iso_extract.py <iso> <out dir> <max bytes>`
 2. Export the function list with Ghidra: `analyzeHeadless … -postScript ExportPS2Functions.java <toml> <csv>`
    (script in `ps2xRecomp/tools/ghidra`)
-3. Fix the function map: `scan_code_pointers.py` (functions reached only through pointers), `fix_function_map.py`
-   (data-area labels, split functions), `scan_jump_tables.py` (switch targets), and later
-   `find_missing_function_starts.py` for any `[guest-branch:missing-target]` reported at run time
+3. Validate the function map against this game's ELF segments, data/code ranges, indirect calls and switch targets.
+   The fixed-range `scan_code_pointers.py`, `fix_function_map.py`, `scan_jump_tables.py` and
+   `find_missing_function_starts.py` now live in `examples/dod_runner/tools/`; adapt their reference assumptions
+   before using them on another revision. See [tool boundaries](tools/README.md).
 4. Identify SDK functions: `ps2_analyzer <elf> analyzer.toml`, then `merge_stubs.py`
 5. Recompile: `ps2_recomp <config.toml>`; copy the output into `ps2xRuntime/src/runner/` and
    `ps2xRuntime/include/` (`sync_generated*.py` copy only changed files to avoid full rebuilds)
@@ -111,6 +112,12 @@ that the runtime links. A game needs its own generated code and entry point (bel
 `docs/DoD_BUILD.md` has the exact commands used for the original port.
 
 ## Tests
+
+The [neutral-base migration guide](docs/NEUTRAL_BASE_MIGRATION.md) covers fresh input, independent native readers,
+opt-in VBlank submission, explicit HD formats, pack-owned exclusions and multi-field alpha/A-B diagnosis.
+Game-specific GIF/CG/aspect heuristics and fixed-range analysis scripts now live in the reference example.
+See the [review and validation limits](docs/NEUTRAL_BASE_REVIEW_2026-11-05.md); every port still needs its own regression.
+
 
 Particle-edge workarounds now default off and require matching explicit game, revision and profile IDs; HPO alone
 cannot enable them. The optional Dawn of Dreams reference policy is isolated, and Onimusha 3 requires its own profile
