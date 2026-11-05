@@ -15,12 +15,13 @@ namespace ps2x::iop
             return result;
         }
 
-        void normalizeSuffix(std::string &suffix)
+        void normalizeSuffix(std::string &suffix, bool isoVersion)
         {
             std::replace(suffix.begin(), suffix.end(), '\\', '/');
             while (!suffix.empty() && suffix.front() == '/')
                 suffix.erase(suffix.begin());
 
+            if (!isoVersion) return;
             const size_t semicolon = suffix.rfind(';');
             if (semicolon == std::string::npos || semicolon + 1u == suffix.size())
                 return;
@@ -37,7 +38,7 @@ namespace ps2x::iop
     ParsedPs2Path parsePs2Path(std::string_view value)
     {
         ParsedPs2Path result;
-        if (value.empty())
+        if (value.empty() || value.find('\0') != std::string_view::npos)
             return result;
 
         const std::string lower = lowerAscii(value);
@@ -97,7 +98,7 @@ namespace ps2x::iop
 
         result.path.assign(value.substr(prefixLength));
         if (result.device != Ps2PathDevice::NativeHost)
-            normalizeSuffix(result.path);
+            normalizeSuffix(result.path, result.device == Ps2PathDevice::Cdrom);
         return result;
     }
 

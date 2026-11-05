@@ -111,6 +111,9 @@ that the runtime links. A game needs its own generated code and entry point (bel
 
 `docs/DoD_BUILD.md` has the exact commands used for the original port.
 
+The DoD reference runner has a separate [PR #8 adaptation guide](docs/DOD_RUNNER_PR8_ADAPTATION.md), with
+explicit revision/ELF confirmation, optional reference settings and uninstalled legacy-feature boundaries.
+
 ## Tests
 
 The [neutral-base migration guide](docs/NEUTRAL_BASE_MIGRATION.md) covers fresh input, independent native readers,

@@ -697,7 +697,7 @@ namespace
     bool writeCdSearchResult(uint8_t *rdram, uint32_t fileAddr, const std::string &ps2Path, const CdFileEntry &entry)
     {
         // sceCdlFILE layout: u32 lsn, u32 size, char name[16], u8 date[8]
-        uint8_t *fileStruct = getMemPtr(rdram, fileAddr);
+        uint8_t *fileStruct = getMemPtr(rdram, fileAddr, 32u);
         if (!fileStruct)
         {
             return false;
@@ -1966,7 +1966,7 @@ namespace
 
     static bool readGsImage(uint8_t *rdram, uint32_t addr, GsImageMem &out)
     {
-        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
         if (!ptr)
             return false;
         std::memcpy(&out, ptr, sizeof(out));
@@ -1975,7 +1975,7 @@ namespace
 
     static bool writeGsImage(uint8_t *rdram, uint32_t addr, const GsImageMem &img)
     {
-        uint8_t *ptr = getMemPtr(rdram, addr);
+        uint8_t *ptr = getMemPtr(rdram, addr, sizeof(img));
         if (!ptr)
             return false;
         std::memcpy(ptr, &img, sizeof(img));
@@ -1984,7 +1984,7 @@ namespace
 
     static bool writeGsDispEnv(uint8_t *rdram, uint32_t addr, uint64_t display, uint64_t dispfb)
     {
-        uint8_t *ptr = getMemPtr(rdram, addr);
+        uint8_t *ptr = getMemPtr(rdram, addr, sizeof(GsDispEnvMem));
         if (!ptr)
             return false;
         GsDispEnvMem env{};
@@ -1997,7 +1997,7 @@ namespace
 
     static bool readGsDispEnv(uint8_t *rdram, uint32_t addr, GsDispEnvMem &out)
     {
-        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
         if (!ptr)
             return false;
         std::memcpy(&out, ptr, sizeof(out));
@@ -2006,7 +2006,7 @@ namespace
 
     static bool readGsDBuffDc(uint8_t *rdram, uint32_t addr, GsDBuffDcMem &out)
     {
-        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
         if (!ptr)
             return false;
         std::memcpy(&out, ptr, sizeof(out));
@@ -2015,7 +2015,7 @@ namespace
 
     static bool readGsDBuff(uint8_t *rdram, uint32_t addr, GsDBuffMem &out)
     {
-        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        const uint8_t *ptr = getConstMemPtr(rdram, addr, sizeof(out));
         if (!ptr)
             return false;
         std::memcpy(&out, ptr, sizeof(out));
@@ -2024,7 +2024,7 @@ namespace
 
     static bool writeGsDBuffDc(uint8_t *rdram, uint32_t addr, const GsDBuffDcMem &db)
     {
-        uint8_t *ptr = getMemPtr(rdram, addr);
+        uint8_t *ptr = getMemPtr(rdram, addr, sizeof(db));
         if (!ptr)
             return false;
         std::memcpy(ptr, &db, sizeof(db));
@@ -2033,7 +2033,7 @@ namespace
 
     static bool writeGsDBuff(uint8_t *rdram, uint32_t addr, const GsDBuffMem &db)
     {
-        uint8_t *ptr = getMemPtr(rdram, addr);
+        uint8_t *ptr = getMemPtr(rdram, addr, sizeof(db));
         if (!ptr)
             return false;
         std::memcpy(ptr, &db, sizeof(db));
@@ -2042,9 +2042,9 @@ namespace
 
     static bool readGsRegPairs(uint8_t *rdram, uint32_t addr, GsRegPairMem *pairs, size_t pairCount)
     {
-        if (!pairs || pairCount == 0u)
+        if (!pairs || pairCount == 0u || pairCount > PS2_RAM_SIZE / sizeof(GsRegPairMem))
             return false;
-        const uint8_t *ptr = getConstMemPtr(rdram, addr);
+        const uint8_t *ptr = getConstMemPtr(rdram, addr, pairCount * sizeof(GsRegPairMem));
         if (!ptr)
             return false;
         std::memcpy(pairs, ptr, pairCount * sizeof(GsRegPairMem));

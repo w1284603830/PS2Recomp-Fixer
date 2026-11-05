@@ -12,6 +12,7 @@ git apply -p1 <Fixer>/patches/PS2Recomp_vs_upstream_eb8688b.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_host_maintenance_20261103.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_particle_profiles_20261104.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_neutral_host_20261105.diff
+git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_storage_bounds_20261106.diff
 ```
 
 The incremental patch uses zero context to carry only the shared changes, so `--unidiff-zero` is required. Apply it

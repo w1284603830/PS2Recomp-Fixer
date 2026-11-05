@@ -37,6 +37,10 @@ inline void Receive(const void* data,uint32_t bytes) {
     if(!frames.empty() && (frames.back().header[1]!=h[1] || h[2]<=frames.back().header[2])) Clear();
     f.preview.resize(lowBytes/4);
     std::memcpy(f.preview.data(),static_cast<const uint8_t*>(data)+64,lowBytes);
+    // A uniform frame carries no content identity: it also matches unrelated
+    // clears/empty fields. Keep the native upload for those frames.
+    const u32 first=f.preview.front()&0x00ffffffu;
+    if(std::none_of(f.preview.begin(),f.preview.end(),[first](u32 p){return (p&0x00ffffffu)!=first;})) return;
     f.texture=g_gs_device->CreateTexture(1920,1080,1,GSTexture::Format::Color,true);
     if(!f.texture) return;
     if(!f.texture->Update(GSVector4i(0,0,1920,1080),static_cast<const uint8_t*>(data)+64+lowBytes,1920*4)) {
@@ -49,6 +53,7 @@ inline void Upload(const GSLocalMemory& mem,GIFRegTEX0 tex0,GSTexture* target,fl
                    const GSDevice::MultiStretchRect* dirty,uint32_t n,ShaderConvertSelector shader) {
     if(frames.empty() || !target || !dirty || !n || !(scale>0) || !std::isfinite(scale) || tex0.TBW<8 ||
        (tex0.PSM!=PSMCT32 && tex0.PSM!=PSMCT24)) return;
+    Frame* selected=nullptr; int selectedTop=0;
     for(auto it=frames.rbegin();it!=frames.rend();++it) {
         auto& f=*it; const int rows=f.header[4]/2;
         for(int top=0;top<=64;++top) {
@@ -67,27 +72,30 @@ inline void Upload(const GSLocalMemory& mem,GIFRegTEX0 tex0,GSTexture* target,fl
                 if((mem.ReadPixel32(x,top+y,tex0.TBP0,tex0.TBW)&0x00ffffffu)!=
                    (f.preview[y*512+x]&0x00ffffffu)) { match=false; break; }
             if(!match) continue;
-            std::vector<GSDevice::MultiStretchRect> rects;
-            const GSVector4 aperture(0.0f,top*scale,512.0f*scale,(top+rows)*scale);
-            for(uint32_t i=0;i<n;++i) {
-                const auto& d=dirty[i].dst_rect;
-                const GSVector4 dr(std::max(d.x,aperture.x),std::max(d.y,aperture.y),std::min(d.z,aperture.z),std::min(d.w,aperture.w));
-                if(dr.z<=dr.x || dr.w<=dr.y) continue;
-                auto r=dirty[i]; r.src=f.texture; r.dst_rect=dr; r.filter=Filter::Biln;
-                const float x0=dr.x/scale/512.0f, x1=dr.z/scale/512.0f;
-                const float y0=(dr.y/scale-top)/rows, y1=(dr.w/scale-top)/rows;
-                r.src_rect=GSVector4(x0,(f.header[7]+y0*f.header[9])/1080.0f,x1,(f.header[7]+y1*f.header[9])/1080.0f);
-                rects.push_back(r);
-            }
-            if(!rects.empty()) {
-                g_gs_device->DrawMultiStretchRects(rects.data(),static_cast<u32>(rects.size()),target,shader);
-                ++f.hits; ++totalHits;
-                if(f.hits==1 && (f.header[2]<3 || f.header[2]%300==0))
-                    std::fprintf(stderr,"[cg-hd-gs] movie=%u frame=%u bp=%x top=%d rows=%d scale=%.1f before_subtitles=1\n",
-                        f.header[1],f.header[2],tex0.TBP0,top,rows,scale);
-            }
-            return;
+            if(selected) return; // ambiguous frame or aperture: retain native pixels
+            selected=&f; selectedTop=top;
         }
+    }
+    if(!selected) return;
+    auto& f=*selected; const int rows=f.header[4]/2,top=selectedTop;
+    std::vector<GSDevice::MultiStretchRect> rects;
+    const GSVector4 aperture(0.0f,top*scale,512.0f*scale,(top+rows)*scale);
+    for(uint32_t i=0;i<n;++i) {
+        const auto& d=dirty[i].dst_rect;
+        const GSVector4 dr(std::max(d.x,aperture.x),std::max(d.y,aperture.y),std::min(d.z,aperture.z),std::min(d.w,aperture.w));
+        if(dr.z<=dr.x || dr.w<=dr.y) continue;
+        auto r=dirty[i]; r.src=f.texture; r.dst_rect=dr; r.filter=Filter::Biln;
+        const float x0=dr.x/scale/512.0f, x1=dr.z/scale/512.0f;
+        const float y0=(dr.y/scale-top)/rows, y1=(dr.w/scale-top)/rows;
+        r.src_rect=GSVector4(x0,(f.header[7]+y0*f.header[9])/1080.0f,x1,(f.header[7]+y1*f.header[9])/1080.0f);
+        rects.push_back(r);
+    }
+    if(!rects.empty()) {
+        g_gs_device->DrawMultiStretchRects(rects.data(),static_cast<u32>(rects.size()),target,shader);
+        ++f.hits; ++totalHits;
+        if(f.hits==1 && (f.header[2]<3 || f.header[2]%300==0))
+            std::fprintf(stderr,"[cg-hd-gs] movie=%u frame=%u bp=%x top=%d rows=%d scale=%.1f before_subtitles=1\n",
+                f.header[1],f.header[2],tex0.TBP0,top,rows,scale);
     }
 }
 }

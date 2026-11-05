@@ -23,3 +23,14 @@ jobs:
         run: cmake -S third_party/src/pcsx2gs/pcsx2-gs -B build/pcsx2gs -G "Visual Studio 17 2022" -A x64
       - name: Compile full GS DLL (no game or GPU execution)
         run: cmake --build build/pcsx2gs --config Release --target pcsx2gs --parallel 2
+
+  windows-boundaries:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure production storage and memory boundary fixtures
+        run: cmake -S tests -B build/boundaries -G "Visual Studio 17 2022" -A x64
+      - name: Compile fixtures with assertions enabled in Release
+        run: cmake --build build/boundaries --config Release --parallel 2
+      - name: Run synthetic storage and memory regressions
+        run: ctest --test-dir build/boundaries -C Release --output-on-failure

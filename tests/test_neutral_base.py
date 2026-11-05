@@ -29,7 +29,7 @@ class NeutralBaseTests(unittest.TestCase):
             'host_identity':[],
             'hd_adapter':[ROOT/'tests/stubs/graphics'],
         }.items():
-            cmd=['g++','-std=c++20','-O1','-g','-Wall','-Wextra','-pthread','-fsanitize=undefined','-fno-sanitize-recover=all']
+            cmd=['g++','-std=c++20','-O1','-g','-Wall','-Wextra','-pthread','-fsanitize=undefined,float-cast-overflow','-fno-sanitize-recover=all']
             for path in [*extra,RT/'include',GS,cls.directory]:cmd+=['-I',str(path)]
             cmd+=[str(ROOT/f'tests/{name}_tests.cpp')]
             if name=='input_readers':cmd+=[str(RT/'src/lib/ps2_pad.cpp')]
@@ -74,3 +74,7 @@ class NeutralBaseTests(unittest.TestCase):
     def test_trace_malformed_window_fails_closed(self):
         for value in ('','1','-1:2','1:+2','1:2junk','1:2:3','1:18446744073709551616'):
             self.run_case('neutral_policy','trace-off',{'PS2_CG_GS_TRACE':value,'DOD_CG_GS_TRACE':'1:9'})
+
+    def test_uniform_cg_cannot_identify_a_framebuffer(self):self.run_case('hd_adapter','cg-uniform')
+    def test_ambiguous_native_previews_keep_native_upload(self):self.run_case('hd_adapter','cg-ambiguous')
+    def test_static_page_nonfinite_input_rejected_before_conversion(self):self.run_case('hd_adapter','static-nonfinite')
