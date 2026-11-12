@@ -1,5 +1,17 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-12, run-time code overlays (`feature/overlay-registry`, on `main` `eff29a5`):** opt-in overlay registry and
+`[overlay]` recompiler input ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 14). Fresh clone of `ccdde21` with an LF
+checkout, pinned dependencies added, `build_all.ps1` from an empty build folder (VS 2022 Build Tools, default
+configuration): kzvu, pcsx2gs and PS2Recomp (including `ps2EntryRunner`) built; `ps2x_tests` 464 cases, 440 passed,
+24 named known differences, the same list as the maintenance entry below (the 16 new `PS2Overlays`,
+`PS2RuntimeOverlays` and `PS2RecompilerOverlays` cases all pass); IOP suites 6/6; GS cache 45/45. `tests/` CTest with
+MSVC: 62/62 including the six `overlay-*` cases. Python suites in the LF clone pass, including the upstream
+patch-series parity check; the g++ suites (among them the new ASan/UBSan registry test) run in CI only. End to end:
+`ps2_recomp.exe` generated two synthetic overlays at one load address (single-file and per-function output); MSVC
+compiled and linked both with `ps2_overlays.cpp` into one program, `installCatalog()` registered both and the signature
+in RAM selected each overlay's own generated function. Synthetic images only; no game was run for this entry.
+
 **2026-11-12, maintenance (`maint/20261112-harvest`):** shared fixes collected from the local port trees, upstream
 #384 (GIF FLG=3), optional F2/F3 cheat tools (both compiled out by default) and `tools/new_port.py`
 ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 13). Windows/MSVC (VS 2022 Build Tools 17.14), `build_all.ps1` from an

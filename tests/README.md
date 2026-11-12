@@ -127,3 +127,14 @@ explicitly skipped on Linux. CMake adds all 28 to the Windows boundary job (56 t
 code-page APIs, the production wide-file path and Release assertions. Read the candidate CI result before claiming
 Windows passed. None of these fixtures exercises libmc, IOP filesystem bypasses or real game saves; see
 [scope and test matrix](../docs/VFS_PATH_ENCODING_REVIEW_2026-11-06.md).
+
+## Run-time code overlays
+
+`test_overlay_registry.py` compiles the production overlay registry (`ps2_overlays.cpp`) on its own with ASan/UBSan:
+empty registry, signature-selected dispatch between images at one load address, a small image inside a larger one,
+rejected descriptions and ambiguous signatures, clear, copying of caller storage, and four threads whose lookups use
+different RAM contents so the resident cache keeps changing hands. The same six cases run in the Windows boundary job
+(`overlay-*`, Release with assertions). Static checks confirm that `loadELF` clears the registry first, that dispatch
+consults it only behind the inline range check, and that no shared source registers an image. The `PS2Runtime`
+integration and the recompiler's `[overlay]` output are covered by `ps2x_tests` (suites `PS2Overlays`,
+`PS2RuntimeOverlays`, `PS2RecompilerOverlays`) in `build_all.ps1`. All images and addresses are synthetic.
