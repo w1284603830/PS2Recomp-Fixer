@@ -297,6 +297,7 @@ public:
 
     // Memory access methods
     uint8_t *getRDRAM() { return m_rdram; }
+    const uint8_t *getRDRAM() const { return m_rdram; }
     uint8_t *getScratchpad() { return m_scratchpad; }
     uint8_t *getIOPRAM() { return iop_ram; }
     uint64_t dmaStartCount() const { return m_dmaStartCount.load(std::memory_order_relaxed); }

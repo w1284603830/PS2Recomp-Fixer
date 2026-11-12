@@ -23,6 +23,8 @@
 #include <sstream>
 #include <algorithm>
 #include <cstring>
+#include <iterator>
+#include <vector>
 
 namespace
 {
@@ -2277,6 +2279,102 @@ namespace ps2recomp
     }
 
     ElfParser::~ElfParser() = default;
+
+    bool ElfParser::HasElfMagic(const std::string &filePath)
+    {
+        std::ifstream file(filePath, std::ios::binary);
+        char magic[4] = {};
+        return file.read(magic, sizeof(magic)) && magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
+               magic[3] == 'F';
+    }
+
+    bool ElfParser::parseRawImage(const OverlayConfig &overlay)
+    {
+        auto fail = [this](const std::string &message)
+        {
+            if (m_reporter)
+            {
+                m_reporter->error("overlay", message);
+            }
+            return false;
+        };
+
+        std::ifstream file(m_filePath, std::ios::binary);
+        if (!file)
+        {
+            return fail("Could not open raw overlay image: " + m_filePath);
+        }
+        const std::vector<char> image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        constexpr uint64_t kEeRamSize = 32ull * 1024ull * 1024ull;
+        const uint64_t fileSize = image.size();
+        const uint64_t codeOffset = overlay.rawCodeOffset;
+        const uint64_t codeSize = overlay.rawCodeSize != 0u ? overlay.rawCodeSize
+                                                            : (fileSize > codeOffset ? fileSize - codeOffset : 0u);
+        if (fileSize == 0u || codeSize == 0u || codeOffset + codeSize > fileSize || (codeSize & 3u) != 0u)
+        {
+            return fail("raw overlay code range [code_offset, code_offset + code_size) must be a non-empty, "
+                        "4-byte multiple inside the file: " + m_filePath);
+        }
+        const uint64_t loadAddress = overlay.loadAddress;
+        if (loadAddress + fileSize + overlay.rawBssSize > kEeRamSize)
+        {
+            return fail("raw overlay image does not fit in 32 MiB EE RAM at its load address");
+        }
+        const uint64_t codeStart = loadAddress + codeOffset;
+        const uint64_t entry = overlay.rawEntry != 0u ? overlay.rawEntry : codeStart;
+        if (entry < codeStart || entry >= codeStart + codeSize)
+        {
+            return fail("raw overlay entry must lie in the code range");
+        }
+
+        ELFIO::elfio writer;
+        writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
+        writer.set_os_abi(ELFIO::ELFOSABI_NONE);
+        writer.set_type(ELFIO::ET_EXEC);
+        writer.set_machine(ELFIO::EM_MIPS);
+        writer.set_entry(static_cast<ELFIO::Elf64_Addr>(entry));
+        auto addSection = [&writer](const char *name, ELFIO::Elf_Xword flags, uint64_t address, const char *data,
+                                    uint64_t size)
+        {
+            ELFIO::section *section = writer.sections.add(name);
+            section->set_type(ELFIO::SHT_PROGBITS);
+            section->set_flags(flags);
+            section->set_addr_align(4);
+            section->set_address(static_cast<ELFIO::Elf64_Addr>(address));
+            section->set_data(data, static_cast<ELFIO::Elf_Word>(size));
+        };
+        if (codeOffset > 0u)
+        {
+            addSection(".ovl_head", ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE, loadAddress, image.data(), codeOffset);
+        }
+        addSection(".text", ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR, codeStart, image.data() + codeOffset, codeSize);
+        if (codeOffset + codeSize < fileSize)
+        {
+            addSection(".ovl_data", ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE, codeStart + codeSize,
+                       image.data() + codeOffset + codeSize, fileSize - codeOffset - codeSize);
+        }
+        if (overlay.rawBssSize != 0u)
+        {
+            ELFIO::section *bss = writer.sections.add(".bss");
+            bss->set_type(ELFIO::SHT_NOBITS);
+            bss->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE);
+            bss->set_addr_align(4);
+            bss->set_address(static_cast<ELFIO::Elf64_Addr>(loadAddress + fileSize));
+            bss->set_size(overlay.rawBssSize);
+        }
+
+        std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
+        if (!writer.save(stream) || !m_elf->load(stream))
+        {
+            return fail("Could not present raw overlay image as an ELF: " + m_filePath);
+        }
+
+        loadSections();
+        loadSymbols();
+        loadRelocations();
+        loadDebugFunctions();
+        return true;
+    }
 
     bool ElfParser::parse()
     {

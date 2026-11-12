@@ -6,11 +6,105 @@
 #include <stdexcept>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
+#include <iterator>
 #include <limits>
 #include <thread>
 
 namespace ps2recomp
 {
+    namespace
+    {
+        constexpr uint32_t kEeRamSize = 32u * 1024u * 1024u;
+        constexpr uint32_t kMaxOverlaySignatureSize = 256u;
+
+        // An integer or a numeric string ("0x00D00000"); absent keys keep the fallback.
+        uint32_t readOverlayU32(const toml::value &table, const char *key, uint32_t fallback, bool required)
+        {
+            if (!table.contains(key))
+            {
+                if (required)
+                    throw std::invalid_argument(std::string("[overlay] requires ") + key);
+                return fallback;
+            }
+            const auto &value = table.at(key);
+            int64_t number = 0;
+            if (value.is_integer())
+            {
+                number = value.as_integer();
+            }
+            else if (value.is_string())
+            {
+                const std::string text = value.as_string();
+                size_t used = 0;
+                number = static_cast<int64_t>(std::stoll(text, &used, 0));
+                if (used != text.size())
+                    throw std::invalid_argument(std::string("[overlay] ") + key + " is not a number: " + text);
+            }
+            else
+            {
+                throw std::invalid_argument(std::string("[overlay] ") + key + " must be an integer");
+            }
+            if (number < 0 || number > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
+                throw std::invalid_argument(std::string("[overlay] ") + key + " is out of range");
+            return static_cast<uint32_t>(number);
+        }
+
+        bool isOverlayIdentifier(const std::string &name)
+        {
+            if (name.empty() || name.size() > 64u || std::isdigit(static_cast<unsigned char>(name.front())))
+                return false;
+            return std::all_of(name.begin(), name.end(), [](char c)
+                               { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
+        }
+
+        OverlayConfig parseOverlay(const toml::value &table)
+        {
+            if (!table.is_table())
+                throw std::invalid_argument("[overlay] must be a table");
+            static const char *const kKeys[] = {"name", "load_address", "image_size", "signature_offset",
+                                                "signature_size", "input_format", "code_offset", "code_size",
+                                                "bss_size", "entry"};
+            for (const auto &[key, value] : table.as_table())
+            {
+                (void)value;
+                if (std::none_of(std::begin(kKeys), std::end(kKeys), [&key](const char *known) { return key == known; }))
+                    throw std::invalid_argument("[overlay] unknown key: " + key);
+            }
+            OverlayConfig overlay;
+            overlay.enabled = true;
+            overlay.name = toml::find_or<std::string>(table, "name", "");
+            if (!isOverlayIdentifier(overlay.name))
+                throw std::invalid_argument("[overlay] name must be a C identifier of at most 64 characters: '" +
+                                            overlay.name + "'");
+            overlay.loadAddress = readOverlayU32(table, "load_address", 0u, true);
+            overlay.imageSize = readOverlayU32(table, "image_size", 0u, false);
+            overlay.signatureOffset = readOverlayU32(table, "signature_offset", 0u, false);
+            overlay.signatureSize = readOverlayU32(table, "signature_size", 0u, true);
+            overlay.rawCodeOffset = readOverlayU32(table, "code_offset", 0u, false);
+            overlay.rawCodeSize = readOverlayU32(table, "code_size", 0u, false);
+            overlay.rawBssSize = readOverlayU32(table, "bss_size", 0u, false);
+            overlay.rawEntry = readOverlayU32(table, "entry", 0u, false);
+
+            const std::string format = toml::find_or<std::string>(table, "input_format", "auto");
+            if (format == "auto")
+                overlay.inputFormat = OverlayConfig::InputFormat::Auto;
+            else if (format == "elf")
+                overlay.inputFormat = OverlayConfig::InputFormat::Elf;
+            else if (format == "raw")
+                overlay.inputFormat = OverlayConfig::InputFormat::Raw;
+            else
+                throw std::invalid_argument("[overlay] input_format must be auto, elf or raw: " + format);
+
+            if ((overlay.loadAddress & 3u) != 0u || overlay.loadAddress >= kEeRamSize)
+                throw std::invalid_argument("[overlay] load_address must be 4-byte aligned and inside 32 MiB EE RAM");
+            if (overlay.signatureSize == 0u || overlay.signatureSize > kMaxOverlaySignatureSize)
+                throw std::invalid_argument("[overlay] signature_size must be 1..256");
+            if ((overlay.rawCodeOffset & 3u) != 0u || (overlay.rawCodeSize & 3u) != 0u || (overlay.rawEntry & 3u) != 0u)
+                throw std::invalid_argument("[overlay] code_offset, code_size and entry must be 4-byte aligned");
+            return overlay;
+        }
+    }
 
     ConfigManager::ConfigManager(const std::string &configPath)
         : m_configPath(configPath)
@@ -149,6 +243,11 @@ namespace ps2recomp
                         }
                     }
                 }
+            }
+
+            if (data.contains("overlay"))
+            {
+                config.overlay = parseOverlay(data.at("overlay"));
             }
 
             if (data.contains("mmio") && data.at("mmio").is_table())
@@ -304,6 +403,31 @@ namespace ps2recomp
         general["native"] = config.nativeFunctions;
         general["entry_points"] = config.entryPointHints;
         data["general"] = general;
+
+        if (config.overlay.enabled)
+        {
+            const OverlayConfig &overlay = config.overlay;
+            auto hex = [](uint32_t value)
+            {
+                std::ostringstream stream;
+                stream << "0x" << std::hex << value;
+                return stream.str();
+            };
+            toml::table table;
+            table["name"] = overlay.name;
+            table["load_address"] = hex(overlay.loadAddress);
+            table["image_size"] = hex(overlay.imageSize);
+            table["signature_offset"] = hex(overlay.signatureOffset);
+            table["signature_size"] = static_cast<int64_t>(overlay.signatureSize);
+            table["input_format"] = overlay.inputFormat == OverlayConfig::InputFormat::Elf   ? "elf"
+                                    : overlay.inputFormat == OverlayConfig::InputFormat::Raw ? "raw"
+                                                                                             : "auto";
+            table["code_offset"] = hex(overlay.rawCodeOffset);
+            table["code_size"] = hex(overlay.rawCodeSize);
+            table["bss_size"] = hex(overlay.rawBssSize);
+            table["entry"] = hex(overlay.rawEntry);
+            data["overlay"] = table;
+        }
 
         if (!config.mmioByInstructionAddress.empty())
         {

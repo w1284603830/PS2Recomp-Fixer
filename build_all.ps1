@@ -86,7 +86,7 @@ if ($Part -in 'all', 'ps2recomp') {
               '-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /MP /bigobj /utf-8', '-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /MP /utf-8')
     Step 'ps2recomp' (@('-S', (Join-Path $src 'PS2Recomp'), '-B', (Join-Path $BuildDir 'ps2recomp')) + $gen + $opts + $fc) @('ALL_BUILD')
     if (-not $NoTests) {
-        # 25 of ps2x_tests' 446 are known to fail: they expect upstream's behaviour where this base follows the
+        # 25 of ps2x_tests' 464 are named known failures: they expect upstream's behaviour where this base follows the
         # hardware / PCSX2 (BUILD_VERIFICATION.md). The other suites (IOP, GS cache) must all pass.
         $ErrorActionPreference = 'Continue'
         $exe = Join-Path $BuildDir 'ps2recomp\ps2xTest\Release\ps2x_tests.exe'

@@ -56,6 +56,17 @@ namespace ps2recomp
         void setEmitInstructionComments(bool emitInstructionComments);
         void setReporter(RecompilerReporter *reporter);
 
+        // Overlay output ([overlay] in the config): generated code lives in namespace ps2x_overlay_<name> and
+        // includes its own headers by relative path, so several overlays and the main ELF link together.
+        void setOverlayName(const std::string &name);
+        bool isOverlay() const { return !m_overlayName.empty(); }
+        std::string functionsHeaderName() const;
+        std::string stubsHeaderName() const;
+        std::string includeGeneratedHeader(const std::string &header) const;
+        std::string overlayNamespace() const;
+        std::string namespaceOpen() const;
+        std::string namespaceClose() const;
+
         AnalysisResult collectInternalBranchTargets(const Function &function,
                                                   const std::vector<Instruction> &instructions,
                                                   const std::vector<Function> *allFunctions = nullptr);
@@ -71,6 +82,7 @@ namespace ps2recomp
         bool m_emitInstructionComments = true;
         RecompilerReporter *m_reporter = nullptr;
         std::string m_currentFunctionName;
+        std::string m_overlayName;
 
         std::string translateInstruction(const Instruction &inst);
         std::string translateInstruction(const Instruction &inst, const MemoryAccessHint &memoryHint);

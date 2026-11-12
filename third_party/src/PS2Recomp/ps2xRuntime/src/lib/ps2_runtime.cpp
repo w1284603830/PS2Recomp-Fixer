@@ -21,6 +21,7 @@
 #include "ps2_iop_host.h"
 #include "ps2x/iop/iop_subsystem.h"
 #include "ps2_disc.h"
+#include "ps2_overlays.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -39,6 +40,11 @@
 #include <thread>
 #include <unordered_map>
 #include <sstream>
+#include <type_traits>
+
+static_assert(std::is_same_v<ps2_overlays::Function, PS2Runtime::RecompiledFunction>,
+              "overlay entries must use the recompiled function signature");
+static_assert(ps2_overlays::kGuestRamSize == PS2_RAM_SIZE, "overlay bounds must match EE RAM");
 
 namespace ps2_stubs
 {
@@ -983,6 +989,8 @@ bool PS2Runtime::initialize(const char *title)
 
 bool PS2Runtime::loadELF(const std::string &elfPath)
 {
+    // Overlay images belong to one game: a port registers its own after this call (ps2_overlays.h).
+    ps2_overlays::clear();
     if (!ps2_stubs::resetMpegGameProfile(this))
         return false;
     // A runner configures these after loading its game/revision, never for a preceding ELF.
@@ -1385,6 +1393,14 @@ bool PS2Runtime::registerFunction(uint32_t address, RecompiledFunction func)
 
 bool PS2Runtime::hasFunction(uint32_t address) const
 {
+    if (ps2_overlays::mayCover(address))
+    {
+        // A resident registered image owns its range, even where the main ELF had code before it was loaded.
+        const ps2_overlays::Lookup overlay = ps2_overlays::resolve(m_memory.getRDRAM(), address);
+        if (overlay.resolution != ps2_overlays::Resolution::NotCovered)
+            return overlay.resolution == ps2_overlays::Resolution::Found;
+    }
+
     uint32_t slot = 0u;
     if (generatedFunctionTableSlot(address, slot))
     {
@@ -1417,8 +1433,21 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
 {
     pushDispatchPc(address);
 
+    bool overlayOwnsAddress = false;
+    if (ps2_overlays::mayCover(address))
+    {
+        const ps2_overlays::Lookup overlay = ps2_overlays::resolve(m_memory.getRDRAM(), address);
+        if (overlay.resolution == ps2_overlays::Resolution::Found)
+            return overlay.function;
+        overlayOwnsAddress = overlay.resolution == ps2_overlays::Resolution::Missing;
+    }
+
     uint32_t slot = 0u;
-    if (generatedFunctionTableSlot(address, slot))
+    if (overlayOwnsAddress)
+    {
+        // The resident image has no function here; the main ELF's code at this address was overwritten.
+    }
+    else if (generatedFunctionTableSlot(address, slot))
     {
         RecompiledFunction fn = g_ps2RecompiledFunctionTable[slot];
         if (fn != nullptr)
@@ -1434,8 +1463,10 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
     std::cerr << "Error: No exact recompiled function for guest PC 0x" << std::hex << address
               << " tableBase=0x" << g_ps2RecompiledFunctionTableBase
               << " tableEnd=0x" << g_ps2RecompiledFunctionTableEnd
-              << " codeRegion=" << (m_memory.isCodeAddress(address) ? "yes" : "no")
-              << " trace=" << formatDispatchHistory()
+              << " codeRegion=" << (m_memory.isCodeAddress(address) ? "yes" : "no");
+    if (ps2_overlays::mayCover(address))
+        std::cerr << " overlays=[" << ps2_overlays::describeResident(m_memory.getRDRAM()) << "]";
+    std::cerr << " trace=" << formatDispatchHistory()
               << std::dec << std::endl;
 
     static RecompiledFunction missingFunction = [](uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1595,8 +1626,10 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
             << " vtbl[4]=0x" << vtableSlot4
             << " vtbl[8]=0x" << vtableSlot8
             << " vtbl[c]=0x" << vtableSlotC
-            << " codeRegion=" << (m_memory.isCodeAddress(targetPc) ? "yes" : "no")
-            << " policy=" << static_cast<uint32_t>(policy)
+            << " codeRegion=" << (m_memory.isCodeAddress(targetPc) ? "yes" : "no");
+        if (ps2_overlays::mayCover(targetPc))
+            oss << " overlays=[" << ps2_overlays::describeResident(rdram) << "]";
+        oss << " policy=" << static_cast<uint32_t>(policy)
             << " trace=" << formatDispatchHistory()
             << std::dec;
 

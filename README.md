@@ -39,6 +39,9 @@ current boundaries and source audit: [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.
   switches your port registers ([below](#optional-cheat-tools-off-by-default)); no game's cheats are shipped
 - `tools/new_port.py`: from your disc image to a port folder with the boot ELF, recompiler config, `game.ini` and the
   exact next commands
+- Code a game loads at run time (overlays): `ps2_recomp` takes a raw image and its load address (`[overlay]`), and
+  the runtime dispatches through whichever registered image's signature is in RAM; off unless a port registers images
+  ([docs/GAME_PORTING.md](docs/GAME_PORTING.md) section 6)
 
 Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line PS2Recomp changes are distributed as
 [an ordered patch series](patches/README.md) for upstream `eb8688b`: apply the retained base patch, then the shared

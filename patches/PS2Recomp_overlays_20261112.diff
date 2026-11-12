@@ -1,0 +1,1906 @@
+diff --git a/ps2xRecomp/include/ps2recomp/Emitters/function_table_emitter.h b/ps2xRecomp/include/ps2recomp/Emitters/function_table_emitter.h
+index 67b7b90..aeb2025 100644
+--- a/ps2xRecomp/include/ps2recomp/Emitters/function_table_emitter.h
++++ b/ps2xRecomp/include/ps2recomp/Emitters/function_table_emitter.h
+@@ -6,0 +7 @@
++#include <utility>
+@@ -13,0 +15,10 @@ namespace ps2recomp
++    // What an [overlay] image registers with the runtime (ps2_overlays.h).
++    struct OverlayImageInfo
++    {
++        std::string name;
++        uint32_t loadAddress = 0;
++        uint32_t imageSize = 0;
++        uint32_t signatureOffset = 0;
++        std::vector<uint8_t> signature;
++    };
++
+@@ -18,0 +30 @@ namespace ps2recomp
++        // Main ELF: the dense g_ps2RecompiledFunctionTable.
+@@ -19,0 +32,3 @@ namespace ps2recomp
++        // Overlay: <name>_overlay.cpp (entries, signature, registration function, catalog entry) and its header.
++        std::string emitOverlaySource(const std::vector<Function> &functions, const OverlayImageInfo &image);
++        std::string emitOverlayHeader(const OverlayImageInfo &image);
+@@ -21,0 +37,3 @@ namespace ps2recomp
++        // Guest address -> generated function, sorted by address, one entry per address.
++        std::vector<std::pair<uint32_t, std::string>> collectEntries(const std::vector<Function> &functions);
++
+diff --git a/ps2xRecomp/include/ps2recomp/code_generator.h b/ps2xRecomp/include/ps2recomp/code_generator.h
+index 1bdf0f6..2d394ed 100644
+--- a/ps2xRecomp/include/ps2recomp/code_generator.h
++++ b/ps2xRecomp/include/ps2recomp/code_generator.h
+@@ -58,0 +59,11 @@ namespace ps2recomp
++        // Overlay output ([overlay] in the config): generated code lives in namespace ps2x_overlay_<name> and
++        // includes its own headers by relative path, so several overlays and the main ELF link together.
++        void setOverlayName(const std::string &name);
++        bool isOverlay() const { return !m_overlayName.empty(); }
++        std::string functionsHeaderName() const;
++        std::string stubsHeaderName() const;
++        std::string includeGeneratedHeader(const std::string &header) const;
++        std::string overlayNamespace() const;
++        std::string namespaceOpen() const;
++        std::string namespaceClose() const;
++
+@@ -73,0 +85 @@ namespace ps2recomp
++        std::string m_overlayName;
+diff --git a/ps2xRecomp/include/ps2recomp/elf_parser.h b/ps2xRecomp/include/ps2recomp/elf_parser.h
+index 10f9e4c..34cb1aa 100644
+--- a/ps2xRecomp/include/ps2recomp/elf_parser.h
++++ b/ps2xRecomp/include/ps2recomp/elf_parser.h
+@@ -16,0 +17 @@ namespace ps2recomp
++        struct OverlayConfig;
+@@ -25,0 +27,5 @@ namespace ps2recomp
++                // The file is a raw EE code image copied to overlay.loadAddress at run time. It is presented as an
++                // in-memory ELF: data before overlay.rawCodeOffset, the code range as .text, data after it and
++                // overlay.rawBssSize uninitialized bytes. Its entry is the first function start.
++                bool parseRawImage(const OverlayConfig &overlay);
++                static bool HasElfMagic(const std::string &filePath);
+diff --git a/ps2xRecomp/include/ps2recomp/ps2_recompiler.h b/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
+index 0cb581f..ed5e024 100644
+--- a/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
++++ b/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
+@@ -79,0 +80,2 @@ namespace ps2recomp
++        uint32_t m_overlayImageSize = 0;           // [overlay]: bytes from the load address the image covers
++        std::vector<uint8_t> m_overlaySignature;   // [overlay]: bytes read from the input image
+@@ -81,0 +84 @@ namespace ps2recomp
++        bool prepareOverlay();
+diff --git a/ps2xRecomp/include/ps2recomp/types.h b/ps2xRecomp/include/ps2recomp/types.h
+index ced60e1..418f987 100644
+--- a/ps2xRecomp/include/ps2recomp/types.h
++++ b/ps2xRecomp/include/ps2recomp/types.h
+@@ -174,0 +175,26 @@ namespace ps2recomp
++    // [overlay]: the input is a code image the game copies into EE RAM at run time. Output goes into its own
++    // C++ namespace and file names, and a ps2_overlays registration replaces the main dense function table.
++    // All values come from the port's configuration.
++    struct OverlayConfig
++    {
++        enum class InputFormat
++        {
++            Auto, // ELF when the file starts with the ELF magic, raw image otherwise
++            Elf,
++            Raw,
++        };
++
++        bool enabled = false;
++        std::string name;              // C identifier: namespace ps2x_overlay_<name>, files <name>_*
++        uint32_t loadAddress = 0;      // EE RAM address the game copies the image to
++        uint32_t imageSize = 0;        // 0: the initialized bytes from loadAddress (raw: the file size)
++        uint32_t signatureOffset = 0;  // relative to loadAddress
++        uint32_t signatureSize = 0;    // 1..256 bytes, read from the input image
++        InputFormat inputFormat = InputFormat::Auto;
++        // Raw input only: which part of the file is EE code, uninitialized bytes after it, first function.
++        uint32_t rawCodeOffset = 0;
++        uint32_t rawCodeSize = 0;      // 0: to the end of the file
++        uint32_t rawBssSize = 0;
++        uint32_t rawEntry = 0;         // 0: loadAddress + rawCodeOffset
++    };
++
+@@ -194,0 +221 @@ namespace ps2recomp
++        OverlayConfig overlay;
+diff --git a/ps2xRecomp/src/lib/code_generator.cpp b/ps2xRecomp/src/lib/code_generator.cpp
+index 68b0984..87853b9 100644
+--- a/ps2xRecomp/src/lib/code_generator.cpp
++++ b/ps2xRecomp/src/lib/code_generator.cpp
+@@ -163,0 +164,36 @@ namespace ps2recomp
++    void CodeGenerator::setOverlayName(const std::string &name)
++    {
++        m_overlayName = name;
++    }
++
++    std::string CodeGenerator::functionsHeaderName() const
++    {
++        return isOverlay() ? m_overlayName + "_functions.h" : "ps2_recompiled_functions.h";
++    }
++
++    std::string CodeGenerator::stubsHeaderName() const
++    {
++        return isOverlay() ? m_overlayName + "_stubs.h" : "ps2_recompiled_stubs.h";
++    }
++
++    std::string CodeGenerator::includeGeneratedHeader(const std::string &header) const
++    {
++        // The main ELF's headers are found through the include path; an overlay's sit beside its sources.
++        return isOverlay() ? "#include \"" + header + "\"\n" : "#include <" + header + ">\n";
++    }
++
++    std::string CodeGenerator::overlayNamespace() const
++    {
++        return isOverlay() ? "ps2x_overlay_" + m_overlayName : std::string();
++    }
++
++    std::string CodeGenerator::namespaceOpen() const
++    {
++        return isOverlay() ? "namespace " + overlayNamespace() + " {\n\n" : std::string();
++    }
++
++    std::string CodeGenerator::namespaceClose() const
++    {
++        return isOverlay() ? "} // namespace " + overlayNamespace() + "\n" : std::string();
++    }
++
+diff --git a/ps2xRecomp/src/lib/config_manager.cpp b/ps2xRecomp/src/lib/config_manager.cpp
+index 93a40e9..e6dab1c 100644
+--- a/ps2xRecomp/src/lib/config_manager.cpp
++++ b/ps2xRecomp/src/lib/config_manager.cpp
+@@ -8,0 +9,2 @@
++#include <cctype>
++#include <iterator>
+@@ -13,0 +16,92 @@ namespace ps2recomp
++    namespace
++    {
++        constexpr uint32_t kEeRamSize = 32u * 1024u * 1024u;
++        constexpr uint32_t kMaxOverlaySignatureSize = 256u;
++
++        // An integer or a numeric string ("0x00D00000"); absent keys keep the fallback.
++        uint32_t readOverlayU32(const toml::value &table, const char *key, uint32_t fallback, bool required)
++        {
++            if (!table.contains(key))
++            {
++                if (required)
++                    throw std::invalid_argument(std::string("[overlay] requires ") + key);
++                return fallback;
++            }
++            const auto &value = table.at(key);
++            int64_t number = 0;
++            if (value.is_integer())
++            {
++                number = value.as_integer();
++            }
++            else if (value.is_string())
++            {
++                const std::string text = value.as_string();
++                size_t used = 0;
++                number = static_cast<int64_t>(std::stoll(text, &used, 0));
++                if (used != text.size())
++                    throw std::invalid_argument(std::string("[overlay] ") + key + " is not a number: " + text);
++            }
++            else
++            {
++                throw std::invalid_argument(std::string("[overlay] ") + key + " must be an integer");
++            }
++            if (number < 0 || number > static_cast<int64_t>(std::numeric_limits<uint32_t>::max()))
++                throw std::invalid_argument(std::string("[overlay] ") + key + " is out of range");
++            return static_cast<uint32_t>(number);
++        }
++
++        bool isOverlayIdentifier(const std::string &name)
++        {
++            if (name.empty() || name.size() > 64u || std::isdigit(static_cast<unsigned char>(name.front())))
++                return false;
++            return std::all_of(name.begin(), name.end(), [](char c)
++                               { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
++        }
++
++        OverlayConfig parseOverlay(const toml::value &table)
++        {
++            if (!table.is_table())
++                throw std::invalid_argument("[overlay] must be a table");
++            static const char *const kKeys[] = {"name", "load_address", "image_size", "signature_offset",
++                                                "signature_size", "input_format", "code_offset", "code_size",
++                                                "bss_size", "entry"};
++            for (const auto &[key, value] : table.as_table())
++            {
++                (void)value;
++                if (std::none_of(std::begin(kKeys), std::end(kKeys), [&key](const char *known) { return key == known; }))
++                    throw std::invalid_argument("[overlay] unknown key: " + key);
++            }
++            OverlayConfig overlay;
++            overlay.enabled = true;
++            overlay.name = toml::find_or<std::string>(table, "name", "");
++            if (!isOverlayIdentifier(overlay.name))
++                throw std::invalid_argument("[overlay] name must be a C identifier of at most 64 characters: '" +
++                                            overlay.name + "'");
++            overlay.loadAddress = readOverlayU32(table, "load_address", 0u, true);
++            overlay.imageSize = readOverlayU32(table, "image_size", 0u, false);
++            overlay.signatureOffset = readOverlayU32(table, "signature_offset", 0u, false);
++            overlay.signatureSize = readOverlayU32(table, "signature_size", 0u, true);
++            overlay.rawCodeOffset = readOverlayU32(table, "code_offset", 0u, false);
++            overlay.rawCodeSize = readOverlayU32(table, "code_size", 0u, false);
++            overlay.rawBssSize = readOverlayU32(table, "bss_size", 0u, false);
++            overlay.rawEntry = readOverlayU32(table, "entry", 0u, false);
++
++            const std::string format = toml::find_or<std::string>(table, "input_format", "auto");
++            if (format == "auto")
++                overlay.inputFormat = OverlayConfig::InputFormat::Auto;
++            else if (format == "elf")
++                overlay.inputFormat = OverlayConfig::InputFormat::Elf;
++            else if (format == "raw")
++                overlay.inputFormat = OverlayConfig::InputFormat::Raw;
++            else
++                throw std::invalid_argument("[overlay] input_format must be auto, elf or raw: " + format);
++
++            if ((overlay.loadAddress & 3u) != 0u || overlay.loadAddress >= kEeRamSize)
++                throw std::invalid_argument("[overlay] load_address must be 4-byte aligned and inside 32 MiB EE RAM");
++            if (overlay.signatureSize == 0u || overlay.signatureSize > kMaxOverlaySignatureSize)
++                throw std::invalid_argument("[overlay] signature_size must be 1..256");
++            if ((overlay.rawCodeOffset & 3u) != 0u || (overlay.rawCodeSize & 3u) != 0u || (overlay.rawEntry & 3u) != 0u)
++                throw std::invalid_argument("[overlay] code_offset, code_size and entry must be 4-byte aligned");
++            return overlay;
++        }
++    }
+@@ -153,0 +248,5 @@ namespace ps2recomp
++            if (data.contains("overlay"))
++            {
++                config.overlay = parseOverlay(data.at("overlay"));
++            }
++
+@@ -307,0 +407,25 @@ namespace ps2recomp
++        if (config.overlay.enabled)
++        {
++            const OverlayConfig &overlay = config.overlay;
++            auto hex = [](uint32_t value)
++            {
++                std::ostringstream stream;
++                stream << "0x" << std::hex << value;
++                return stream.str();
++            };
++            toml::table table;
++            table["name"] = overlay.name;
++            table["load_address"] = hex(overlay.loadAddress);
++            table["image_size"] = hex(overlay.imageSize);
++            table["signature_offset"] = hex(overlay.signatureOffset);
++            table["signature_size"] = static_cast<int64_t>(overlay.signatureSize);
++            table["input_format"] = overlay.inputFormat == OverlayConfig::InputFormat::Elf   ? "elf"
++                                    : overlay.inputFormat == OverlayConfig::InputFormat::Raw ? "raw"
++                                                                                             : "auto";
++            table["code_offset"] = hex(overlay.rawCodeOffset);
++            table["code_size"] = hex(overlay.rawCodeSize);
++            table["bss_size"] = hex(overlay.rawBssSize);
++            table["entry"] = hex(overlay.rawEntry);
++            data["overlay"] = table;
++        }
++
+diff --git a/ps2xRecomp/src/lib/elf_parser.cpp b/ps2xRecomp/src/lib/elf_parser.cpp
+index 9d3b9f0..b9b7371 100644
+--- a/ps2xRecomp/src/lib/elf_parser.cpp
++++ b/ps2xRecomp/src/lib/elf_parser.cpp
+@@ -25,0 +26,2 @@
++#include <iterator>
++#include <vector>
+@@ -2280,0 +2283,96 @@ namespace ps2recomp
++    bool ElfParser::HasElfMagic(const std::string &filePath)
++    {
++        std::ifstream file(filePath, std::ios::binary);
++        char magic[4] = {};
++        return file.read(magic, sizeof(magic)) && magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' &&
++               magic[3] == 'F';
++    }
++
++    bool ElfParser::parseRawImage(const OverlayConfig &overlay)
++    {
++        auto fail = [this](const std::string &message)
++        {
++            if (m_reporter)
++            {
++                m_reporter->error("overlay", message);
++            }
++            return false;
++        };
++
++        std::ifstream file(m_filePath, std::ios::binary);
++        if (!file)
++        {
++            return fail("Could not open raw overlay image: " + m_filePath);
++        }
++        const std::vector<char> image((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
++        constexpr uint64_t kEeRamSize = 32ull * 1024ull * 1024ull;
++        const uint64_t fileSize = image.size();
++        const uint64_t codeOffset = overlay.rawCodeOffset;
++        const uint64_t codeSize = overlay.rawCodeSize != 0u ? overlay.rawCodeSize
++                                                            : (fileSize > codeOffset ? fileSize - codeOffset : 0u);
++        if (fileSize == 0u || codeSize == 0u || codeOffset + codeSize > fileSize || (codeSize & 3u) != 0u)
++        {
++            return fail("raw overlay code range [code_offset, code_offset + code_size) must be a non-empty, "
++                        "4-byte multiple inside the file: " + m_filePath);
++        }
++        const uint64_t loadAddress = overlay.loadAddress;
++        if (loadAddress + fileSize + overlay.rawBssSize > kEeRamSize)
++        {
++            return fail("raw overlay image does not fit in 32 MiB EE RAM at its load address");
++        }
++        const uint64_t codeStart = loadAddress + codeOffset;
++        const uint64_t entry = overlay.rawEntry != 0u ? overlay.rawEntry : codeStart;
++        if (entry < codeStart || entry >= codeStart + codeSize)
++        {
++            return fail("raw overlay entry must lie in the code range");
++        }
++
++        ELFIO::elfio writer;
++        writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
++        writer.set_os_abi(ELFIO::ELFOSABI_NONE);
++        writer.set_type(ELFIO::ET_EXEC);
++        writer.set_machine(ELFIO::EM_MIPS);
++        writer.set_entry(static_cast<ELFIO::Elf64_Addr>(entry));
++        auto addSection = [&writer](const char *name, ELFIO::Elf_Xword flags, uint64_t address, const char *data,
++                                    uint64_t size)
++        {
++            ELFIO::section *section = writer.sections.add(name);
++            section->set_type(ELFIO::SHT_PROGBITS);
++            section->set_flags(flags);
++            section->set_addr_align(4);
++            section->set_address(static_cast<ELFIO::Elf64_Addr>(address));
++            section->set_data(data, static_cast<ELFIO::Elf_Word>(size));
++        };
++        if (codeOffset > 0u)
++        {
++            addSection(".ovl_head", ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE, loadAddress, image.data(), codeOffset);
++        }
++        addSection(".text", ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR, codeStart, image.data() + codeOffset, codeSize);
++        if (codeOffset + codeSize < fileSize)
++        {
++            addSection(".ovl_data", ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE, codeStart + codeSize,
++                       image.data() + codeOffset + codeSize, fileSize - codeOffset - codeSize);
++        }
++        if (overlay.rawBssSize != 0u)
++        {
++            ELFIO::section *bss = writer.sections.add(".bss");
++            bss->set_type(ELFIO::SHT_NOBITS);
++            bss->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE);
++            bss->set_addr_align(4);
++            bss->set_address(static_cast<ELFIO::Elf64_Addr>(loadAddress + fileSize));
++            bss->set_size(overlay.rawBssSize);
++        }
++
++        std::stringstream stream(std::ios::in | std::ios::out | std::ios::binary);
++        if (!writer.save(stream) || !m_elf->load(stream))
++        {
++            return fail("Could not present raw overlay image as an ELF: " + m_filePath);
++        }
++
++        loadSections();
++        loadSymbols();
++        loadRelocations();
++        loadDebugFunctions();
++        return true;
++    }
++
+diff --git a/ps2xRecomp/src/lib/function_emitter.cpp b/ps2xRecomp/src/lib/function_emitter.cpp
+index 3192e90..84c3cd2 100644
+--- a/ps2xRecomp/src/lib/function_emitter.cpp
++++ b/ps2xRecomp/src/lib/function_emitter.cpp
+@@ -48,2 +48,2 @@ namespace ps2recomp
+-            ss << "#include <ps2_recompiled_functions.h>\n";
+-            ss << "#include <ps2_recompiled_stubs.h>\n\n";
++            ss << cg.includeGeneratedHeader(cg.functionsHeaderName());
++            ss << cg.includeGeneratedHeader(cg.stubsHeaderName()) << "\n";
+@@ -54,0 +55 @@ namespace ps2recomp
++            ss << cg.namespaceOpen();
+@@ -236,0 +238,4 @@ namespace ps2recomp
++        if (useHeaders)
++        {
++            ss << cg.namespaceClose();
++        }
+diff --git a/ps2xRecomp/src/lib/function_table_emitter.cpp b/ps2xRecomp/src/lib/function_table_emitter.cpp
+index df86b28..8afcdc1 100644
+--- a/ps2xRecomp/src/lib/function_table_emitter.cpp
++++ b/ps2xRecomp/src/lib/function_table_emitter.cpp
+@@ -23 +23 @@ namespace ps2recomp
+-    std::string FunctionTableEmitter::emit(const std::vector<Function> &functions, const std::map<uint32_t, std::string> &stubs)
++    std::vector<std::pair<uint32_t, std::string>> FunctionTableEmitter::collectEntries(const std::vector<Function> &functions)
+@@ -25,2 +24,0 @@ namespace ps2recomp
+-        (void)stubs;
+-
+@@ -163,0 +162,8 @@ namespace ps2recomp
++        return entries;
++    }
++
++    std::string FunctionTableEmitter::emit(const std::vector<Function> &functions, const std::map<uint32_t, std::string> &stubs)
++    {
++        (void)stubs;
++
++        const std::vector<std::pair<uint32_t, std::string>> entries = collectEntries(functions);
+@@ -202,0 +209,95 @@ namespace ps2recomp
++
++    std::string FunctionTableEmitter::emitOverlaySource(const std::vector<Function> &functions, const OverlayImageInfo &image)
++    {
++        CodeGenerator &cg = m_codeGenerator;
++        const std::vector<std::pair<uint32_t, std::string>> entries = collectEntries(functions);
++        const uint64_t imageEnd = static_cast<uint64_t>(image.loadAddress) + image.imageSize;
++        if (entries.empty())
++        {
++            throw std::runtime_error("Overlay " + image.name + " has no recompiled function to register.");
++        }
++        for (const auto &[address, name] : entries)
++        {
++            if (address < image.loadAddress || address >= imageEnd)
++            {
++                std::ostringstream oss;
++                oss << "Overlay " << image.name << " entry " << name << " at 0x" << std::hex << address
++                    << " lies outside the image [0x" << image.loadAddress << ", 0x" << imageEnd << ")";
++                throw std::runtime_error(oss.str());
++            }
++        }
++
++        const std::string ns = cg.overlayNamespace();
++        std::stringstream ss;
++        ss << "// Generated by ps2_recomp from an [overlay] configuration; do not edit.\n";
++        ss << "// Overlay " << image.name << ": load address 0x" << std::hex << image.loadAddress << ", 0x"
++           << image.imageSize << " bytes, signature of " << std::dec << image.signature.size()
++           << " bytes at +0x" << std::hex << image.signatureOffset << std::dec << ".\n";
++        ss << "// Nothing here is active until the port registers it after PS2Runtime::loadELF:\n";
++        ss << "// ps2x_register_overlay_" << image.name << "() or ps2_overlays::installCatalog().\n";
++        ss << "#include <cstdio>\n";
++        ss << "#include \"ps2_overlays.h\"\n";
++        ss << "#include \"ps2_runtime.h\"\n";
++        ss << cg.includeGeneratedHeader(cg.functionsHeaderName());
++        ss << cg.includeGeneratedHeader(cg.stubsHeaderName());
++        ss << cg.includeGeneratedHeader(image.name + "_overlay.h") << "\n";
++
++        ss << "namespace " << ns << " {\n";
++        ss << "namespace {\n";
++        ss << "const ps2_overlays::Entry kEntries[] = {\n";
++        for (const auto &[address, name] : entries)
++        {
++            ss << "    {0x" << std::hex << address << std::dec << "u, &" << name << "},\n";
++        }
++        ss << "};\n";
++        ss << "const uint8_t kSignature[] = {";
++        for (size_t i = 0; i < image.signature.size(); ++i)
++        {
++            ss << (i % 16u == 0u ? "\n    " : " ") << "0x" << std::hex << static_cast<unsigned>(image.signature[i])
++               << std::dec << ",";
++        }
++        ss << "\n};\n";
++        ss << "} // namespace\n\n";
++        ss << "extern const ps2_overlays::Image kImage = {\n";
++        ss << "    \"" << image.name << "\",\n";
++        ss << "    0x" << std::hex << image.loadAddress << "u, // load address\n";
++        ss << "    0x" << image.imageSize << "u, // image size\n";
++        ss << "    0x" << image.signatureOffset << "u, // signature offset\n" << std::dec;
++        ss << "    kSignature,\n";
++        ss << "    static_cast<uint32_t>(sizeof(kSignature)),\n";
++        ss << "    kEntries,\n";
++        ss << "    static_cast<uint32_t>(sizeof(kEntries) / sizeof(kEntries[0])),\n";
++        ss << "};\n";
++        ss << "} // namespace " << ns << "\n\n";
++
++        ss << "bool ps2x_register_overlay_" << image.name << "()\n";
++        ss << "{\n";
++        ss << "    const ps2_overlays::Status status = ps2_overlays::registerImage(" << ns << "::kImage);\n";
++        ss << "    if (status == ps2_overlays::Status::Ok)\n";
++        ss << "        return true;\n";
++        ss << "    std::fprintf(stderr, \"[ps2-overlay] cannot register " << image.name
++           << ": %s\\n\", ps2_overlays::describe(status));\n";
++        ss << "    return false;\n";
++        ss << "}\n\n";
++
++        ss << "// Passive catalog entry: link this file into the executable itself, not into a static library.\n";
++        ss << "static const ps2_overlays::CatalogRegistrar g_ps2xOverlayCatalog_" << image.name << "(" << ns
++           << "::kImage);\n";
++        return ss.str();
++    }
++
++    std::string FunctionTableEmitter::emitOverlayHeader(const OverlayImageInfo &image)
++    {
++        std::stringstream ss;
++        ss << "// Generated by ps2_recomp from an [overlay] configuration; do not edit.\n";
++        ss << "#pragma once\n\n";
++        ss << "#include \"ps2_overlays.h\"\n\n";
++        ss << "namespace " << m_codeGenerator.overlayNamespace() << " {\n";
++        ss << "extern const ps2_overlays::Image kImage;\n";
++        ss << "}\n\n";
++        ss << "// Registers overlay " << image.name << " now; call after PS2Runtime::loadELF (which clears the "
++           << "registry).\n";
++        ss << "// Returns false and prints the reason when the registry rejects it.\n";
++        ss << "bool ps2x_register_overlay_" << image.name << "();\n";
++        return ss.str();
++    }
+diff --git a/ps2xRecomp/src/lib/ps2_recompiler.cpp b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+index 2962e82..56cecea 100644
+--- a/ps2xRecomp/src/lib/ps2_recompiler.cpp
++++ b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+@@ -1,0 +2 @@
++#include "ps2recomp/Emitters/function_table_emitter.h"
+@@ -102 +103 @@ namespace ps2recomp
+-        void writeCombinedOutputPreamble(std::ostream &output)
++        void writeCombinedOutputPreamble(std::ostream &output, const CodeGenerator &codeGenerator)
+@@ -105 +106 @@ namespace ps2recomp
+-            output << "#include <ps2_recompiled_functions.h>\n\n";
++            output << codeGenerator.includeGeneratedHeader(codeGenerator.functionsHeaderName()) << "\n";
+@@ -108 +109 @@ namespace ps2recomp
+-            output << "#include <ps2_recompiled_stubs.h>\n";
++            output << codeGenerator.includeGeneratedHeader(codeGenerator.stubsHeaderName());
+@@ -114,0 +116 @@ namespace ps2recomp
++            output << codeGenerator.namespaceOpen();
+@@ -840,0 +843,78 @@ namespace ps2recomp
++    bool PS2Recompiler::prepareOverlay()
++    {
++        const OverlayConfig &overlay = m_config.overlay;
++        constexpr uint64_t kEeRamSize = 32ull * 1024ull * 1024ull;
++        auto hex = [](uint64_t value)
++        {
++            std::ostringstream stream;
++            stream << "0x" << std::hex << value;
++            return stream.str();
++        };
++        auto fail = [this](const std::string &message)
++        {
++            m_reporter.error("overlay", message);
++            return false;
++        };
++        auto isInitialized = [](const Section &section)
++        {
++            return (section.isCode || section.isData) && !section.isBSS && section.data != nullptr && section.size != 0u;
++        };
++
++        // By default the image is every initialized loaded byte from the load address on (raw input: the file).
++        uint64_t initializedEnd = overlay.loadAddress;
++        for (const Section &section : m_sections)
++        {
++            if (isInitialized(section) && section.address >= overlay.loadAddress)
++            {
++                initializedEnd = std::max<uint64_t>(initializedEnd, static_cast<uint64_t>(section.address) + section.size);
++            }
++        }
++        const uint64_t imageSize = overlay.imageSize != 0u ? overlay.imageSize : initializedEnd - overlay.loadAddress;
++        if (imageSize == 0u || overlay.loadAddress + imageSize > kEeRamSize)
++        {
++            return fail("[overlay] " + overlay.name + ": the image is empty or does not fit in 32 MiB EE RAM at " +
++                        hex(overlay.loadAddress));
++        }
++        if (static_cast<uint64_t>(overlay.signatureOffset) + overlay.signatureSize > imageSize)
++        {
++            return fail("[overlay] " + overlay.name + ": the signature must lie inside the image (size " + hex(imageSize) + ")");
++        }
++
++        m_overlaySignature.clear();
++        for (uint32_t i = 0; i < overlay.signatureSize; ++i)
++        {
++            const uint32_t address = overlay.loadAddress + overlay.signatureOffset + i;
++            const Section *owner = nullptr;
++            for (const Section &section : m_sections)
++            {
++                if (isInitialized(section) && address >= section.address && address - section.address < section.size)
++                {
++                    owner = &section;
++                    break;
++                }
++            }
++            if (owner == nullptr)
++            {
++                return fail("[overlay] " + overlay.name + ": signature byte at " + hex(address) +
++                            " is not initialized data of the input image");
++            }
++            m_overlaySignature.push_back(owner->data[address - owner->address]);
++        }
++
++        for (const Function &function : m_functions)
++        {
++            if (function.start < overlay.loadAddress || function.start >= overlay.loadAddress + imageSize)
++            {
++                return fail("[overlay] " + overlay.name + ": function " + function.name + " at " + hex(function.start) +
++                            " lies outside the image [" + hex(overlay.loadAddress) + ", " +
++                            hex(overlay.loadAddress + imageSize) + ")");
++            }
++        }
++
++        m_overlayImageSize = static_cast<uint32_t>(imageSize);
++        m_reporter.info("overlay", "overlay " + overlay.name + ": load address " + hex(overlay.loadAddress) + ", image " +
++                                       hex(imageSize) + " bytes, signature " + std::to_string(overlay.signatureSize) +
++                                       " bytes at +" + hex(overlay.signatureOffset));
++        return true;
++    }
++
+@@ -915 +995,6 @@ namespace ps2recomp
+-            m_reporter.progress("parsing ELF");
++            const OverlayConfig &overlay = m_config.overlay;
++            const bool rawInput = overlay.enabled &&
++                                  (overlay.inputFormat == OverlayConfig::InputFormat::Raw ||
++                                   (overlay.inputFormat == OverlayConfig::InputFormat::Auto &&
++                                    !ElfParser::HasElfMagic(m_config.inputPath)));
++            m_reporter.progress(rawInput ? "reading raw overlay image" : "parsing ELF");
+@@ -918 +1003 @@ namespace ps2recomp
+-            if (!m_elfParser->parse())
++            if (!(rawInput ? m_elfParser->parseRawImage(overlay) : m_elfParser->parse()))
+@@ -920 +1005,2 @@ namespace ps2recomp
+-                m_reporter.error("elf", "Failed to parse ELF file: " + m_config.inputPath);
++                m_reporter.error("elf", std::string(rawInput ? "Failed to read raw overlay image: " : "Failed to parse ELF file: ") +
++                                            m_config.inputPath);
+@@ -922,0 +1009,5 @@ namespace ps2recomp
++            if (overlay.enabled && !rawInput &&
++                (overlay.rawCodeOffset != 0u || overlay.rawCodeSize != 0u || overlay.rawBssSize != 0u || overlay.rawEntry != 0u))
++            {
++                m_reporter.warning("overlay", "code_offset, code_size, bss_size and entry apply to raw images only; the ELF's sections are used");
++            }
+@@ -947,0 +1039,11 @@ namespace ps2recomp
++            if (overlay.enabled && !prepareOverlay())
++            {
++                return false;
++            }
++
++            if (overlay.enabled)
++            {
++                // An overlay is entered from the game's own code: no ELF bootstrap and no dense function table.
++                m_bootstrapInfo = {};
++            }
++            else
+@@ -1052,0 +1155 @@ namespace ps2recomp
++            m_codeGenerator->setOverlayName(overlay.enabled ? overlay.name : std::string());
+@@ -1385,0 +1489 @@ namespace ps2recomp
++                        stubFile << codeGenerator.namespaceOpen();
+@@ -1386,0 +1491 @@ namespace ps2recomp
++                        stubFile << codeGenerator.namespaceClose();
+@@ -1406 +1511,2 @@ namespace ps2recomp
+-                fs::path outputPath = fs::path(m_config.outputPath) / "ps2_recompiled_functions.cpp";
++                fs::path outputPath = fs::path(m_config.outputPath) /
++                                      (m_config.overlay.enabled ? m_config.overlay.name + "_functions.cpp" : std::string("ps2_recompiled_functions.cpp"));
+@@ -1413 +1519 @@ namespace ps2recomp
+-                writeCombinedOutputPreamble(combinedOutput);
++                writeCombinedOutputPreamble(combinedOutput, *m_codeGenerator);
+@@ -1603,0 +1710 @@ namespace ps2recomp
++                combinedOutput << m_codeGenerator->namespaceClose();
+@@ -1800,5 +1907,24 @@ namespace ps2recomp
+-            std::string registerFunctions = m_codeGenerator->generateFunctionRegistration(m_functions, m_generatedStubs);
+-            m_generatedStubs.clear();
+-
+-            fs::path registerPath = fs::path(m_config.outputPath) / "register_functions.cpp";
+-            if (!writeToFile(registerPath.string(), registerFunctions))
++            fs::path registerPath;
++            if (m_config.overlay.enabled)
++            {
++                OverlayImageInfo image;
++                image.name = m_config.overlay.name;
++                image.loadAddress = m_config.overlay.loadAddress;
++                image.imageSize = m_overlayImageSize;
++                image.signatureOffset = m_config.overlay.signatureOffset;
++                image.signature = m_overlaySignature;
++                FunctionTableEmitter emitter(*m_codeGenerator);
++                const std::string source = emitter.emitOverlaySource(m_functions, image);
++                m_generatedStubs.clear();
++                const fs::path headerPath = fs::path(m_config.outputPath) / (image.name + "_overlay.h");
++                if (!writeToFile(headerPath.string(), emitter.emitOverlayHeader(image)))
++                {
++                    throw std::runtime_error("Failed to write overlay header: " + headerPath.string());
++                }
++                registerPath = fs::path(m_config.outputPath) / (image.name + "_overlay.cpp");
++                if (!writeToFile(registerPath.string(), source))
++                {
++                    throw std::runtime_error("Failed to write overlay registration file: " + registerPath.string());
++                }
++            }
++            else
+@@ -1806 +1932,8 @@ namespace ps2recomp
+-                throw std::runtime_error("Failed to write function registration file: " + registerPath.string());
++                std::string registerFunctions = m_codeGenerator->generateFunctionRegistration(m_functions, m_generatedStubs);
++                m_generatedStubs.clear();
++
++                registerPath = fs::path(m_config.outputPath) / "register_functions.cpp";
++                if (!writeToFile(registerPath.string(), registerFunctions))
++                {
++                    throw std::runtime_error("Failed to write function registration file: " + registerPath.string());
++                }
+@@ -1836,0 +1970 @@ namespace ps2recomp
++            ss << m_codeGenerator->namespaceOpen();
+@@ -1863,0 +1998 @@ namespace ps2recomp
++            ss << m_codeGenerator->namespaceClose();
+@@ -1865 +2000 @@ namespace ps2recomp
+-            fs::path headerPath = fs::path(m_config.outputPath) / "ps2_recompiled_stubs.h";
++            fs::path headerPath = fs::path(m_config.outputPath) / m_codeGenerator->stubsHeaderName();
+@@ -1888,2 +2023,4 @@ namespace ps2recomp
+-            ss << "#ifndef PS2_RECOMPILED_FUNCTIONS_H\n";
+-            ss << "#define PS2_RECOMPILED_FUNCTIONS_H\n\n";
++            const std::string guard = m_config.overlay.enabled ? "PS2X_OVERLAY_" + m_config.overlay.name + "_FUNCTIONS_H"
++                                                               : std::string("PS2_RECOMPILED_FUNCTIONS_H");
++            ss << "#ifndef " << guard << "\n";
++            ss << "#define " << guard << "\n\n";
+@@ -1893,0 +2031 @@ namespace ps2recomp
++            ss << m_codeGenerator->namespaceOpen();
+@@ -1907 +2045,5 @@ namespace ps2recomp
+-            ss << "\n#endif // PS2_RECOMPILED_FUNCTIONS_H\n";
++            if (m_codeGenerator->isOverlay())
++            {
++                ss << "\n" << m_codeGenerator->namespaceClose();
++            }
++            ss << "\n#endif // " << guard << "\n";
+@@ -1909 +2051 @@ namespace ps2recomp
+-            fs::path headerPath = fs::path(m_config.outputPath) / "ps2_recompiled_functions.h";
++            fs::path headerPath = fs::path(m_config.outputPath) / m_codeGenerator->functionsHeaderName();
+@@ -2393,0 +2536,6 @@ namespace ps2recomp
++        if (m_config.overlay.enabled)
++        {
++            // Object files of different overlays must not collide in one build directory.
++            safeName = m_config.overlay.name + "_" + safeName;
++        }
++
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index 14ab252..b121fde 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -419,0 +420 @@ add_library(ps2_runtime STATIC
++    src/lib/ps2_overlays.cpp
+diff --git a/ps2xRuntime/include/ps2_overlays.h b/ps2xRuntime/include/ps2_overlays.h
+new file mode 100644
+index 0000000..969110e
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_overlays.h
+@@ -0,0 +1,116 @@
++#pragma once
++// Run-time code overlays: code images a game copies into EE RAM while it runs (stage, enemy or menu modules).
++//
++// Each image is recompiled on its own (ps2_recomp with an [overlay] section, see docs/GAME_PORTING.md). Its
++// generated *_overlay.cpp describes the image: load address, size, a signature (bytes at a fixed offset from the
++// load address that identify this image while it is resident) and the image's {guest address, recompiled
++// function} table. PS2Runtime::lookupFunction / hasFunction consult the registry for addresses inside a
++// registered image and dispatch through whichever image's signature is in EE RAM at that moment, so several
++// images can share one load address.
++//
++// Disabled by default: with nothing registered the dispatch hot path costs one subtract and compare and behaves
++// exactly as before. PS2Runtime::loadELF clears the registry. A port registers its images AFTER loadELF and
++// before run() (installCatalog() or the generated ps2x_register_overlay_<name>() functions). Registration and
++// clear() must not race guest execution; lookups are safe from any number of guest threads.
++//
++// Load addresses, sizes and signatures come from each port's own configuration; this file holds no game data.
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++#include <string>
++
++struct R5900Context;
++class PS2Runtime;
++
++namespace ps2_overlays
++{
++    // Same type as PS2Runtime::RecompiledFunction (checked in ps2_runtime.cpp).
++    using Function = void (*)(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
++
++    constexpr uint32_t kGuestRamSize = 32u * 1024u * 1024u; // equals PS2_RAM_SIZE (checked in ps2_runtime.cpp)
++    constexpr uint32_t kMaxSignatureSize = 256u;
++
++    struct Entry
++    {
++        uint32_t address;
++        Function function;
++    };
++
++    struct Image
++    {
++        const char *name = nullptr;         // unique; used in logs and diagnostics
++        uint32_t loadAddress = 0u;          // EE RAM address the game copies the image to (physical, < 32 MiB)
++        uint32_t imageSize = 0u;            // bytes from loadAddress that belong to the image
++        uint32_t signatureOffset = 0u;      // relative to loadAddress; signature must lie inside the image
++        const uint8_t *signature = nullptr; // bytes present at loadAddress + signatureOffset while resident
++        uint32_t signatureSize = 0u;        // 1..kMaxSignatureSize
++        const Entry *entries = nullptr;     // ascending, unique, 4-byte aligned, inside the image
++        uint32_t entryCount = 0u;           // at least one
++    };
++
++    enum class Status
++    {
++        Ok,
++        InvalidImage,       // null/empty field, size or signature out of range, image beyond EE RAM
++        BadEntries,         // unsorted, duplicate, unaligned, null or outside the image
++        DuplicateName,      // another registered image already uses this name
++        AmbiguousSignature, // an image at the same load address could match the same RAM contents
++    };
++    const char *describe(Status status);
++
++    // Copies the description (name, signature and entries); the caller's storage may go away afterwards.
++    // Two images at one load address must have signatures that overlap in at least one byte where they differ,
++    // otherwise some RAM contents would match both and the dispatch would be ambiguous.
++    Status registerImage(const Image &image);
++    void clear();
++    size_t registeredCount();
++
++    enum class Resolution
++    {
++        NotCovered, // no resident registered image contains the address: use the main function table
++        Found,      // a resident image contains the address and has a function there
++        Missing,    // a resident image contains the address but has no function there (never the main table)
++    };
++    struct Lookup
++    {
++        Resolution resolution = Resolution::NotCovered;
++        Function function = nullptr;
++        const char *image = nullptr; // name of the resident image (Found / Missing); valid until clear()
++    };
++
++    namespace detail
++    {
++        extern std::atomic<uint32_t> g_coverLow;  // lowest registered load address
++        extern std::atomic<uint32_t> g_coverSpan; // 0 while nothing is registered
++    }
++
++    // True when the address may lie in a registered image. The only cost on the dispatch hot path.
++    inline bool mayCover(uint32_t address) noexcept
++    {
++        return address - detail::g_coverLow.load(std::memory_order_relaxed) <
++               detail::g_coverSpan.load(std::memory_order_relaxed);
++    }
++
++    // rdram: the 32 MiB EE RAM buffer. Images at higher load addresses are tried first: a smaller image loaded
++    // inside a larger one's range replaces that part of it.
++    Lookup resolve(const uint8_t *rdram, uint32_t address);
++
++    // Name of the image resident at a registered load address, nullptr when none matches (or no such area).
++    const char *residentImage(const uint8_t *rdram, uint32_t loadAddress);
++    // "0x00D20000=<name> 0x00D00000=-" for diagnostics; empty when nothing is registered.
++    std::string describeResident(const uint8_t *rdram);
++
++    // Passive catalog: generated overlay sources add their image here from a static initializer. Nothing in the
++    // catalog is active until the port calls installCatalog() after loadELF. The catalog is never cleared.
++    struct CatalogRegistrar
++    {
++        explicit CatalogRegistrar(const Image &image);
++    };
++    size_t catalogSize();
++    struct InstallReport
++    {
++        size_t installed = 0u;
++        size_t failed = 0u; // each failure is printed with its reason
++    };
++    InstallReport installCatalog();
++}
+diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
+index 6721bc3..4e15f07 100644
+--- a/ps2xRuntime/include/runtime/ps2_memory.h
++++ b/ps2xRuntime/include/runtime/ps2_memory.h
+@@ -299,0 +300 @@ public:
++    const uint8_t *getRDRAM() const { return m_rdram; }
+diff --git a/ps2xRuntime/src/lib/ps2_overlays.cpp b/ps2xRuntime/src/lib/ps2_overlays.cpp
+new file mode 100644
+index 0000000..97a9cf7
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_overlays.cpp
+@@ -0,0 +1,351 @@
++#include "ps2_overlays.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <cstring>
++#include <limits>
++#include <memory>
++#include <mutex>
++#include <vector>
++
++namespace ps2_overlays
++{
++    namespace detail
++    {
++        std::atomic<uint32_t> g_coverLow{0u};
++        std::atomic<uint32_t> g_coverSpan{0u};
++    }
++
++    namespace
++    {
++        struct StoredImage
++        {
++            std::string name;
++            uint32_t loadAddress = 0u;
++            uint32_t imageEnd = 0u; // loadAddress + imageSize (fits: checked against kGuestRamSize)
++            uint32_t signatureOffset = 0u;
++            std::vector<uint8_t> signature;
++            std::vector<Entry> entries;
++        };
++
++        struct Area
++        {
++            uint32_t loadAddress = 0u;
++            uint32_t coverEnd = 0u; // largest imageEnd of the area's images
++            std::vector<StoredImage> images;
++            mutable std::atomic<int32_t> resident{-1}; // index of the image that matched at the last lookup
++        };
++
++        struct Registry
++        {
++            std::mutex mutex; // registration / clear; lookups do not lock (see ps2_overlays.h)
++            std::vector<std::unique_ptr<Area>> areas; // highest load address first
++        };
++
++        Registry &registry()
++        {
++            static Registry instance;
++            return instance;
++        }
++
++        struct Catalog
++        {
++            std::mutex mutex;
++            std::vector<Image> images;
++        };
++
++        Catalog &catalog()
++        {
++            static Catalog instance; // filled from static initialisers: construct on first use
++            return instance;
++        }
++
++        constexpr uint32_t kLoggedSwitchLimit = 1000u;
++        std::atomic<uint32_t> g_loggedSwitches{0u};
++
++        bool signatureMatches(const StoredImage &image, const uint8_t *rdram)
++        {
++            return std::memcmp(rdram + image.loadAddress + image.signatureOffset, image.signature.data(),
++                               image.signature.size()) == 0;
++        }
++
++        // Some RAM contents match both signatures unless they overlap in at least one byte where they differ.
++        bool signaturesExclusive(const StoredImage &a, const StoredImage &b)
++        {
++            const uint32_t aEnd = a.signatureOffset + static_cast<uint32_t>(a.signature.size());
++            const uint32_t bEnd = b.signatureOffset + static_cast<uint32_t>(b.signature.size());
++            const uint32_t first = std::max(a.signatureOffset, b.signatureOffset);
++            const uint32_t last = std::min(aEnd, bEnd);
++            for (uint32_t offset = first; offset < last; ++offset)
++            {
++                if (a.signature[offset - a.signatureOffset] != b.signature[offset - b.signatureOffset])
++                    return true;
++            }
++            return false;
++        }
++
++        void logSwitch(const Area &area, int32_t index)
++        {
++            const uint32_t count = g_loggedSwitches.fetch_add(1u, std::memory_order_relaxed);
++            if (count < kLoggedSwitchLimit)
++            {
++                std::fprintf(stderr, "[ps2-overlay] 0x%08X now %s\n", area.loadAddress,
++                             index >= 0 ? area.images[static_cast<size_t>(index)].name.c_str()
++                                        : "<no registered image>");
++            }
++            else if (count == kLoggedSwitchLimit)
++            {
++                std::fprintf(stderr, "[ps2-overlay] further resident-image changes are not logged\n");
++            }
++        }
++
++        int32_t residentIndex(const Area &area, const uint8_t *rdram)
++        {
++            int32_t cached = area.resident.load(std::memory_order_relaxed);
++            if (cached >= 0 && signatureMatches(area.images[static_cast<size_t>(cached)], rdram))
++                return cached;
++            int32_t found = -1;
++            for (size_t i = 0; i < area.images.size(); ++i)
++            {
++                if (static_cast<int32_t>(i) != cached && signatureMatches(area.images[i], rdram))
++                {
++                    found = static_cast<int32_t>(i);
++                    break;
++                }
++            }
++            if (found != cached && area.resident.compare_exchange_strong(cached, found, std::memory_order_relaxed))
++                logSwitch(area, found);
++            return found;
++        }
++
++        void publishBounds(const Registry &reg)
++        {
++            uint32_t low = std::numeric_limits<uint32_t>::max();
++            uint32_t high = 0u;
++            for (const auto &area : reg.areas)
++            {
++                low = std::min(low, area->loadAddress);
++                high = std::max(high, area->coverEnd);
++            }
++            if (reg.areas.empty())
++            {
++                low = 0u;
++                high = 0u;
++            }
++            // Span first to 0, so a concurrent reader never pairs a new low with an old span.
++            detail::g_coverSpan.store(0u, std::memory_order_relaxed);
++            detail::g_coverLow.store(low, std::memory_order_relaxed);
++            detail::g_coverSpan.store(high - low, std::memory_order_release);
++        }
++
++        Status validate(const Image &image)
++        {
++            if (image.name == nullptr || image.name[0] == '\0' || image.signature == nullptr ||
++                image.signatureSize == 0u || image.signatureSize > kMaxSignatureSize || image.imageSize == 0u ||
++                image.entries == nullptr || image.entryCount == 0u)
++            {
++                return Status::InvalidImage;
++            }
++            const uint64_t imageEnd = static_cast<uint64_t>(image.loadAddress) + image.imageSize;
++            const uint64_t signatureEnd = static_cast<uint64_t>(image.signatureOffset) + image.signatureSize;
++            if (imageEnd > kGuestRamSize || signatureEnd > image.imageSize)
++                return Status::InvalidImage;
++            for (uint32_t i = 0; i < image.entryCount; ++i)
++            {
++                const Entry &entry = image.entries[i];
++                if (entry.function == nullptr || (entry.address & 3u) != 0u || entry.address < image.loadAddress ||
++                    entry.address >= imageEnd || (i > 0u && entry.address <= image.entries[i - 1u].address))
++                {
++                    return Status::BadEntries;
++                }
++            }
++            return Status::Ok;
++        }
++    }
++
++    const char *describe(Status status)
++    {
++        switch (status)
++        {
++        case Status::Ok:
++            return "ok";
++        case Status::InvalidImage:
++            return "invalid image description";
++        case Status::BadEntries:
++            return "function entries unsorted, duplicate, unaligned, null or outside the image";
++        case Status::DuplicateName:
++            return "an image with this name is already registered";
++        case Status::AmbiguousSignature:
++            return "signature is not exclusive of another image at the same load address";
++        }
++        return "unknown";
++    }
++
++    Status registerImage(const Image &image)
++    {
++        const Status valid = validate(image);
++        if (valid != Status::Ok)
++            return valid;
++
++        StoredImage stored;
++        stored.name = image.name;
++        stored.loadAddress = image.loadAddress;
++        stored.imageEnd = image.loadAddress + image.imageSize;
++        stored.signatureOffset = image.signatureOffset;
++        stored.signature.assign(image.signature, image.signature + image.signatureSize);
++        stored.entries.assign(image.entries, image.entries + image.entryCount);
++
++        Registry &reg = registry();
++        std::lock_guard<std::mutex> lock(reg.mutex);
++        Area *area = nullptr;
++        for (const auto &candidate : reg.areas)
++        {
++            for (const StoredImage &existing : candidate->images)
++            {
++                if (existing.name == stored.name)
++                    return Status::DuplicateName;
++            }
++            if (candidate->loadAddress == stored.loadAddress)
++                area = candidate.get();
++        }
++        if (area != nullptr)
++        {
++            for (const StoredImage &existing : area->images)
++            {
++                if (!signaturesExclusive(existing, stored))
++                    return Status::AmbiguousSignature;
++            }
++        }
++        else
++        {
++            auto created = std::make_unique<Area>();
++            created->loadAddress = stored.loadAddress;
++            area = created.get();
++            reg.areas.push_back(std::move(created));
++            std::sort(reg.areas.begin(), reg.areas.end(),
++                      [](const std::unique_ptr<Area> &a, const std::unique_ptr<Area> &b)
++                      { return a->loadAddress > b->loadAddress; });
++        }
++        area->coverEnd = std::max(area->coverEnd, stored.imageEnd);
++        area->images.push_back(std::move(stored));
++        area->resident.store(-1, std::memory_order_relaxed);
++        publishBounds(reg);
++        return Status::Ok;
++    }
++
++    void clear()
++    {
++        Registry &reg = registry();
++        std::lock_guard<std::mutex> lock(reg.mutex);
++        detail::g_coverSpan.store(0u, std::memory_order_relaxed);
++        reg.areas.clear();
++        publishBounds(reg);
++    }
++
++    size_t registeredCount()
++    {
++        Registry &reg = registry();
++        std::lock_guard<std::mutex> lock(reg.mutex);
++        size_t count = 0u;
++        for (const auto &area : reg.areas)
++            count += area->images.size();
++        return count;
++    }
++
++    Lookup resolve(const uint8_t *rdram, uint32_t address)
++    {
++        Lookup result;
++        if (rdram == nullptr || (address & 3u) != 0u || !mayCover(address))
++            return result;
++        for (const auto &areaPtr : registry().areas)
++        {
++            const Area &area = *areaPtr;
++            if (address < area.loadAddress || address >= area.coverEnd)
++                continue;
++            const int32_t index = residentIndex(area, rdram);
++            if (index < 0)
++                continue;
++            const StoredImage &image = area.images[static_cast<size_t>(index)];
++            if (address >= image.imageEnd)
++                continue; // a lower load address may hold a larger image that covers the address
++            result.image = image.name.c_str();
++            const auto it = std::lower_bound(image.entries.begin(), image.entries.end(), address,
++                                             [](const Entry &entry, uint32_t value) { return entry.address < value; });
++            if (it != image.entries.end() && it->address == address)
++            {
++                result.resolution = Resolution::Found;
++                result.function = it->function;
++            }
++            else
++            {
++                result.resolution = Resolution::Missing;
++            }
++            return result;
++        }
++        return result;
++    }
++
++    const char *residentImage(const uint8_t *rdram, uint32_t loadAddress)
++    {
++        if (rdram == nullptr)
++            return nullptr;
++        for (const auto &area : registry().areas)
++        {
++            if (area->loadAddress != loadAddress)
++                continue;
++            const int32_t index = residentIndex(*area, rdram);
++            return index >= 0 ? area->images[static_cast<size_t>(index)].name.c_str() : nullptr;
++        }
++        return nullptr;
++    }
++
++    std::string describeResident(const uint8_t *rdram)
++    {
++        std::string out;
++        for (const auto &area : registry().areas)
++        {
++            char address[16];
++            std::snprintf(address, sizeof(address), "0x%08X=", area->loadAddress);
++            if (!out.empty())
++                out += ' ';
++            out += address;
++            const int32_t index = rdram ? residentIndex(*area, rdram) : -1;
++            out += index >= 0 ? area->images[static_cast<size_t>(index)].name : std::string("-");
++        }
++        return out;
++    }
++
++    CatalogRegistrar::CatalogRegistrar(const Image &image)
++    {
++        Catalog &cat = catalog();
++        std::lock_guard<std::mutex> lock(cat.mutex);
++        cat.images.push_back(image);
++    }
++
++    size_t catalogSize()
++    {
++        Catalog &cat = catalog();
++        std::lock_guard<std::mutex> lock(cat.mutex);
++        return cat.images.size();
++    }
++
++    InstallReport installCatalog()
++    {
++        InstallReport report;
++        Catalog &cat = catalog();
++        std::lock_guard<std::mutex> lock(cat.mutex);
++        for (const Image &image : cat.images)
++        {
++            const Status status = registerImage(image);
++            if (status == Status::Ok)
++            {
++                ++report.installed;
++                continue;
++            }
++            ++report.failed;
++            std::fprintf(stderr, "[ps2-overlay] cannot register %s: %s\n", image.name ? image.name : "<unnamed>",
++                         describe(status));
++        }
++        return report;
++    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index aa503ff..2b012c8 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -23,0 +24 @@
++#include "ps2_overlays.h"
+@@ -41,0 +43,5 @@
++#include <type_traits>
++
++static_assert(std::is_same_v<ps2_overlays::Function, PS2Runtime::RecompiledFunction>,
++              "overlay entries must use the recompiled function signature");
++static_assert(ps2_overlays::kGuestRamSize == PS2_RAM_SIZE, "overlay bounds must match EE RAM");
+@@ -985,0 +992,2 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
++    // Overlay images belong to one game: a port registers its own after this call (ps2_overlays.h).
++    ps2_overlays::clear();
+@@ -1387,0 +1396,8 @@ bool PS2Runtime::hasFunction(uint32_t address) const
++    if (ps2_overlays::mayCover(address))
++    {
++        // A resident registered image owns its range, even where the main ELF had code before it was loaded.
++        const ps2_overlays::Lookup overlay = ps2_overlays::resolve(m_memory.getRDRAM(), address);
++        if (overlay.resolution != ps2_overlays::Resolution::NotCovered)
++            return overlay.resolution == ps2_overlays::Resolution::Found;
++    }
++
+@@ -1419,0 +1436,9 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
++    bool overlayOwnsAddress = false;
++    if (ps2_overlays::mayCover(address))
++    {
++        const ps2_overlays::Lookup overlay = ps2_overlays::resolve(m_memory.getRDRAM(), address);
++        if (overlay.resolution == ps2_overlays::Resolution::Found)
++            return overlay.function;
++        overlayOwnsAddress = overlay.resolution == ps2_overlays::Resolution::Missing;
++    }
++
+@@ -1421 +1446,5 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
+-    if (generatedFunctionTableSlot(address, slot))
++    if (overlayOwnsAddress)
++    {
++        // The resident image has no function here; the main ELF's code at this address was overwritten.
++    }
++    else if (generatedFunctionTableSlot(address, slot))
+@@ -1437,2 +1466,4 @@ PS2Runtime::RecompiledFunction PS2Runtime::lookupFunction(uint32_t address)
+-              << " codeRegion=" << (m_memory.isCodeAddress(address) ? "yes" : "no")
+-              << " trace=" << formatDispatchHistory()
++              << " codeRegion=" << (m_memory.isCodeAddress(address) ? "yes" : "no");
++    if (ps2_overlays::mayCover(address))
++        std::cerr << " overlays=[" << ps2_overlays::describeResident(m_memory.getRDRAM()) << "]";
++    std::cerr << " trace=" << formatDispatchHistory()
+@@ -1598,2 +1629,4 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+-            << " codeRegion=" << (m_memory.isCodeAddress(targetPc) ? "yes" : "no")
+-            << " policy=" << static_cast<uint32_t>(policy)
++            << " codeRegion=" << (m_memory.isCodeAddress(targetPc) ? "yes" : "no");
++        if (ps2_overlays::mayCover(targetPc))
++            oss << " overlays=[" << ps2_overlays::describeResident(rdram) << "]";
++        oss << " policy=" << static_cast<uint32_t>(policy)
+diff --git a/ps2xTest/CMakeLists.txt b/ps2xTest/CMakeLists.txt
+index 3eaa8b3..0581648 100644
+--- a/ps2xTest/CMakeLists.txt
++++ b/ps2xTest/CMakeLists.txt
+@@ -40,0 +41 @@ add_library(ps2_test_lib STATIC
++    src/ps2_overlay_tests.cpp
+diff --git a/ps2xTest/src/main.cpp b/ps2xTest/src/main.cpp
+index 7b78891..23d61f3 100644
+--- a/ps2xTest/src/main.cpp
++++ b/ps2xTest/src/main.cpp
+@@ -21,0 +22 @@ void register_ps2_float_semantics_tests();
++void register_ps2_overlay_tests();
+@@ -44,0 +46 @@ int main()
++    register_ps2_overlay_tests();
+diff --git a/ps2xTest/src/ps2_overlay_tests.cpp b/ps2xTest/src/ps2_overlay_tests.cpp
+new file mode 100644
+index 0000000..1179711
+--- /dev/null
++++ b/ps2xTest/src/ps2_overlay_tests.cpp
+@@ -0,0 +1,608 @@
++// Run-time code overlay registry (ps2_overlays.h), its PS2Runtime dispatch, and ps2_recomp's [overlay] output.
++// Every address here is synthetic test data, not taken from any game.
++#include "MiniTest.h"
++#include "ps2_overlays.h"
++#include "ps2_runtime.h"
++#include "ps2recomp/config_manager.h"
++#include "ps2recomp/ps2_recompiler.h"
++#include "ps2recomp/types.h"
++
++#include <elfio/elfio.hpp>
++
++#include <chrono>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <iterator>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++using namespace ps2recomp;
++
++namespace
++{
++    constexpr uint32_t kBase = 0x00400000u;
++
++    void overlayFnA(uint8_t *, R5900Context *, PS2Runtime *) {}
++    void overlayFnB(uint8_t *, R5900Context *, PS2Runtime *) {}
++    void overlayFnC(uint8_t *, R5900Context *, PS2Runtime *) {}
++    void mainFn(uint8_t *, R5900Context *, PS2Runtime *) {}
++
++    const uint8_t kSigA[] = {'O', 'V', 'L', 'A'};
++    const uint8_t kSigB[] = {'O', 'V', 'L', 'B'};
++    const ps2_overlays::Entry kEntriesA[] = {{kBase + 0x10u, &overlayFnA}, {kBase + 0x40u, &overlayFnA}};
++    const ps2_overlays::Entry kEntriesB[] = {{kBase + 0x10u, &overlayFnB}};
++
++    ps2_overlays::Image makeImage(const char *name, uint32_t loadAddress, uint32_t size, const uint8_t *signature,
++                                  uint32_t signatureSize, const ps2_overlays::Entry *entries, uint32_t count,
++                                  uint32_t signatureOffset = 0u)
++    {
++        ps2_overlays::Image image;
++        image.name = name;
++        image.loadAddress = loadAddress;
++        image.imageSize = size;
++        image.signatureOffset = signatureOffset;
++        image.signature = signature;
++        image.signatureSize = signatureSize;
++        image.entries = entries;
++        image.entryCount = count;
++        return image;
++    }
++
++    void place(std::vector<uint8_t> &ram, uint32_t address, const uint8_t *bytes, size_t size)
++    {
++        std::memcpy(ram.data() + address, bytes, size);
++    }
++
++    // Passive catalog entry: must stay inactive until a test calls installCatalog().
++    const uint8_t kCatalogSig[] = {'C', 'A', 'T', '0'};
++    const ps2_overlays::Entry kCatalogEntries[] = {{0x00500000u + 0x20u, &overlayFnC}};
++    const ps2_overlays::Image kCatalogImage = {
++        "test_catalog_image", 0x00500000u, 0x100u, 0u, kCatalogSig, 4u, kCatalogEntries, 1u};
++    const ps2_overlays::CatalogRegistrar g_testCatalog(kCatalogImage);
++
++    std::string readText(const std::filesystem::path &path)
++    {
++        std::ifstream file(path, std::ios::binary);
++        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
++    }
++
++    std::filesystem::path uniqueTempDir(const std::string &stem)
++    {
++        const auto suffix = std::to_string(
++            static_cast<unsigned long long>(std::chrono::steady_clock::now().time_since_epoch().count()));
++        const std::filesystem::path dir = std::filesystem::temp_directory_path() / (stem + "-" + suffix);
++        std::filesystem::create_directories(dir);
++        return dir;
++    }
++
++    void putWord(std::vector<char> &image, size_t offset, uint32_t word)
++    {
++        std::memcpy(image.data() + offset, &word, sizeof(word));
++    }
++
++    // 16-byte header (8-byte signature "TESTOVL1" + padding), then code at load + 0x10:
++    //   0x10 A: addiu sp,-16 / sw ra / jal B / nop / jal 0x100000 (main ELF) / nop / lw ra / jr ra / addiu sp,16
++    //   0x34    nop padding
++    //   0x38 B: jr ra / addiu v0, zero, 7
++    std::vector<char> makeRawOverlayImage()
++    {
++        std::vector<char> image(0x40u, 0);
++        std::memcpy(image.data(), "TESTOVL1", 8u);
++        putWord(image, 0x10u, 0x27BDFFF0u);
++        putWord(image, 0x14u, 0xAFBF0000u);
++        putWord(image, 0x18u, 0x0C000000u | ((kBase + 0x38u) >> 2));
++        putWord(image, 0x1Cu, 0x00000000u);
++        putWord(image, 0x20u, 0x0C000000u | (0x00100000u >> 2));
++        putWord(image, 0x24u, 0x00000000u);
++        putWord(image, 0x28u, 0x8FBF0000u);
++        putWord(image, 0x2Cu, 0x03E00008u);
++        putWord(image, 0x30u, 0x27BD0010u);
++        putWord(image, 0x34u, 0x00000000u);
++        putWord(image, 0x38u, 0x03E00008u);
++        putWord(image, 0x3Cu, 0x24020007u);
++        return image;
++    }
++
++    bool writeBytes(const std::filesystem::path &path, const std::vector<char> &bytes)
++    {
++        std::ofstream file(path, std::ios::binary);
++        file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
++        return static_cast<bool>(file);
++    }
++
++    bool writeOverlayConfig(const std::filesystem::path &configPath, const std::filesystem::path &input,
++                            const std::filesystem::path &output, bool singleFile, const std::string &overlayExtra)
++    {
++        std::ofstream config(configPath);
++        config << "[general]\n";
++        config << "input = \"" << input.generic_string() << "\"\n";
++        config << "output = \"" << output.generic_string() << "\"\n";
++        config << "single_file_output = " << (singleFile ? "true" : "false") << "\n";
++        config << "output_worker_threads = 1\n";
++        config << "entry_points = [\"ovl_b@0x400038\"]\n\n";
++        config << "[overlay]\n";
++        config << "name = \"unit_ovl\"\n";
++        config << "load_address = 0x400000\n";
++        config << "code_offset = 0x10\n";
++        config << overlayExtra;
++        return static_cast<bool>(config);
++    }
++
++    const std::string kSignature8 = "signature_size = 8\n";
++
++    bool recompileOverlay(const std::filesystem::path &configPath)
++    {
++        PS2Recompiler recompiler(configPath.string());
++        if (!recompiler.initialize() || !recompiler.recompile())
++            return false;
++        recompiler.generateOutput();
++        return true;
++    }
++}
++
++void register_ps2_overlay_tests()
++{
++    MiniTest::Case("PS2Overlays", [](TestCase &tc)
++    {
++        tc.Run("nothing registered: no address is covered", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(0), "registry starts empty");
++            t.IsFalse(ps2_overlays::mayCover(0u), "address 0 must not be covered");
++            t.IsFalse(ps2_overlays::mayCover(kBase + 0x10u), "no range is covered");
++            t.IsFalse(ps2_overlays::mayCover(0xFFFFFFFCu), "the top address must not be covered");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x10u).resolution == ps2_overlays::Resolution::NotCovered,
++                     "resolve reports NotCovered");
++            t.IsTrue(ps2_overlays::describeResident(ram.data()).empty(), "no areas to describe");
++        });
++
++        tc.Run("dispatch follows the signature resident in RAM", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) ==
++                         ps2_overlays::Status::Ok, "image A registers");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_b", kBase, 0x80u, kSigB, 4u, kEntriesB, 1u)) ==
++                         ps2_overlays::Status::Ok, "image B shares the load address");
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(2), "two images registered");
++            t.IsTrue(ps2_overlays::mayCover(kBase) && ps2_overlays::mayCover(kBase + 0xFCu), "image range covered");
++            t.IsFalse(ps2_overlays::mayCover(kBase - 4u) || ps2_overlays::mayCover(kBase + 0x100u),
++                      "outside the images is not covered");
++
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x10u).resolution == ps2_overlays::Resolution::NotCovered,
++                     "neither signature in RAM: not covered");
++            place(ram, kBase, kSigA, 4u);
++            ps2_overlays::Lookup a = ps2_overlays::resolve(ram.data(), kBase + 0x10u);
++            t.IsTrue(a.resolution == ps2_overlays::Resolution::Found && a.function == &overlayFnA, "A resident: A's function");
++            t.IsTrue(a.image != nullptr && std::string(a.image) == "ovl_a", "A is named");
++            t.IsTrue(std::string(ps2_overlays::residentImage(ram.data(), kBase)) == "ovl_a", "residentImage reports A");
++
++            place(ram, kBase, kSigB, 4u);
++            ps2_overlays::Lookup b = ps2_overlays::resolve(ram.data(), kBase + 0x10u);
++            t.IsTrue(b.resolution == ps2_overlays::Resolution::Found && b.function == &overlayFnB, "B resident: B's function");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x40u).resolution == ps2_overlays::Resolution::Missing,
++                     "B covers 0x40 but has no function there: A's entry must not leak through");
++            place(ram, kBase, kSigA, 4u);
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x40u).function == &overlayFnA, "switching back to A");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x12u).resolution == ps2_overlays::Resolution::NotCovered,
++                     "unaligned addresses are left to the main table");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("a resident image owns its whole range", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            const ps2_overlays::Entry entries[] = {{kBase + 0x10u, &overlayFnB}};
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_b", kBase, 0x80u, kSigB, 4u, entries, 1u)) ==
++                         ps2_overlays::Status::Ok, "image registers");
++            place(ram, kBase, kSigB, 4u);
++            const ps2_overlays::Lookup inside = ps2_overlays::resolve(ram.data(), kBase + 0x40u);
++            t.IsTrue(inside.resolution == ps2_overlays::Resolution::Missing && inside.function == nullptr,
++                     "an address inside the image without an entry is Missing");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x80u).resolution == ps2_overlays::Resolution::NotCovered,
++                     "the first byte after the image is not covered");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("a smaller image inside a larger one wins its own range", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            const uint32_t inner = kBase + 0x10000u;
++            const ps2_overlays::Entry outerEntries[] = {{kBase + 0x100u, &overlayFnA}, {inner + 0x100u, &overlayFnA},
++                                                        {inner + 0x2000u, &overlayFnA}};
++            const ps2_overlays::Entry innerEntries[] = {{inner + 0x100u, &overlayFnB}};
++            t.IsTrue(ps2_overlays::registerImage(makeImage("outer", kBase, 0x20000u, kSigA, 4u, outerEntries, 3u)) ==
++                         ps2_overlays::Status::Ok, "outer image registers");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("inner", inner, 0x1000u, kSigB, 4u, innerEntries, 1u)) ==
++                         ps2_overlays::Status::Ok, "inner image at a different load address registers");
++            place(ram, kBase, kSigA, 4u);
++            t.IsTrue(ps2_overlays::resolve(ram.data(), inner + 0x100u).function == &overlayFnA,
++                     "inner not resident: the outer image's code runs");
++            place(ram, inner, kSigB, 4u);
++            t.IsTrue(ps2_overlays::resolve(ram.data(), inner + 0x100u).function == &overlayFnB,
++                     "inner resident: the higher load address wins");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x100u).function == &overlayFnA,
++                     "below the inner image the outer image still dispatches");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), inner + 0x2000u).function == &overlayFnA,
++                     "beyond the inner image's size the outer image dispatches");
++            const std::string described = ps2_overlays::describeResident(ram.data());
++            t.IsTrue(described == "0x00410000=inner 0x00400000=outer", "describeResident lists areas: " + described);
++            ps2_overlays::clear();
++        });
++
++        tc.Run("invalid descriptions are rejected", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            using ps2_overlays::Status;
++            const uint8_t big[257] = {};
++            const ps2_overlays::Entry unsorted[] = {{kBase + 0x20u, &overlayFnA}, {kBase + 0x10u, &overlayFnA}};
++            const ps2_overlays::Entry duplicate[] = {{kBase + 0x10u, &overlayFnA}, {kBase + 0x10u, &overlayFnA}};
++            const ps2_overlays::Entry unaligned[] = {{kBase + 0x12u, &overlayFnA}};
++            const ps2_overlays::Entry outside[] = {{kBase + 0x100u, &overlayFnA}};
++            const ps2_overlays::Entry below[] = {{kBase - 4u, &overlayFnA}};
++            const ps2_overlays::Entry nullFn[] = {{kBase + 0x10u, nullptr}};
++            t.IsTrue(ps2_overlays::registerImage(makeImage(nullptr, kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) == Status::InvalidImage, "null name");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) == Status::InvalidImage, "empty name");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 0u, kEntriesA, 2u)) == Status::InvalidImage, "empty signature");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x200u, big, 257u, kEntriesA, 2u)) == Status::InvalidImage, "signature over 256 bytes");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, nullptr, 4u, kEntriesA, 2u)) == Status::InvalidImage, "null signature");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u, 0xFDu)) == Status::InvalidImage, "signature past the image end");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0u, kSigA, 4u, kEntriesA, 2u)) == Status::InvalidImage, "empty image");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", PS2_RAM_SIZE - 0x80u, 0x100u, kSigA, 4u, kEntriesA, 2u)) == Status::InvalidImage, "image beyond EE RAM");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, nullptr, 2u)) == Status::InvalidImage, "null entries");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, kEntriesA, 0u)) == Status::InvalidImage, "no entries");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, unsorted, 2u)) == Status::BadEntries, "unsorted entries");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, duplicate, 2u)) == Status::BadEntries, "duplicate entries");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, unaligned, 1u)) == Status::BadEntries, "unaligned entry");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, outside, 1u)) == Status::BadEntries, "entry past the image");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, below, 1u)) == Status::BadEntries, "entry below the image");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("x", kBase, 0x100u, kSigA, 4u, nullFn, 1u)) == Status::BadEntries, "null function");
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(0), "nothing registered after rejections");
++            t.IsFalse(ps2_overlays::mayCover(kBase), "rejections publish no range");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("ambiguous signatures and duplicate names are rejected", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            using ps2_overlays::Status;
++            const uint8_t sigAB[] = {'O', 'V', 'L', 'A', 'B'};
++            const uint8_t sigTail[] = {'Z', 'Z'};
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) == Status::Ok, "A registers");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase + 0x1000u, 0x100u, kSigB, 4u, kEntriesB, 0u)) == Status::InvalidImage,
++                     "validation runs before the duplicate-name check");
++            const ps2_overlays::Entry other[] = {{kBase + 0x1010u, &overlayFnB}};
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase + 0x1000u, 0x100u, kSigB, 4u, other, 1u)) == Status::DuplicateName,
++                     "names are unique across load addresses");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("same", kBase, 0x100u, kSigA, 4u, kEntriesB, 1u)) == Status::AmbiguousSignature,
++                     "an identical signature at the same load address");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("longer", kBase, 0x100u, sigAB, 5u, kEntriesB, 1u)) == Status::AmbiguousSignature,
++                     "a signature that extends another one matches the same RAM");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("apart", kBase, 0x100u, sigTail, 2u, kEntriesB, 1u, 0x20u)) == Status::AmbiguousSignature,
++                     "non-overlapping signature ranges can both match");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_b", kBase, 0x80u, kSigB, 4u, kEntriesB, 1u)) == Status::Ok,
++                     "a signature differing in an overlapping byte registers");
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(2), "only the valid images remain");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("registration copies the description", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            {
++                std::string name = "transient";
++                uint8_t signature[] = {1u, 2u, 3u, 4u};
++                ps2_overlays::Entry entries[] = {{kBase + 0x10u, &overlayFnC}};
++                t.IsTrue(ps2_overlays::registerImage(makeImage(name.c_str(), kBase, 0x40u, signature, 4u, entries, 1u)) ==
++                             ps2_overlays::Status::Ok, "image registers from temporary storage");
++                name.assign("overwritten");
++                std::memset(signature, 0xEE, sizeof(signature));
++                entries[0].function = &overlayFnA;
++            }
++            const uint8_t resident[] = {1u, 2u, 3u, 4u};
++            place(ram, kBase, resident, 4u);
++            const ps2_overlays::Lookup lookup = ps2_overlays::resolve(ram.data(), kBase + 0x10u);
++            t.IsTrue(lookup.function == &overlayFnC, "the copied entry table is used");
++            t.IsTrue(lookup.image != nullptr && std::string(lookup.image) == "transient", "the copied name is used");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("clear empties the registry", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) ==
++                         ps2_overlays::Status::Ok, "image registers");
++            place(ram, kBase, kSigA, 4u);
++            ps2_overlays::clear();
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(0), "registry empty after clear");
++            t.IsFalse(ps2_overlays::mayCover(kBase + 0x10u), "range disabled after clear");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), kBase + 0x10u).resolution == ps2_overlays::Resolution::NotCovered,
++                     "the resident signature no longer dispatches");
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) ==
++                         ps2_overlays::Status::Ok, "the same name registers again after clear");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("the catalog stays passive until installed", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            std::vector<uint8_t> ram(PS2_RAM_SIZE, 0u);
++            place(ram, 0x00500000u, kCatalogSig, 4u);
++            t.IsTrue(ps2_overlays::catalogSize() >= 1u, "the test image is in the catalog");
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(0), "a catalog entry is not registered by itself");
++            t.IsFalse(ps2_overlays::mayCover(0x00500020u), "a catalog entry covers nothing before installation");
++            const ps2_overlays::InstallReport report = ps2_overlays::installCatalog();
++            t.Equals(report.installed, ps2_overlays::catalogSize(), "every catalog image installs");
++            t.Equals(report.failed, static_cast<size_t>(0), "no catalog image fails");
++            t.IsTrue(ps2_overlays::resolve(ram.data(), 0x00500020u).function == &overlayFnC, "installed image dispatches");
++            const ps2_overlays::InstallReport again = ps2_overlays::installCatalog();
++            t.Equals(again.installed, static_cast<size_t>(0), "a second installation registers nothing");
++            t.Equals(again.failed, ps2_overlays::catalogSize(), "a second installation reports the duplicates");
++            ps2_overlays::clear();
++        });
++    });
++
++    MiniTest::Case("PS2RuntimeOverlays", [](TestCase &tc)
++    {
++        tc.Run("lookupFunction and hasFunction dispatch through the resident image", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            PS2Runtime runtime;
++            t.IsTrue(runtime.memory().initialize(), "runtime memory initialize should succeed");
++            uint8_t *rdram = runtime.memory().getRDRAM();
++            const uint32_t covered = kBase + 0x10u;
++            const uint32_t uncovered = kBase + 0x20u;
++            t.IsTrue(runtime.registerFunction(covered, &mainFn) && runtime.registerFunction(uncovered, &mainFn),
++                     "main-table functions at the overlay's addresses");
++            t.IsTrue(runtime.lookupFunction(covered) == &mainFn, "without overlays the main table is used");
++
++            const ps2_overlays::Entry entries[] = {{covered, &overlayFnA}};
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, entries, 1u)) ==
++                         ps2_overlays::Status::Ok, "image registers");
++            t.IsTrue(runtime.lookupFunction(covered) == &mainFn, "signature absent: the main table still dispatches");
++            t.IsTrue(runtime.hasFunction(uncovered), "signature absent: main-table function exists");
++
++            std::memcpy(rdram + kBase, kSigA, sizeof(kSigA));
++            t.IsTrue(runtime.lookupFunction(covered) == &overlayFnA, "signature resident: the overlay dispatches");
++            t.IsTrue(runtime.hasFunction(covered), "hasFunction sees the overlay entry");
++            t.IsFalse(runtime.hasFunction(uncovered), "the resident image has no function where the main ELF had one");
++            PS2Runtime::RecompiledFunction trap = runtime.lookupFunction(uncovered);
++            t.IsTrue(trap != nullptr && trap != &mainFn, "lookup returns the missing-function trap, not stale main code");
++
++            std::memcpy(rdram + kBase, kSigB, sizeof(kSigB));
++            t.IsTrue(runtime.lookupFunction(covered) == &mainFn, "another signature: back to the main table");
++            ps2_overlays::clear();
++        });
++
++        tc.Run("loadELF clears registered overlays", [](TestCase &t)
++        {
++            ps2_overlays::clear();
++            const PS2Runtime::IoPaths savedPaths = PS2Runtime::getIoPaths();
++            PS2Runtime runtime;
++            t.IsTrue(ps2_overlays::registerImage(makeImage("ovl_a", kBase, 0x100u, kSigA, 4u, kEntriesA, 2u)) ==
++                         ps2_overlays::Status::Ok, "image registers");
++            const std::filesystem::path missing = uniqueTempDir("ps2x-overlay-loadelf") / "missing.elf";
++            t.IsFalse(runtime.loadELF(missing.string()), "a missing ELF fails to load");
++            t.Equals(ps2_overlays::registeredCount(), static_cast<size_t>(0), "loadELF clears the registry first");
++            t.IsFalse(ps2_overlays::mayCover(kBase + 0x10u), "no range remains covered");
++            PS2Runtime::setIoPaths(savedPaths);
++            std::error_code ignored;
++            std::filesystem::remove_all(missing.parent_path(), ignored);
++        });
++    });
++
++    MiniTest::Case("PS2RecompilerOverlays", [](TestCase &tc)
++    {
++        tc.Run("config manager parses and validates [overlay]", [](TestCase &t)
++        {
++            const std::filesystem::path dir = uniqueTempDir("ps2recomp-overlay-config");
++            auto load = [&](const std::string &overlay) -> RecompilerConfig
++            {
++                const std::filesystem::path path = dir / "config.toml";
++                std::ofstream file(path);
++                file << "[general]\ninput = \"image.bin\"\noutput = \"out\"\n\n[overlay]\n" << overlay;
++                file.close();
++                return ConfigManager(path.string()).loadConfig();
++            };
++            auto rejects = [&](const std::string &overlay)
++            {
++                try
++                {
++                    (void)load(overlay);
++                }
++                catch (const std::exception &)
++                {
++                    return true;
++                }
++                return false;
++            };
++            const RecompilerConfig config = load("name = \"stage_1\"\nload_address = \"0x00D00000\"\nimage_size = 0x1400\n"
++                                                 "signature_offset = 4\nsignature_size = 64\ninput_format = \"raw\"\n"
++                                                 "code_offset = 0x40\ncode_size = 0x1000\nbss_size = 0x200\nentry = 0xD00080\n");
++            t.IsTrue(config.overlay.enabled, "[overlay] enables overlay output");
++            t.Equals(config.overlay.name, std::string("stage_1"), "name parses");
++            t.Equals(config.overlay.loadAddress, 0x00D00000u, "load address parses from a string");
++            t.Equals(config.overlay.imageSize, 0x1400u, "image size parses");
++            t.Equals(config.overlay.signatureOffset, 4u, "signature offset parses");
++            t.Equals(config.overlay.signatureSize, 64u, "signature size parses");
++            t.IsTrue(config.overlay.inputFormat == OverlayConfig::InputFormat::Raw, "input format parses");
++            t.Equals(config.overlay.rawCodeOffset, 0x40u, "code offset parses");
++            t.Equals(config.overlay.rawCodeSize, 0x1000u, "code size parses");
++            t.Equals(config.overlay.rawBssSize, 0x200u, "bss size parses");
++            t.Equals(config.overlay.rawEntry, 0xD00080u, "entry parses");
++
++            const std::string valid = "load_address = 0x400000\nsignature_size = 4\n";
++            t.IsTrue(rejects(valid), "a name is required");
++            t.IsTrue(rejects("name = \"1abc\"\n" + valid), "a name must not start with a digit");
++            t.IsTrue(rejects("name = \"a-b\"\n" + valid), "a name must be an identifier");
++            t.IsTrue(rejects("name = \"" + std::string(65, 'a') + "\"\n" + valid), "a name is at most 64 characters");
++            t.IsTrue(rejects("name = \"a\"\nsignature_size = 4\n"), "load_address is required");
++            t.IsTrue(rejects("name = \"a\"\nload_address = 0x400002\nsignature_size = 4\n"), "load_address is aligned");
++            t.IsTrue(rejects("name = \"a\"\nload_address = 0x2000000\nsignature_size = 4\n"), "load_address is inside EE RAM");
++            t.IsTrue(rejects("name = \"a\"\nload_address = 0x400000\n"), "signature_size is required");
++            t.IsTrue(rejects("name = \"a\"\nload_address = 0x400000\nsignature_size = 0\n"), "signature_size >= 1");
++            t.IsTrue(rejects("name = \"a\"\nload_address = 0x400000\nsignature_size = 257\n"), "signature_size <= 256");
++            t.IsTrue(rejects("name = \"a\"\n" + valid + "input_format = \"bin\"\n"), "unknown input formats are rejected");
++            t.IsTrue(rejects("name = \"a\"\n" + valid + "code_offset = 2\n"), "code_offset is aligned");
++            t.IsTrue(rejects("name = \"a\"\nload_address = \"0x40zz\"\nsignature_size = 4\n"), "malformed numbers are rejected");
++            t.IsTrue(rejects("name = \"a\"\nload_address = -4\nsignature_size = 4\n"), "negative numbers are rejected");
++            t.IsTrue(rejects("name = \"a\"\n" + valid + "imag_size = 0x100\n"), "misspelled keys are rejected");
++            t.IsFalse(rejects("name = \"a\"\n" + valid), "the minimal overlay configuration loads");
++
++            std::error_code ignored;
++            std::filesystem::remove_all(dir, ignored);
++        });
++
++        tc.Run("raw image recompiles into namespaced overlay output", [](TestCase &t)
++        {
++            const std::filesystem::path dir = uniqueTempDir("ps2recomp-overlay-raw");
++            const std::filesystem::path image = dir / "unit.bin";
++            const std::filesystem::path out = dir / "out";
++            const std::filesystem::path config = dir / "overlay.toml";
++            t.IsTrue(writeBytes(image, makeRawOverlayImage()) && writeOverlayConfig(config, image, out, true, kSignature8),
++                     "inputs are written");
++            t.IsTrue(recompileOverlay(config), "the raw image recompiles");
++
++            t.IsFalse(std::filesystem::exists(out / "register_functions.cpp"), "no dense table for an overlay");
++            t.IsFalse(std::filesystem::exists(out / "ps2_recompiled_functions.h"), "no main-ELF header names");
++            const std::string header = readText(out / "unit_ovl_functions.h");
++            const std::string stubs = readText(out / "unit_ovl_stubs.h");
++            const std::string code = readText(out / "unit_ovl_functions.cpp");
++            const std::string registration = readText(out / "unit_ovl_overlay.cpp");
++            const std::string registrationHeader = readText(out / "unit_ovl_overlay.h");
++            t.IsTrue(header.find("namespace ps2x_overlay_unit_ovl {") != std::string::npos, "declarations in the overlay namespace");
++            t.IsTrue(header.find("PS2X_OVERLAY_unit_ovl_FUNCTIONS_H") != std::string::npos, "overlay-specific include guard");
++            t.IsTrue(stubs.find("namespace ps2x_overlay_unit_ovl {") != std::string::npos, "stub declarations in the namespace");
++            t.IsTrue(code.find("#include \"unit_ovl_functions.h\"") != std::string::npos, "sources include their own header by path");
++            t.IsTrue(code.find("namespace ps2x_overlay_unit_ovl {") != std::string::npos &&
++                         code.find("} // namespace ps2x_overlay_unit_ovl") != std::string::npos, "code in the overlay namespace");
++            t.IsTrue(code.find("0x400010") != std::string::npos && code.find("0x400038") != std::string::npos,
++                     "both functions are generated");
++            t.IsTrue(code.find("dispatchGuestBranch(rdram, ctx, 0x100000u") != std::string::npos,
++                     "calls into the main ELF go through runtime dispatch");
++            t.IsTrue(registration.find("{0x400010u, &") != std::string::npos &&
++                         registration.find("{0x400038u, &") != std::string::npos, "entries register both functions");
++            t.IsTrue(registration.find("0x54, 0x45, 0x53, 0x54, 0x4f, 0x56, 0x4c, 0x31,") != std::string::npos,
++                     "the signature bytes come from the image");
++            t.IsTrue(registration.find("0x400000u, // load address") != std::string::npos, "load address recorded");
++            t.IsTrue(registration.find("0x40u, // image size") != std::string::npos, "image size defaults to the file size");
++            t.IsTrue(registration.find("0x0u, // signature offset") != std::string::npos, "signature offset recorded");
++            t.IsTrue(registration.find("bool ps2x_register_overlay_unit_ovl()") != std::string::npos, "explicit registration function");
++            t.IsTrue(registration.find("ps2_overlays::CatalogRegistrar") != std::string::npos, "passive catalog entry");
++            t.IsTrue(registration.find("g_ps2RecompiledFunctionTable") == std::string::npos, "the dense table is untouched");
++            t.IsTrue(registrationHeader.find("bool ps2x_register_overlay_unit_ovl();") != std::string::npos,
++                     "the registration header declares the function");
++
++            std::error_code ignored;
++            std::filesystem::remove_all(dir, ignored);
++        });
++
++        tc.Run("per-function overlay files carry the overlay prefix", [](TestCase &t)
++        {
++            const std::filesystem::path dir = uniqueTempDir("ps2recomp-overlay-files");
++            const std::filesystem::path image = dir / "unit.bin";
++            const std::filesystem::path out = dir / "out";
++            const std::filesystem::path config = dir / "overlay.toml";
++            t.IsTrue(writeBytes(image, makeRawOverlayImage()) &&
++                         writeOverlayConfig(config, image, out, false, "image_size = 0x80\nsignature_offset = 4\nsignature_size = 4\n"),
++                     "inputs are written");
++            t.IsTrue(recompileOverlay(config), "the raw image recompiles to per-function files");
++            size_t functionFiles = 0u;
++            bool allPrefixed = true;
++            bool allNamespaced = true;
++            for (const auto &item : std::filesystem::directory_iterator(out))
++            {
++                const std::string name = item.path().filename().string();
++                allPrefixed = allPrefixed && name.rfind("unit_ovl_", 0) == 0;
++                if (item.path().extension() == ".cpp" && name != "unit_ovl_overlay.cpp")
++                {
++                    ++functionFiles;
++                    const std::string text = readText(item.path());
++                    allNamespaced = allNamespaced && text.find("namespace ps2x_overlay_unit_ovl {") != std::string::npos &&
++                                    text.find("#include \"unit_ovl_stubs.h\"") != std::string::npos;
++                }
++            }
++            t.IsTrue(functionFiles >= 2u, "one source per function");
++            t.IsTrue(allPrefixed, "every generated file name starts with the overlay name");
++            t.IsTrue(allNamespaced, "every function source opens the overlay namespace");
++            const std::string registration = readText(out / "unit_ovl_overlay.cpp");
++            t.IsTrue(registration.find("0x80u, // image size") != std::string::npos, "configured image size is used");
++            t.IsTrue(registration.find("0x4u, // signature offset") != std::string::npos, "configured signature offset is used");
++            t.IsTrue(registration.find("0x4f, 0x56, 0x4c, 0x31,") != std::string::npos, "the signature is read at the offset");
++
++            std::error_code ignored;
++            std::filesystem::remove_all(dir, ignored);
++        });
++
++        tc.Run("an ELF input in overlay mode uses its sections", [](TestCase &t)
++        {
++            const std::filesystem::path dir = uniqueTempDir("ps2recomp-overlay-elf");
++            const std::filesystem::path elfPath = dir / "unit.elf";
++            const std::filesystem::path out = dir / "out";
++            const std::vector<char> raw = makeRawOverlayImage();
++            ELFIO::elfio writer;
++            writer.create(ELFIO::ELFCLASS32, ELFIO::ELFDATA2LSB);
++            writer.set_type(ELFIO::ET_EXEC);
++            writer.set_machine(ELFIO::EM_MIPS);
++            writer.set_entry(kBase + 0x10u);
++            ELFIO::section *head = writer.sections.add(".data");
++            head->set_type(ELFIO::SHT_PROGBITS);
++            head->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_WRITE);
++            head->set_address(kBase);
++            head->set_data(raw.data(), 0x10u);
++            ELFIO::section *text = writer.sections.add(".text");
++            text->set_type(ELFIO::SHT_PROGBITS);
++            text->set_flags(ELFIO::SHF_ALLOC | ELFIO::SHF_EXECINSTR);
++            text->set_addr_align(4);
++            text->set_address(kBase + 0x10u);
++            text->set_data(raw.data() + 0x10u, static_cast<ELFIO::Elf_Word>(raw.size() - 0x10u));
++            t.IsTrue(writer.save(elfPath.string()), "overlay ELF written");
++
++            const std::filesystem::path config = dir / "overlay.toml";
++            {
++                std::ofstream file(config);
++                file << "[general]\ninput = \"" << elfPath.generic_string() << "\"\noutput = \"" << out.generic_string()
++                     << "\"\nsingle_file_output = true\noutput_worker_threads = 1\n\n[overlay]\nname = \"elf_ovl\"\n"
++                     << "load_address = 0x400000\nsignature_size = 8\n";
++            }
++            t.IsTrue(recompileOverlay(config), "the overlay ELF recompiles");
++            const std::string registration = readText(out / "elf_ovl_overlay.cpp");
++            t.IsTrue(registration.find("0x54, 0x45, 0x53, 0x54, 0x4f, 0x56, 0x4c, 0x31,") != std::string::npos,
++                     "the signature is read from the ELF's data section");
++            t.IsTrue(registration.find("0x40u, // image size") != std::string::npos, "image size spans the sections");
++            t.IsTrue(registration.find("{0x400010u, &") != std::string::npos, "the ELF entry is registered");
++
++            std::error_code ignored;
++            std::filesystem::remove_all(dir, ignored);
++        });
++
++        tc.Run("overlay inputs outside their image are rejected", [](TestCase &t)
++        {
++            const std::filesystem::path dir = uniqueTempDir("ps2recomp-overlay-reject");
++            const std::filesystem::path image = dir / "unit.bin";
++            t.IsTrue(writeBytes(image, makeRawOverlayImage()), "image written");
++            auto initializes = [&](const std::string &extra, const std::string &tag)
++            {
++                const std::filesystem::path config = dir / (tag + ".toml");
++                writeOverlayConfig(config, image, dir / ("out_" + tag), true, kSignature8 + extra);
++                PS2Recompiler recompiler(config.string());
++                return recompiler.initialize();
++            };
++            t.IsTrue(initializes("", "ok"), "the reference configuration initializes");
++            t.IsFalse(initializes("image_size = 0x20\n", "small"), "functions beyond image_size are rejected");
++            t.IsFalse(initializes("signature_offset = 0x3C\n", "sig"), "a signature past the image end is rejected");
++            t.IsFalse(initializes("code_size = 0x100\n", "code"), "a code range past the file end is rejected");
++            t.IsFalse(initializes("entry = 0x400004\n", "entry"), "an entry outside the code range is rejected");
++            t.IsFalse(initializes("code_size = 0x6\n", "odd"), "a code size that is not a word multiple is rejected");
++            std::error_code ignored;
++            std::filesystem::remove_all(dir, ignored);
++        });
++    });
++}
+diff --git a/ps2xTest/src/test_function_table.cpp b/ps2xTest/src/test_function_table.cpp
+index be6a888..59b53f0 100644
+--- a/ps2xTest/src/test_function_table.cpp
++++ b/ps2xTest/src/test_function_table.cpp
+@@ -1,0 +2 @@
++#include "ps2_overlays.h"
+@@ -17,0 +19 @@ void reset_ps2_test_function_table()
++    ps2_overlays::clear(); // every test starts without registered overlays

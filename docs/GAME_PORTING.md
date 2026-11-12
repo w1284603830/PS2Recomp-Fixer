@@ -44,6 +44,7 @@ dozens of test hooks): a reference for what a finished runner can do, not a temp
 | RAM cheats | `cheats.ini` | Only with `PS2X_ENABLE_CHEAT_MENU=ON` |
 | A game function that shares its name with an SDK call (bound to the HLE by name) | `recomp.toml` `[general] native = ["name@0xADDRESS"]` | Address selectors only; the function stays recompiled guest code |
 | VU clamp mode from PCSX2's `GameIndex.yaml` | `PS2_VU1_CLAMP` / `PS2_VU0_CLAMP` = 0..3 in the runner's environment | Default 1 for both |
+| Code the game loads at run time (overlays): load address, size and signature of each image | `[overlay]` in each image's recompiler config; register after `loadELF` | Default off; nothing is registered unless the port does it. [Section 6](#6-code-overlays-loaded-at-run-time) |
 | Diagnostics | `PS2_*` environment variables (below) | |
 
 ## 3. Environment variables
@@ -124,3 +125,75 @@ The separate rendering work is tracked in [issue #3](https://github.com/w1284603
 
 Before acceptance or release, follow the [regression and repair guide](REGRESSION_TESTING.md)
 ([繁體中文](REGRESSION_TESTING.zh-TW.md)). Entry coverage, content sweeps and natural playthrough are distinct gates.
+
+## 6. Code overlays loaded at run time
+
+Some games copy more code into EE RAM while they run (stage, enemy, menu or minigame modules), often several different
+images at one address. The main ELF's recompilation cannot contain that code. The runtime has an opt-in registry for it,
+[`ps2_overlays.h`](../third_party/src/PS2Recomp/ps2xRuntime/include/ps2_overlays.h); a game that registers nothing
+behaves exactly as before.
+
+**1. Identify each image.** From your analysis of the game: the file the code comes from, its load address and size, and
+bytes that identify it while it is resident. The signature is 1 to 256 bytes at an offset from the load address, inside
+the image, typically a header with an id or file name (code bytes work too). Images that share a load address must
+differ in at least one byte their signatures both cover; registration rejects pairs that some RAM contents could match
+at once. The game must not change the signature bytes after loading the image (relocation fix-ups, "loaded" flags).
+
+**2. Recompile each image on its own** with an `[overlay]` section. The values below are placeholders; the base has no
+default addresses.
+
+```toml
+[general]
+input = "overlays/stage01.bin"          # the image as the game copies it (raw), or an ELF of it
+output = "overlays/stage01"
+ghidra_output = ""                      # optional function map with the image's run-time addresses
+entry_points = ["stage_init@0x00D00080"] # entries called from the main ELF or through pointers
+single_file_output = true
+
+[overlay]
+name = "stage01"                        # C identifier: namespace ps2x_overlay_stage01, files stage01_*
+load_address = 0x00D00000
+signature_offset = 0x0
+signature_size = 64
+code_offset = 0x40                      # raw input: where EE code starts in the file (default 0)
+# code_size (default: to the end of the file), bss_size, entry (default: start of the code range),
+# image_size (default: the initialized bytes; raw input: the file size), input_format = "auto" | "raw" | "elf"
+```
+
+Any input without the ELF magic (or with `input_format = "raw"`) is read as a raw image and presented to the recompiler
+as an ELF: bytes before `code_offset` and after the code range as data, the code range as `.text`, `bss_size` zero bytes
+after the file. Function starts come from `entry`, JAL targets, address-taken code, `entry_points` and the optional
+function map. To analyse an image in Ghidra, import the raw file at its load address (language MIPS R5900) and export
+its function map for `ghidra_output`. Unknown `[overlay]` keys, a signature outside the image or initialized data, and
+functions outside the image are errors.
+
+The output is `<name>_functions.h`, `<name>_stubs.h`, the function sources (`<name>_functions.cpp`, or one
+`<name>_*.cpp` per function), `<name>_overlay.cpp` and `<name>_overlay.h`. Everything is in namespace
+`ps2x_overlay_<name>` and includes its own headers by relative path, so the main ELF and any number of overlays link
+into one executable. No `register_functions.cpp` is written; the main dense function table is not touched.
+
+**3. Link and register.** Add the generated files to the executable target itself, not to a static library (each
+`<name>_overlay.cpp` adds its image to a passive catalog from a static object). `loadELF` clears the registry, so
+register after it and before `run`:
+
+```cpp
+if (!runtime.loadELF(elf.string()))
+    return 1;
+const ps2_overlays::InstallReport overlays = ps2_overlays::installCatalog(); // every linked overlay
+// or selectively: #include "stage01_overlay.h" ... ps2x_register_overlay_stage01();
+runtime.run();
+```
+
+**How dispatch works.** `lookupFunction` and `hasFunction`, and so every JAL, register call/jump and scheduler resume,
+check whether the address lies in a registered image. If so, the image whose signature is in EE RAM at that moment
+dispatches; higher load addresses are tried first, so a small image loaded inside a larger one owns its own range. A
+resident image owns its whole range: an address there without a function is reported missing and never runs main-ELF
+code the image replaced. With no resident image the main table is used as before. Each change of resident image is
+logged once (`[ps2-overlay] 0x00D00000 now stage01`, at most 1000 lines), and missing-function reports list the resident
+images. With nothing registered the dispatch hot path costs one subtract and compare.
+
+**Limits.** Register and clear only while no guest thread runs. Tail jumps (`J`) to a function the recompiler knew at
+build time stay direct C++ calls: do not give the main ELF functions in a range an overlay replaces. Calls between
+images and into the main ELF are dispatched at run time; list targets that only another image calls as `entry_points`
+of the image that contains them. A game that relocates one image to different addresses needs one recompilation per
+load address. Overlay identities and addresses are game data: keep them in your port, not in this repository.

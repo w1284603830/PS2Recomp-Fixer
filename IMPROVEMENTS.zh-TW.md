@@ -121,3 +121,16 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRuntime` `ps2_cheats_disabled.cpp`、`ps2_trainer.[h,cpp]`、`ps2_trainer_disabled.cpp`、`CMakeLists.txt`、`build_all.ps1` | **選用金手指工具，兩者預設皆為屏蔽（關閉）狀態，如有需要可以使用：** `PS2X_ENABLE_CHEAT_MENU`（F2，`cheats.ini`）與 `PS2X_ENABLE_TRAINER`（F3，各移植為自己的程式碼掛鉤登錄開關／選項的面板；關閉時查詢是編譯期常數）。`build_all.ps1 -CheatMenu`／`-Trainer` | `docs/CHEATS.md`、`docs/TRAINER.md`；測試 `test_ps2_trainer.py`、`input_readers` 的 `trainer-capture` |
 | `tools/new_port.py` | 從光碟映像或開機 ELF 在倉庫外建立移植資料夾：依 SYSTEM.CNF 取出並檢查開機 ELF、`recomp.toml`（已建置 ps2_analyzer 時用它，否則寫含 `native` 的最小範本）、`game.ini`、`port.json`、附確切指令的 `PORT_STEPS.md` | `tests/test_new_port.py`（合成的 ISO9660 映像） |
 | `docs/ECOSYSTEM_SURVEY.zh-TW.md` | 30 個相關專案的調查：以內容判定的程式碼繼承關係、三種 IOP 路線（HLE 服務／解譯 IRX／重編譯 IRX）、VU、GS，以及本基底從中採用的部分 | |
+
+## 十四、2026-11-12：執行期載入的程式碼（overlay），選用
+
+生態調查列的第 1 個後續項目。其他專案處理遊戲執行中才載入的程式碼都是遊戲專屬的產生器；本基底的一個下游移植改用「載入位址處的標頭」判斷常駐映像，但位址與標頭格式寫死在 runtime 裡。這次把機制通用化：所有數值都由移植自己的設定提供，預設不登錄任何東西。用法見 [docs/GAME_PORTING.md](docs/GAME_PORTING.md) 第 6 節。增量補丁：`patches/PS2Recomp_overlays_20261112.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xRuntime` `ps2_overlays.[h,cpp]` | 映像登錄：載入位址、大小、相對載入位址某個位移的 1..256 位元組簽章、該映像的 {guest 位址, 函式} 表與名稱。查詢時以 EE RAM 裡目前的簽章挑選映像（載入位址高的先試，所以大映像範圍內的小映像擁有自己的範圍）。登錄時複製並驗證全部資料（範圍、對齊、排序、名稱不重複），同一載入位址上若有某種 RAM 內容能同時符合兩個簽章就拒絕登錄。被動目錄讓產生碼自行加入，`installCatalog()` 才會啟用。查詢不加鎖，多個 guest 執行緒同時查詢也安全（每個區域的常駐快取每次都重新驗證） | 同一載入位址常有多個映像；只有部分映像才有的簽章（例如共用的魔術字）會派發到錯的映像，所以歧義在登錄時就報錯，不在執行時猜 |
+| `ps2xRuntime` `ps2_runtime.cpp`、`runtime/ps2_memory.h` | `lookupFunction`／`hasFunction` 先過內聯的範圍檢查（一次減法加比較；沒登錄時一定不成立）才查登錄。常駐映像擁有整個範圍：不會落回被它覆蓋的主 ELF 程式碼。`loadELF` 一開始就清空登錄。缺函式報告會列出常駐映像。新增 `PS2Memory::getRDRAM() const` | 登錄屬於單一遊戲，和 `loadELF` 會重設的其他設定檔一樣 |
+| `ps2xRecomp` `types.h`、`config_manager.cpp` | `[overlay]` 段：`name`、`load_address`、`signature_offset`、`signature_size`（名稱、載入位址、簽章大小必填），選填 `image_size`、`input_format`，原始映像另有 `code_offset`、`code_size`、`bss_size`、`entry`。嚴格驗證，未知鍵視為錯誤 | |
+| `ps2xRecomp` `elf_parser.[h,cpp]` | 原始映像：沒有 ELF 魔術字的檔案在記憶體裡呈現為 ELF（資料／`.text`／資料／`.bss`，位於載入位址），既有的函式探索、Ghidra 函式表與 `entry_points` 都照常運作 | |
+| `ps2xRecomp` `ps2_recompiler.cpp`、`code_generator.[h,cpp]`、`function_emitter.cpp`、`function_table_emitter.[h,cpp]` | overlay 輸出：命名空間 `ps2x_overlay_<名稱>`、檔名 `<名稱>_*` 並以相對路徑 include，不產生 ELF 啟動碼與密集函式表；`<名稱>_overlay.cpp/.h` 含入口表（與主表相同的入口、恢復點與 stub）、從映像讀出的簽章、`ps2x_register_overlay_<名稱>()` 與目錄項目。簽章必須是映像內已初始化的資料，每個函式都必須在映像範圍內 | 多個 guest 位址與函式名稱都相同的映像能連結進同一個執行檔 |
+| `ps2xTest/src/ps2_overlay_tests.cpp`、`tests/overlay_registry_tests.cpp`、`tests/test_overlay_registry.py` | `ps2x_tests` 16 項（登錄、`PS2Runtime` 派發與 `loadELF` 清空、`[overlay]` 解析、原始映像與 ELF 輸入、單檔與逐函式輸出、拒絕的輸入），以及獨立的登錄測試：CTest（MSVC）與 g++ ASan/UBSan 各跑一次，含讓常駐快取不斷換手的多執行緒查詢 | 只用合成的映像與位址 |

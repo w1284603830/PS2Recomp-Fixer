@@ -1,4 +1,5 @@
 #include "ps2recomp/ps2_recompiler.h"
+#include "ps2recomp/Emitters/function_table_emitter.h"
 #include "ps2recomp/instructions.h"
 #include "ps2recomp/types.h"
 #include "ps2recomp/elf_parser.h"
@@ -99,19 +100,20 @@ namespace ps2recomp
             return 1;
         }
 
-        void writeCombinedOutputPreamble(std::ostream &output)
+        void writeCombinedOutputPreamble(std::ostream &output, const CodeGenerator &codeGenerator)
         {
             output << "#include <stdexcept>\n";
-            output << "#include <ps2_recompiled_functions.h>\n\n";
+            output << codeGenerator.includeGeneratedHeader(codeGenerator.functionsHeaderName()) << "\n";
             output << "#include \"ps2_runtime_macros.h\"\n";
             output << "#include \"ps2_runtime.h\"\n";
-            output << "#include <ps2_recompiled_stubs.h>\n";
+            output << codeGenerator.includeGeneratedHeader(codeGenerator.stubsHeaderName());
             output << "#include \"ps2_syscalls.h\"\n";
             output << "#include \"ps2_stubs.h\"\n";
             output << "#ifdef _DEBUG\n";
             output << "#include \"ps2_log.h\"\n";
             output << "#endif\n";
             output << "\n";
+            output << codeGenerator.namespaceOpen();
         }
 
         enum class PatchClass
@@ -838,6 +840,84 @@ namespace ps2recomp
         m_reporter.printSummary(std::cout);
     }
 
+    bool PS2Recompiler::prepareOverlay()
+    {
+        const OverlayConfig &overlay = m_config.overlay;
+        constexpr uint64_t kEeRamSize = 32ull * 1024ull * 1024ull;
+        auto hex = [](uint64_t value)
+        {
+            std::ostringstream stream;
+            stream << "0x" << std::hex << value;
+            return stream.str();
+        };
+        auto fail = [this](const std::string &message)
+        {
+            m_reporter.error("overlay", message);
+            return false;
+        };
+        auto isInitialized = [](const Section &section)
+        {
+            return (section.isCode || section.isData) && !section.isBSS && section.data != nullptr && section.size != 0u;
+        };
+
+        // By default the image is every initialized loaded byte from the load address on (raw input: the file).
+        uint64_t initializedEnd = overlay.loadAddress;
+        for (const Section &section : m_sections)
+        {
+            if (isInitialized(section) && section.address >= overlay.loadAddress)
+            {
+                initializedEnd = std::max<uint64_t>(initializedEnd, static_cast<uint64_t>(section.address) + section.size);
+            }
+        }
+        const uint64_t imageSize = overlay.imageSize != 0u ? overlay.imageSize : initializedEnd - overlay.loadAddress;
+        if (imageSize == 0u || overlay.loadAddress + imageSize > kEeRamSize)
+        {
+            return fail("[overlay] " + overlay.name + ": the image is empty or does not fit in 32 MiB EE RAM at " +
+                        hex(overlay.loadAddress));
+        }
+        if (static_cast<uint64_t>(overlay.signatureOffset) + overlay.signatureSize > imageSize)
+        {
+            return fail("[overlay] " + overlay.name + ": the signature must lie inside the image (size " + hex(imageSize) + ")");
+        }
+
+        m_overlaySignature.clear();
+        for (uint32_t i = 0; i < overlay.signatureSize; ++i)
+        {
+            const uint32_t address = overlay.loadAddress + overlay.signatureOffset + i;
+            const Section *owner = nullptr;
+            for (const Section &section : m_sections)
+            {
+                if (isInitialized(section) && address >= section.address && address - section.address < section.size)
+                {
+                    owner = &section;
+                    break;
+                }
+            }
+            if (owner == nullptr)
+            {
+                return fail("[overlay] " + overlay.name + ": signature byte at " + hex(address) +
+                            " is not initialized data of the input image");
+            }
+            m_overlaySignature.push_back(owner->data[address - owner->address]);
+        }
+
+        for (const Function &function : m_functions)
+        {
+            if (function.start < overlay.loadAddress || function.start >= overlay.loadAddress + imageSize)
+            {
+                return fail("[overlay] " + overlay.name + ": function " + function.name + " at " + hex(function.start) +
+                            " lies outside the image [" + hex(overlay.loadAddress) + ", " +
+                            hex(overlay.loadAddress + imageSize) + ")");
+            }
+        }
+
+        m_overlayImageSize = static_cast<uint32_t>(imageSize);
+        m_reporter.info("overlay", "overlay " + overlay.name + ": load address " + hex(overlay.loadAddress) + ", image " +
+                                       hex(imageSize) + " bytes, signature " + std::to_string(overlay.signatureSize) +
+                                       " bytes at +" + hex(overlay.signatureOffset));
+        return true;
+    }
+
     bool PS2Recompiler::initialize()
     {
         try
@@ -912,13 +992,24 @@ namespace ps2recomp
                 }
             }
 
-            m_reporter.progress("parsing ELF");
+            const OverlayConfig &overlay = m_config.overlay;
+            const bool rawInput = overlay.enabled &&
+                                  (overlay.inputFormat == OverlayConfig::InputFormat::Raw ||
+                                   (overlay.inputFormat == OverlayConfig::InputFormat::Auto &&
+                                    !ElfParser::HasElfMagic(m_config.inputPath)));
+            m_reporter.progress(rawInput ? "reading raw overlay image" : "parsing ELF");
             m_elfParser = std::make_unique<ElfParser>(m_config.inputPath);
             m_elfParser->setReporter(&m_reporter);
-            if (!m_elfParser->parse())
+            if (!(rawInput ? m_elfParser->parseRawImage(overlay) : m_elfParser->parse()))
             {
-                m_reporter.error("elf", "Failed to parse ELF file: " + m_config.inputPath);
+                m_reporter.error("elf", std::string(rawInput ? "Failed to read raw overlay image: " : "Failed to parse ELF file: ") +
+                                            m_config.inputPath);
                 return false;
+            }
+            if (overlay.enabled && !rawInput &&
+                (overlay.rawCodeOffset != 0u || overlay.rawCodeSize != 0u || overlay.rawBssSize != 0u || overlay.rawEntry != 0u))
+            {
+                m_reporter.warning("overlay", "code_offset, code_size, bss_size and entry apply to raw images only; the ELF's sections are used");
             }
 
             if (!m_config.ghidraMapPath.empty())
@@ -945,6 +1036,17 @@ namespace ps2recomp
                 return false;
             }
 
+            if (overlay.enabled && !prepareOverlay())
+            {
+                return false;
+            }
+
+            if (overlay.enabled)
+            {
+                // An overlay is entered from the game's own code: no ELF bootstrap and no dense function table.
+                m_bootstrapInfo = {};
+            }
+            else
             {
                 m_bootstrapInfo = {};
                 uint32_t entry = m_elfParser->getEntryPoint();
@@ -1050,6 +1152,7 @@ namespace ps2recomp
             }
             m_codeGenerator->setRelocationCallNames(relocationCallNames);
             m_codeGenerator->setBootstrapInfo(m_bootstrapInfo);
+            m_codeGenerator->setOverlayName(overlay.enabled ? overlay.name : std::string());
             m_codeGenerator->setConfiguredJumpTables(m_config.jumpTables);
             m_codeGenerator->setEmitInstructionComments(true);
 
@@ -1383,7 +1486,9 @@ namespace ps2recomp
                         stubFile << "#include \"ps2_log.h\"\n";
                         stubFile << "#endif\n";
                         stubFile << "\n";
+                        stubFile << codeGenerator.namespaceOpen();
                         stubFile << generatedStubs.at(function.start) << "\n";
+                        stubFile << codeGenerator.namespaceClose();
                         return stubFile.str();
                     }
 
@@ -1403,14 +1508,15 @@ namespace ps2recomp
 
             if (m_config.singleFileOutput)
             {
-                fs::path outputPath = fs::path(m_config.outputPath) / "ps2_recompiled_functions.cpp";
+                fs::path outputPath = fs::path(m_config.outputPath) /
+                                      (m_config.overlay.enabled ? m_config.overlay.name + "_functions.cpp" : std::string("ps2_recompiled_functions.cpp"));
                 std::ofstream combinedOutput(outputPath);
                 if (!combinedOutput)
                 {
                     throw std::runtime_error("Failed to open combined output: " + outputPath.string());
                 }
 
-                writeCombinedOutputPreamble(combinedOutput);
+                writeCombinedOutputPreamble(combinedOutput, *m_codeGenerator);
 
                 if (outputWorkerCount <= 1)
                 {
@@ -1601,6 +1707,7 @@ namespace ps2recomp
                     }
                 }
 
+                combinedOutput << m_codeGenerator->namespaceClose();
                 combinedOutput.close();
                 if (!combinedOutput)
                 {
@@ -1797,13 +1904,39 @@ namespace ps2recomp
 
             m_decodedFunctions.clear();
 
-            std::string registerFunctions = m_codeGenerator->generateFunctionRegistration(m_functions, m_generatedStubs);
-            m_generatedStubs.clear();
-
-            fs::path registerPath = fs::path(m_config.outputPath) / "register_functions.cpp";
-            if (!writeToFile(registerPath.string(), registerFunctions))
+            fs::path registerPath;
+            if (m_config.overlay.enabled)
             {
-                throw std::runtime_error("Failed to write function registration file: " + registerPath.string());
+                OverlayImageInfo image;
+                image.name = m_config.overlay.name;
+                image.loadAddress = m_config.overlay.loadAddress;
+                image.imageSize = m_overlayImageSize;
+                image.signatureOffset = m_config.overlay.signatureOffset;
+                image.signature = m_overlaySignature;
+                FunctionTableEmitter emitter(*m_codeGenerator);
+                const std::string source = emitter.emitOverlaySource(m_functions, image);
+                m_generatedStubs.clear();
+                const fs::path headerPath = fs::path(m_config.outputPath) / (image.name + "_overlay.h");
+                if (!writeToFile(headerPath.string(), emitter.emitOverlayHeader(image)))
+                {
+                    throw std::runtime_error("Failed to write overlay header: " + headerPath.string());
+                }
+                registerPath = fs::path(m_config.outputPath) / (image.name + "_overlay.cpp");
+                if (!writeToFile(registerPath.string(), source))
+                {
+                    throw std::runtime_error("Failed to write overlay registration file: " + registerPath.string());
+                }
+            }
+            else
+            {
+                std::string registerFunctions = m_codeGenerator->generateFunctionRegistration(m_functions, m_generatedStubs);
+                m_generatedStubs.clear();
+
+                registerPath = fs::path(m_config.outputPath) / "register_functions.cpp";
+                if (!writeToFile(registerPath.string(), registerFunctions))
+                {
+                    throw std::runtime_error("Failed to write function registration file: " + registerPath.string());
+                }
             }
             {
                 std::ostringstream msg;
@@ -1834,6 +1967,7 @@ namespace ps2recomp
             ss << "#include <cstdint>\n";
             ss << "#include \"ps2_runtime.h\"\n";
             ss << "#include \"ps2_syscalls.h\"\n\n";
+            ss << m_codeGenerator->namespaceOpen();
             // ss << "namespace ps2recomp {\n";
             // ss << "namespace stubs {\n\n";
 
@@ -1861,8 +1995,9 @@ namespace ps2recomp
 
             // ss << "\n} // namespace stubs\n";
             // ss << "} // namespace ps2recomp\n";
+            ss << m_codeGenerator->namespaceClose();
 
-            fs::path headerPath = fs::path(m_config.outputPath) / "ps2_recompiled_stubs.h";
+            fs::path headerPath = fs::path(m_config.outputPath) / m_codeGenerator->stubsHeaderName();
             writeToFile(headerPath.string(), ss.str());
 
             {
@@ -1885,12 +2020,15 @@ namespace ps2recomp
         {
             std::stringstream ss;
 
-            ss << "#ifndef PS2_RECOMPILED_FUNCTIONS_H\n";
-            ss << "#define PS2_RECOMPILED_FUNCTIONS_H\n\n";
+            const std::string guard = m_config.overlay.enabled ? "PS2X_OVERLAY_" + m_config.overlay.name + "_FUNCTIONS_H"
+                                                               : std::string("PS2_RECOMPILED_FUNCTIONS_H");
+            ss << "#ifndef " << guard << "\n";
+            ss << "#define " << guard << "\n\n";
 
             ss << "#include <cstdint>\n\n";
             ss << "struct R5900Context;\n";
             ss << "class PS2Runtime;\n\n";
+            ss << m_codeGenerator->namespaceOpen();
 
             for (const auto &function : m_functions)
             {
@@ -1904,9 +2042,13 @@ namespace ps2recomp
                 ss << "void " << finalName << "(uint8_t* rdram, R5900Context* ctx, PS2Runtime *runtime);\n";
             }
 
-            ss << "\n#endif // PS2_RECOMPILED_FUNCTIONS_H\n";
+            if (m_codeGenerator->isOverlay())
+            {
+                ss << "\n" << m_codeGenerator->namespaceClose();
+            }
+            ss << "\n#endif // " << guard << "\n";
 
-            fs::path headerPath = fs::path(m_config.outputPath) / "ps2_recompiled_functions.h";
+            fs::path headerPath = fs::path(m_config.outputPath) / m_codeGenerator->functionsHeaderName();
             writeToFile(headerPath.string(), ss.str());
 
             {
@@ -2389,6 +2531,12 @@ namespace ps2recomp
             {
                 safeName += suffixText;
             }
+        }
+
+        if (m_config.overlay.enabled)
+        {
+            // Object files of different overlays must not collide in one build directory.
+            safeName = m_config.overlay.name + "_" + safeName;
         }
 
         std::filesystem::path outputPath = m_config.outputPath;
