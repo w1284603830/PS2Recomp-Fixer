@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -57,6 +58,22 @@ namespace ps2recomp
         std::vector<std::pair<uint32_t, std::string>> systemCallFunctions;
         std::vector<std::pair<uint32_t, std::string>> libraryFunctions;
 
+        // Only synthetic, nested entry_* names may yield to a proven resume
+        // owner. Named functions, standalone entries and HLE bindings retain
+        // their own registrations. Choose the innermost owner deterministically.
+        std::unordered_map<uint32_t, uint32_t> resumeOwners;
+        for (const auto &[ownerStart, targets] : cg.m_resumeEntryTargetsByOwner)
+        {
+            for (uint32_t target : targets)
+            {
+                if (target == ownerStart)
+                    continue;
+                auto [it, inserted] = resumeOwners.emplace(target, ownerStart);
+                if (!inserted && ownerStart > it->second)
+                    it->second = ownerStart;
+            }
+        }
+
         for (const auto &function : functions)
         {
             if (!function.isRecompiled && !function.isStub && !function.isSkipped)
@@ -82,6 +99,16 @@ namespace ps2recomp
             }
             else
             {
+                if (function.name.rfind("entry_", 0) == 0)
+                {
+                    const auto owner = resumeOwners.find(function.start);
+                    if (owner != resumeOwners.end())
+                    {
+                        const std::string ownerName = cg.getFunctionName(owner->second);
+                        if (!ownerName.empty())
+                            generatedName = ownerName;
+                    }
+                }
                 normalFunctions.emplace_back(function.start, generatedName);
             }
         }

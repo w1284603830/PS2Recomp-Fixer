@@ -469,6 +469,8 @@ void register_ps2_runtime_io_tests()
         tc.Run("sceMc open write read and close roundtrip through sync", [](TestCase &t)
         {
             TestContext test;
+            clearContext(test.ctx);
+            ps2_stubs::sceMcInit(test.rdram.data(), &test.ctx, nullptr);
 
             const uint32_t dirAddr = GUEST_STRING_AREA_START + 0x400;
             const uint32_t fileAddr = GUEST_STRING_AREA_START + 0x500;
@@ -500,7 +502,7 @@ void register_ps2_runtime_io_tests()
             t.Equals(getRegS32(&test.ctx, 2), 0, "sceMcOpen should dispatch successfully");
 
             const int32_t fd = syncMc(test.rdram, &cmd);
-            t.IsTrue(fd > 0, "sceMcOpen should produce a positive descriptor in sceMcSync");
+            t.Equals(fd, 0, "sceMcOpen should allocate descriptor zero first, as MCMAN does");
             t.Equals(cmd, 0x02, "sceMcSync should report OPEN as the last command");
 
             clearContext(test.ctx);
@@ -541,6 +543,43 @@ void register_ps2_runtime_io_tests()
 
             const std::filesystem::path hostPath = test.paths.mcRoot / "SAVEDATA" / "test.bin";
             t.IsTrue(std::filesystem::exists(hostPath), "sceMcOpen/sceMcWrite should create the host file under mcRoot");
+
+            auto reopen = [&]()
+            {
+                clearContext(test.ctx);
+                setRegU32(test.ctx, 6, fileAddr);
+                setRegU32(test.ctx, 7, PS2_FIO_O_RDONLY);
+                ps2_stubs::sceMcOpen(test.rdram.data(), &test.ctx, nullptr);
+                return syncMc(test.rdram);
+            };
+            auto close = [&](int32_t handle)
+            {
+                clearContext(test.ctx);
+                setRegU32(test.ctx, 4, static_cast<uint32_t>(handle));
+                ps2_stubs::sceMcClose(test.rdram.data(), &test.ctx, nullptr);
+                t.Equals(syncMc(test.rdram), 0, "closing an allocated handle should succeed");
+            };
+            const int32_t first = reopen();
+            const int32_t second = reopen();
+            t.Equals(first, 0, "closed descriptor zero should be reused");
+            t.Equals(second, 1, "simultaneously open files need distinct handles");
+            close(first);
+            const int32_t reused = reopen();
+            t.Equals(reused, 0, "allocation should select the lowest free slot with another file still open");
+            for (int32_t handle : {second, reused})
+            {
+                std::memset(test.rdram.data() + readBufAddr, 0, payload.size());
+                clearContext(test.ctx);
+                setRegU32(test.ctx, 4, static_cast<uint32_t>(handle));
+                setRegU32(test.ctx, 5, readBufAddr);
+                setRegU32(test.ctx, 6, static_cast<uint32_t>(payload.size()));
+                ps2_stubs::sceMcRead(test.rdram.data(), &test.ctx, nullptr);
+                t.Equals(syncMc(test.rdram), static_cast<int32_t>(payload.size()),
+                         "reopened descriptors should have independent read positions");
+                t.Equals(std::string(reinterpret_cast<const char *>(test.rdram.data() + readBufAddr), payload.size()),
+                         payload, "reopened handle should read the saved bytes");
+                close(handle);
+            }
         });
 
         tc.Run("sceMcGetDir includes dot entries and file metadata", [](TestCase &t)

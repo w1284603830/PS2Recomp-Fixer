@@ -30,7 +30,9 @@
 - 光碟：真實 ISO9660 LBN、雙層 DVD9、換盤。
 - 主機端：單一 deadline 限幀器；UTF-8 代碼頁，資料夾用任何文字命名都能執行。
 - 大量可選診斷（`PS2_*` 環境變數，原本的 `DOD_*` 名稱仍可用）與離線分析工具。
-- 通用的 F2 金手指面板：項目由各遊戲自己的 `cheats.ini` 提供，本倉庫不附任何遊戲的金手指。
+- 重編譯器 `native = ["名稱@0x位址"]`：遊戲自己的函式與 runtime 要取代的 SDK 函式同名時，仍保留為重編譯碼；IOP `thmsgbx` 信箱；MCMAN 式記憶卡描述符；libpad 震動。
+- **選用功能，預設為屏蔽（關閉）狀態，如有需要可以使用**：F2 金手指面板（項目由各遊戲自己的 `cheats.ini` 提供）與 F3 修改器面板（各移植登錄自己的開關），見[下方](#選用金手指工具預設屏蔽)；本倉庫不附任何遊戲的金手指。
+- `tools/new_port.py`：從你的光碟映像建立移植資料夾，含開機 ELF、重編譯設定、`game.ini` 與接下來的確切指令。
 
 完整清單：[IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md)（英文 [IMPROVEMENTS.md](IMPROVEMENTS.md)）。PS2Recomp 的逐行差異以[有順序的補丁組](patches/README.md)提供：對上游 `eb8688b` 先套用保留的基礎補丁，再依清單套用維護增量補丁；庫內源碼已包含整組修改。
 
@@ -47,7 +49,8 @@
 | `examples/generic_runner/main.cpp` | 不綁任何遊戲、由 `game.ini` 設定的通用入口：複製成你的 `main.cpp` 即可 |
 | `examples/dod_runner/main.cpp` | 原移植專案的遊戲入口（雙碟、高清影片、測試掛鉤），寫自己的入口時參考（不在建置內） |
 | `patches/` | 與上游 `eb8688b` 的差異 |
-| `docs/GAME_PORTING.md`、`docs/CHEATS.md` | 各遊戲專用的值放在哪裡；`cheats.ini` 格式（英文） |
+| `docs/GAME_PORTING.md`、`docs/CHEATS.md`、`docs/TRAINER.md` | 各遊戲專用的值放在哪裡；選用的 F2 `cheats.ini` 金手指與 F3 修改器（英文，附中文摘要） |
+| `docs/ECOSYSTEM_SURVEY.zh-TW.md` | 相關重編譯／原生移植專案的調查：程式碼譜系、IOP 路線、VU、GS |
 | `docs/` | 原移植專案的開發記錄：每項修補的原因與驗證、建置筆記、上游測試判讀 |
 
 原始碼之間用相對路徑互相引用，請保持 `third_party/src/<模組>` 的結構。
@@ -78,6 +81,25 @@ powershell -NoProfile -ExecutionPolicy Bypass -File build_all.ps1
 - 主測試依 suite／名稱／狀態核對歷史例外；新失敗、空白／不完整報告會使建置失敗，需 Python 3.9 以上。
 - 參數：`-BuildDir <資料夾>`；只建一部分用 `-Part kzvu|gs|ps2recomp`；不跑測試加 `-NoTests`。
 - 這裡建出的 `ps2EntryRunner.exe` 用的是上游的通用 `src/main.cpp` 和空函式表，只證明執行期能連結。遊戲需要自己的產生碼和入口（見下節）。
+
+## 新移植快速開始
+
+```
+python -I tools/new_port.py --iso D:\games\MyGame.iso --out D:\ports\mygame --title "My Game"
+```
+
+它會讀 SYSTEM.CNF、複製並檢查開機 ELF，寫出 `recomp.toml`（已建置 `ps2_analyzer` 時用它產生）、通用 runner 用的 `game.ini`，以及列出其餘指令的 `PORT_STEPS.md`。移植資料夾必須在本倉庫之外，遊戲檔案一律不提交。手動流程見下方。
+
+## 選用金手指工具（預設屏蔽）
+
+兩者預設都**不編入**（預設為屏蔽狀態）：不處理 F2／F3、不讀金手指檔、不寫遊戲記憶體。如有需要可以使用：
+
+| 工具 | 開啟方式 | 文件 |
+|---|---|---|
+| F2 金手指：由遊戲自己的 `cheats.ini` 提供 RAM 金手指 | `-DPS2X_ENABLE_CHEAT_MENU=ON` 或 `build_all.ps1 -CheatMenu` | [docs/CHEATS.md](docs/CHEATS.md) |
+| F3 修改器：各移植為自己的程式碼掛鉤登錄開關／選項的面板（`ps2_trainer.h`） | `-DPS2X_ENABLE_TRAINER=ON` 或 `build_all.ps1 -Trainer` | [docs/TRAINER.md](docs/TRAINER.md) |
+
+修改器關閉時，移植裡的 `ps2trainer::on()`／`choice()` 會編譯成常數，等同原本的遊戲程式碼。
 
 ## 移植一款遊戲
 

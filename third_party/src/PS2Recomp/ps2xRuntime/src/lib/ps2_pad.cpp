@@ -3,6 +3,7 @@
 #include "dod_input_settings.h"
 #include "dod_gamepad.h"
 #include "ps2_cheats.h"
+#include "ps2_trainer.h"
 #include "ps2_input_readers.h"
 #include "ps2_pad_diagnostics.h"
 #include <string_view>
@@ -28,6 +29,12 @@ std::atomic<uint64_t> g_padSessionGeneration{0};
 
 namespace
 {
+    // An optional host panel (F2 cheat menu or F3 trainer, both off by default) holds the keyboard and controller.
+    bool hostMenuOpen()
+    {
+        return ps2CheatsMenuOpen() || ps2TrainerMenuOpen();
+    }
+
     constexpr uint8_t kPadAnalogMarker = 0x73;
     constexpr uint8_t kPadStickCenter = 0x80;
 
@@ -366,10 +373,12 @@ void dodPollHostPadInput()
         }
     }
 
-    // The F2 cheat menu (ps2_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
-    // released pad (sticks centred, no queued presses).
+    // The optional F2 cheat menu (ps2_cheats.cpp) and F3 trainer panel (ps2_trainer.cpp) navigate with this frame's
+    // buttons; while one is open the game gets a released pad (sticks centred, no queued presses). Both are off by
+    // default, and then these calls are no-ops that report "closed".
     ps2CheatsSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
-    const bool captured = ps2CheatsMenuOpen();
+    ps2TrainerSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
+    const bool captured = hostMenuOpen();
     if (captured)
     {
         btns = 0xFFFFu;
@@ -409,7 +418,7 @@ static bool readHostPadSnapshot(uint8_t *data, size_t size, bool consumePresses)
         return false;
 
     std::lock_guard<std::mutex> lock(g_hostPadMutex);
-    if (ps2CheatsMenuOpen()) releaseCapturedInput();
+    if (hostMenuOpen()) releaseCapturedInput();
     const HostPadSnapshot &snapshot = g_hostPadSnapshot;
     std::memcpy(data, snapshot.data, sizeof(snapshot.data));
     const uint16_t pending = g_pendingHostPresses;
@@ -480,7 +489,7 @@ bool ps2input::readLatest(Reader token, uint8_t* data, size_t size)
     uint16_t pending = 0;
     if (!g_hostReaders.consume(token, pending)) return false;
     std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));
-    if (ps2CheatsMenuOpen())
+    if (hostMenuOpen())
     {
         releaseCapturedInput();
         std::memcpy(data, g_hostPadSnapshot.data, sizeof(g_hostPadSnapshot.data));

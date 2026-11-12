@@ -84,7 +84,6 @@ namespace ps2_stubs
         };
 
         std::mutex g_mcStateMutex;
-        int32_t g_mcNextFd = 1;
         int32_t g_mcLastCmd = 0;
         bool g_mcCommandPending = false;
         int32_t g_mcLastResult = 0;
@@ -428,35 +427,33 @@ namespace ps2_stubs
             }
         }
 
+        int32_t nextAvailableMcFdLocked()
+        {
+            // MCMAN scans its handle table from zero on every open. Descriptor
+            // zero is valid, and closing a file makes that slot reusable.
+            for (int32_t fd = 0; fd < static_cast<int32_t>(kMcMaxOpenFiles); ++fd)
+            {
+                if (g_mcFiles.find(fd) == g_mcFiles.end())
+                {
+                    return fd;
+                }
+            }
+            return kMcResultUpLimitHandle;
+        }
+
         int32_t allocateMcFdLocked(FILE *file, int32_t port, const std::filesystem::path &hostPath)
         {
             if (!file)
             {
                 return kMcResultDeniedPermit;
             }
-            if (g_mcFiles.size() >= kMcMaxOpenFiles)
+            const int32_t fd = nextAvailableMcFdLocked();
+            if (fd < 0)
             {
-                return kMcResultUpLimitHandle;
-            }
-
-            for (int attempt = 0; attempt < 0x10000; ++attempt)
-            {
-                if (g_mcNextFd <= 0)
-                {
-                    g_mcNextFd = 1;
-                }
-
-                const int32_t fd = g_mcNextFd++;
-                if (g_mcFiles.find(fd) != g_mcFiles.end())
-                {
-                    continue;
-                }
-
-                g_mcFiles.emplace(fd, McOpenFile{file, port, hostPath});
                 return fd;
             }
-
-            return kMcResultUpLimitHandle;
+            g_mcFiles.emplace(fd, McOpenFile{file, port, hostPath});
+            return fd;
         }
 
         FILE *openMcHostFile(const std::filesystem::path &hostPath, uint32_t flags)
@@ -518,7 +515,7 @@ namespace ps2_stubs
     {
         MemoryCardDebugSnapshot snapshot{};
         std::lock_guard<std::mutex> lock(g_mcStateMutex);
-        snapshot.nextFd = g_mcNextFd;
+        snapshot.nextFd = nextAvailableMcFdLocked();
         snapshot.lastCmd = g_mcLastCmd;
         snapshot.lastResult = g_mcLastResult;
         snapshot.cvFileCursor = g_cvMcFileCursor;
@@ -670,7 +667,6 @@ namespace ps2_stubs
         {
             std::lock_guard<std::mutex> lock(g_mcStateMutex);
             closeMcFilesLocked();
-            g_mcNextFd = 1;
             g_mcLastCmd = 0;
             g_mcLastResult = 0;
             g_mcCommandPending = false;
@@ -957,7 +953,6 @@ namespace ps2_stubs
         {
             std::lock_guard<std::mutex> lock(g_mcStateMutex);
             closeMcFilesLocked();
-            g_mcNextFd = 1;
             g_mcLastCmd = 0;
             g_mcLastResult = 0;
             g_mcCommandPending = false;

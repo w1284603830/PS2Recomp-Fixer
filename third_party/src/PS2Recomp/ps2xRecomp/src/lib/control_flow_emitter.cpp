@@ -135,6 +135,13 @@ namespace ps2recomp
         m_ss << fmt::format("{}ctx->in_delay_slot = true;\n", indent);
         m_ss << fmt::format("{}ctx->branch_pc = 0x{:X}u;\n", indent, branchPc());
 
+        emitDelaySlotInstruction(indent);
+        m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
+    }
+
+    void ControlFlowEmitter::emitDelaySlotInstruction(std::string_view indent)
+    {
+        if (!hasRealDelaySlot()) return;
         const std::string code = delaySlotCode();
         std::istringstream lines(code);
         std::string line;
@@ -145,8 +152,6 @@ namespace ps2recomp
                 m_ss << indent << line << "\n";
             }
         }
-
-        m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
     }
 
     void ControlFlowEmitter::emitResumeFromDelaySlotEntry()
@@ -157,7 +162,12 @@ namespace ps2recomp
         }
 
         m_ss << fmt::format("    if (ctx->pc == 0x{:X}u) {{\n", delayPc());
-        emitDelaySlot("        ");
+        // A branch target may also be the delay-slot address of an unrelated branch.
+        // Only a context explicitly stopped in this branch's slot carries its control flow.
+        m_ss << fmt::format("        const bool resume_delay_branch = ctx->in_delay_slot && ctx->branch_pc == 0x{:X}u;\n", branchPc());
+        m_ss << "        ctx->in_delay_slot = resume_delay_branch;\n";
+        emitDelaySlotInstruction("        ");
+        m_ss << "        ctx->in_delay_slot = false;\n";
 
         // [DoD] Upstream issue #260: resuming in the delay slot of a branch that is always taken (b / beq x,x,
         // bgez $zero, a j inside the function) must continue at its target, not after it (Ridge Racer V's main loop
@@ -184,10 +194,10 @@ namespace ps2recomp
             }
             if (alwaysTaken && isInternalTarget(takenTarget))
             {
-                m_ss << fmt::format("        ctx->pc = 0x{:X}u;\n", takenTarget);
-                m_ss << fmt::format("        goto label_{:x};\n", takenTarget);
-                m_ss << "    }\n";
-                return;
+                m_ss << "        if (resume_delay_branch) {\n";
+                m_ss << fmt::format("            ctx->pc = 0x{:X}u;\n", takenTarget);
+                m_ss << fmt::format("            goto label_{:x};\n", takenTarget);
+                m_ss << "        }\n";
             }
         }
 

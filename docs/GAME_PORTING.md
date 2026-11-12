@@ -13,6 +13,9 @@ VFS host paths require UTF-8. Decode independently identified legacy encodings *
 a DBCS trail byte can be `0x5c`. The [encoding review and optional port example](VFS_PATH_ENCODING_REVIEW_2026-11-06.md)
 cover rejection, explicit conversion and separate libmc/IOP/loader boundaries. No encoding is selected by game name.
 
+Start with `python -I tools/new_port.py --iso <your disc image> --out <port folder outside this repository>`: it
+lays out the boot ELF, `recomp.toml`, `game.ini` and `PORT_STEPS.md` described below.
+
 ## 1. Pieces
 
 | You provide | Where |
@@ -20,7 +23,8 @@ cover rejection, explicit conversion and separate libmc/IOP/loader boundaries. N
 | The generated functions of your game (`ps2_recomp` output) | `third_party/src/PS2Recomp/ps2xRuntime/src/runner/` (git-ignored upstream, `git add -f` your own) |
 | `register_functions.cpp` and a `main.cpp` | the same folder; start from [`examples/generic_runner/main.cpp`](../examples/generic_runner/main.cpp) |
 | `game.ini` next to the executable | settings of the runner (keys listed at the top of its `main.cpp`) |
-| `cheats.ini` (optional) | RAM cheats for the F2 panel, [CHEATS.md](CHEATS.md) |
+| `cheats.ini` (optional) | RAM cheats for the optional F2 panel (build option, default off), [CHEATS.md](CHEATS.md) |
+| trainer switches (optional) | `ps2trainer::addSwitch/addChoice` in your runner, read by your hand-patched code; F3 panel (build option, default off), [TRAINER.md](TRAINER.md) |
 
 [`examples/dod_runner/`](../examples/dod_runner) is the first port's entry point (two discs, HD movies, widescreen,
 dozens of test hooks): a reference for what a finished runner can do, not a template to copy whole.
@@ -37,7 +41,9 @@ dozens of test hooks): a reference for what a finished runner can do, not a temp
 | MPEG library ABI and globals | `ps2_stubs::configureMpegGameProfile()` after `loadELF` | Explicit supported ABI, instruction guards, callbacks and globals. Unknown/mismatched profiles never fall through to another game's layout. |
 | SCEE font HLE globals | `ps2_stubs::configureFontGameProfile()` after `loadELF` | Explicit table/count, instruction guard and GP offsets. The generic runner leaves this game-specific adapter disabled. |
 | Capture metadata | `runtime.setCaptureMetadataProvider()` after `loadELF` | Optional callback; the shared host loop reads no game's scene/frame addresses. |
-| RAM cheats | `cheats.ini` | |
+| RAM cheats | `cheats.ini` | Only with `PS2X_ENABLE_CHEAT_MENU=ON` |
+| A game function that shares its name with an SDK call (bound to the HLE by name) | `recomp.toml` `[general] native = ["name@0xADDRESS"]` | Address selectors only; the function stays recompiled guest code |
+| VU clamp mode from PCSX2's `GameIndex.yaml` | `PS2_VU1_CLAMP` / `PS2_VU0_CLAMP` = 0..3 in the runner's environment | Default 1 for both |
 | Diagnostics | `PS2_*` environment variables (below) | |
 
 ## 3. Environment variables
@@ -56,7 +62,10 @@ Ones with game-specific content now take that content from you instead of fixing
 | `PS2_GS_GPARAM=0x...` | as above |
 | `PS2_AUDIO_LINEAR=1` | host audio output back to linear interpolation; the default is a 64-tap windowed-sinc resampler (`ps2_output_resampler.h`, fixed 0.646 ms delay, same queue control and game clock) |
 | `PS2_SPU2_REVERB_STEMS=<file>`, `PS2_SPU2_REVERB_CORE=0` | dump the reverb input / return of core 1 (or core 0) as raw 4-channel 16-bit 48 kHz |
-| `PS2_CHEATS_FILE`, `PS2_CHEATS`, `PS2_CHEAT_MENU_AT` | see [CHEATS.md](CHEATS.md) |
+| `PS2_CHEATS_FILE`, `PS2_CHEATS`, `PS2_CHEAT_MENU_AT` | see [CHEATS.md](CHEATS.md) (F2 menu builds only) |
+| `PS2_TRAINER`, `PS2_TRAINER_MENU_AT` | see [TRAINER.md](TRAINER.md) (F3 trainer builds only) |
+| `PS2_VU1_CLAMP`, `PS2_VU0_CLAMP` | microVU clamp mode 0..3 for VU1 / VU0, default 1 |
+| `PS2_RUMBLE_TRACE=1` | log libpad actuator alignment and motor values |
 
 ## 4. What is still the first port's
 

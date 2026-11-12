@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <utility>
 
 namespace ps2x::iop::detail
 {
@@ -29,10 +30,14 @@ namespace ps2x::iop::detail
         m_threads.clear();
         m_semaphores.clear();
         m_eventFlags.clear();
+        m_mailboxes.clear();
         m_outsideSemaphoreWait = 0;
+        m_outsideMailboxWait = 0;
         m_nextThreadId = 1;
         m_nextSemaphoreId = 1;
         m_nextEventFlagId = 1;
+        m_nextMailboxId = 1;
+        m_mailboxWaitSequence = 0;
         m_currentThread = nullptr;
     }
 
@@ -170,6 +175,8 @@ namespace ps2x::iop::detail
             {
                 it->second.state = IopThreadState::Ready;
             }
+            else if (it->second.state == IopThreadState::Mailbox || it->second.state == IopThreadState::MailboxSuspended)
+                completeMailboxWait(it->second, -418); // KE_RELEASE_WAIT; never deliver a packet on cancellation
             setV0(0);
             return true;
         }
@@ -235,7 +242,8 @@ namespace ps2x::iop::detail
                 setV0(-1);
                 return true;
             }
-            it->second.state = IopThreadState::Suspended;
+            it->second.state = it->second.state == IopThreadState::Mailbox || it->second.state == IopThreadState::MailboxSuspended
+                                   ? IopThreadState::MailboxSuspended : IopThreadState::Suspended;
             if (m_currentThread == &it->second)
                 cpu.yielded = true;
             setV0(0);
@@ -253,6 +261,8 @@ namespace ps2x::iop::detail
             }
             if (it->second.state == IopThreadState::Suspended)
                 it->second.state = IopThreadState::Ready;
+            else if (it->second.state == IopThreadState::MailboxSuspended)
+                it->second.state = IopThreadState::Mailbox;
             setV0(0);
             return true;
         }
@@ -324,7 +334,11 @@ namespace ps2x::iop::detail
         case IopThreadState::Delay:
         case IopThreadState::Semaphore:
         case IopThreadState::EventFlag:
+        case IopThreadState::Mailbox:
             status = 0x04u;
+            break;
+        case IopThreadState::MailboxSuspended:
+            status = 0x0Cu;
             break;
         case IopThreadState::Suspended:
             status = 0x08u;
@@ -346,6 +360,7 @@ namespace ps2x::iop::detail
         m_memory.write32(outputAddress + 36u, thread.state == IopThreadState::Sleep ? 1u : thread.state == IopThreadState::Delay   ? 2u
                                                                                        : thread.state == IopThreadState::Semaphore ? 3u
                                                                                        : thread.state == IopThreadState::EventFlag ? 4u
+                                                                                       : thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended ? 5u
                                                                                                                                    : 0u);
         m_memory.write32(outputAddress + 40u, static_cast<uint32_t>(thread.waitId));
         m_memory.write32(outputAddress + 44u, static_cast<uint32_t>(thread.wakeupCount));
@@ -663,6 +678,177 @@ namespace ps2x::iop::detail
         }
     }
 
+    int IopKernel::mailboxMessageCount(int id) const
+    {
+        const auto mailbox = m_mailboxes.find(id);
+        return mailbox == m_mailboxes.end() ? -1 : static_cast<int>(mailbox->second.messages.size());
+    }
+
+    void IopKernel::linkMailboxMessages(const Mailbox &mailbox)
+    {
+        // IOP messages are intrusive circular lists: the final packet points back to the first.
+        for (size_t i = 0; i < mailbox.messages.size(); ++i)
+            m_memory.write32(mailbox.messages[i], mailbox.messages[(i + 1u) % mailbox.messages.size()]);
+    }
+
+    void IopKernel::completeMailboxWait(IopThread &thread, int32_t result, uint32_t message)
+    {
+        if (result == 0 && thread.waitResultAddress != 0u)
+            m_memory.write32(thread.waitResultAddress, message);
+        thread.cpu.gpr[2] = static_cast<uint32_t>(result);
+        thread.state = thread.state == IopThreadState::MailboxSuspended ? IopThreadState::Suspended : IopThreadState::Ready;
+        thread.waitId = 0;
+        thread.waitResultAddress = 0;
+        thread.mailboxWaitSequence = 0;
+        // This may be called by an interrupt callback. End the interrupted producer's slice only after the callback
+        // has returned, so a higher-priority receiver runs without abandoning the callback's own stack.
+        if (thread.state == IopThreadState::Ready && m_currentThread && thread.priority < m_currentThread->priority)
+            m_currentThread->cpu.yielded = true;
+    }
+
+    bool IopKernel::dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu, bool interruptContext)
+    {
+        // ABI and error codes: ps2dev/ps2sdk, iop/system/threadman/{include/thmsgbx.h,src/thmsgbx.c},
+        // iop/kernel/include/kerr.h (reviewed at f1ca58a468ead937155ab818d9a38e52c8adf861).
+        // This is a host implementation of those semantics, not a replacement sound-driver RPC.
+        constexpr int32_t kIllegalContext = -100, kIllegalAccess = -219, kIllegalAttr = -401;
+        constexpr int32_t kUnknownMailbox = -410, kCannotWait = -417, kNoMessage = -424, kWaitDelete = -425;
+        const auto result = [&](int32_t value) { cpu.gpr[2] = static_cast<uint32_t>(value); };
+        const auto ramPointer = [](uint32_t address, uint32_t bytes) {
+            return address != 0u && (address & 3u) == 0u && IopMemory::physicalAddress(address) <= IopMemory::RamSize - bytes;
+        };
+        if (ordinal != 4u && ordinal != 5u && ordinal != 6u && ordinal != 7u && ordinal != 8u &&
+            ordinal != 9u && ordinal != 11u && ordinal != 12u)
+            return false; // ordinal 10 is not a declared thmsgbx service
+        const bool interruptOnly = ordinal == 7u || ordinal == 12u;
+        if (interruptContext != interruptOnly)
+        {
+            result(kIllegalContext);
+            return true;
+        }
+        if (ordinal == 4u) // CreateMbx(iop_mbx_t *): attr, option
+        {
+            if (!ramPointer(cpu.gpr[4], 8u))
+            {
+                result(kIllegalAccess); // defensive host boundary; invalid BIOS pointers have undefined behavior
+                return true;
+            }
+            const uint32_t attr = m_memory.read32(cpu.gpr[4]);
+            if ((attr & ~5u) != 0u)
+            {
+                result(kIllegalAttr);
+                return true;
+            }
+            const int id = static_cast<int>(m_nextMailboxId++);
+            Mailbox mailbox;
+            mailbox.attr = attr;
+            mailbox.option = m_memory.read32(cpu.gpr[4] + 4u);
+            m_mailboxes.emplace(id, std::move(mailbox));
+            result(id);
+            return true;
+        }
+        // Receive/Poll use (void **msgvar, int id), the reverse of SendMbx's (int id, void *msg).
+        const int id = static_cast<int>(cpu.gpr[ordinal == 8u || ordinal == 9u ? 5u : 4u]);
+        const auto found = m_mailboxes.find(id);
+        if (found == m_mailboxes.end())
+        {
+            result(kUnknownMailbox);
+            return true;
+        }
+        Mailbox &mailbox = found->second;
+        if (ordinal == 5u) // DeleteMbx wakes all receivers with KE_WAIT_DELETE, without writing their msgvar.
+        {
+            for (auto &[threadId, thread] : m_threads)
+                if ((thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended) && thread.waitId == id)
+                    completeMailboxWait(thread, kWaitDelete);
+            m_mailboxes.erase(found);
+            result(0);
+            return true;
+        }
+        if (ordinal == 6u || ordinal == 7u)
+        {
+            const uint32_t message = cpu.gpr[5];
+            if (!ramPointer(message, 8u))
+            {
+                result(kIllegalAccess);
+                return true;
+            }
+            IopThread *receiver = nullptr;
+            for (auto &[threadId, thread] : m_threads)
+            {
+                if ((thread.state != IopThreadState::Mailbox && thread.state != IopThreadState::MailboxSuspended) || thread.waitId != id)
+                    continue;
+                const bool byPriority = (mailbox.attr & 1u) != 0u;
+                if (!receiver || (byPriority && thread.priority < receiver->priority) ||
+                    ((!byPriority || thread.priority == receiver->priority) && thread.mailboxWaitSequence < receiver->mailboxWaitSequence))
+                    receiver = &thread;
+            }
+            if (receiver)
+                completeMailboxWait(*receiver, 0, message); // direct handoff leaves the packet's next field intact
+            else
+            {
+                auto position = mailbox.messages.end();
+                if ((mailbox.attr & 4u) != 0u) // lower priority byte first, stable for equal priorities
+                    position = std::find_if(mailbox.messages.begin(), mailbox.messages.end(), [&](uint32_t queued) {
+                        return m_memory.read8(message + 4u) < m_memory.read8(queued + 4u);
+                    });
+                mailbox.messages.insert(position, message);
+                linkMailboxMessages(mailbox);
+                if (m_outsideMailboxWait == id && m_currentThread && &cpu == &m_currentThread->cpu)
+                    cpu.yielded = true; // let the outside Receive consume before this producer can poll it back
+            }
+            result(0);
+            return true;
+        }
+        if (ordinal == 8u || ordinal == 9u)
+        {
+            const uint32_t destination = cpu.gpr[4];
+            if (!ramPointer(destination, 4u))
+            {
+                result(kIllegalAccess);
+                return true;
+            }
+            if (!mailbox.messages.empty())
+            {
+                const uint32_t message = mailbox.messages.front();
+                mailbox.messages.erase(mailbox.messages.begin());
+                linkMailboxMessages(mailbox);
+                m_memory.write32(destination, message);
+                result(0);
+            }
+            else if (ordinal == 9u)
+                result(kNoMessage);
+            else if (m_currentThread && &cpu == &m_currentThread->cpu)
+            {
+                m_currentThread->state = IopThreadState::Mailbox;
+                m_currentThread->waitId = id;
+                m_currentThread->waitResultAddress = destination;
+                m_currentThread->mailboxWaitSequence = ++m_mailboxWaitSequence;
+                cpu.yielded = true;
+                result(0); // saved return; the thread cannot resume until Send/Delete/ReleaseWait supplies its result
+            }
+            else
+                result(kCannotWait); // outside caller exhausted its scheduler pump: never report phantom success
+            return true;
+        }
+        if (!ramPointer(cpu.gpr[5], 28u)) // ReferMbxStatus/iReferMbxStatus: two reserved words are left untouched
+        {
+            result(kIllegalAccess);
+            return true;
+        }
+        uint32_t waiters = 0;
+        for (const auto &[threadId, thread] : m_threads)
+            if ((thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended) && thread.waitId == id)
+                ++waiters;
+        m_memory.write32(cpu.gpr[5], mailbox.attr);
+        m_memory.write32(cpu.gpr[5] + 4u, mailbox.option);
+        m_memory.write32(cpu.gpr[5] + 8u, waiters);
+        m_memory.write32(cpu.gpr[5] + 12u, static_cast<uint32_t>(mailbox.messages.size()));
+        m_memory.write32(cpu.gpr[5] + 16u, mailbox.messages.empty() ? 0u : mailbox.messages.front());
+        result(0);
+        return true;
+    }
+
     void IopKernel::sleepCurrent(IopCpuState &cpu)
     {
         if (m_currentThread == nullptr)
@@ -808,7 +994,7 @@ namespace ps2x::iop::detail
 
     std::vector<std::string> IopKernel::describeThreads() const
     {
-        static const char *const names[] = {"dormant", "ready", "running", "sleep", "delay", "sema", "evflag", "suspended", "dead"};
+        static const char *const names[] = {"dormant", "ready", "running", "sleep", "delay", "sema", "evflag", "suspended", "dead", "mbx", "mbx+suspend"};
         std::vector<std::string> lines;
         for (const auto &[id, t] : m_threads)
         {

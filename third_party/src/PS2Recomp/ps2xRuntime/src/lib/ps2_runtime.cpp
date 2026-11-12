@@ -8,6 +8,7 @@
 #include "runtime/gs/gs_frontend.h"
 #include "gs/dod_pcsx2_gs.h"
 #include "ps2_cheats.h"
+#include "ps2_trainer.h"
 #include "gs/dod_perf.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
@@ -2954,7 +2955,10 @@ void PS2Runtime::run()
             }
             EndDrawing();
         }
-        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
+        // Optional host tools, both off by default (no-ops then): the F2 cheat menu and its RAM cheats (ps2_cheats.cpp),
+        // then the F3 trainer panel (ps2_trainer.cpp), which yields to an open F2 panel.
+        ps2CheatsHostTick(m_memory.getRDRAM());
+        ps2TrainerHostTick();
         dodPollHostPadInput(); // publish capture/menu state and fresh input before the idle wait
         hostPacer.wait();
         dodperf::end(dodperf::EndDrawing, endDrawingStart);

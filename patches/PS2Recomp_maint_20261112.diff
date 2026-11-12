@@ -1,0 +1,1658 @@
+diff --git a/ps2xIOP/CMakeLists.txt b/ps2xIOP/CMakeLists.txt
+index 543b6b1..c10981e 100644
+--- a/ps2xIOP/CMakeLists.txt
++++ b/ps2xIOP/CMakeLists.txt
+@@ -71,0 +72,5 @@ if(PS2X_IOP_BUILD_TESTS)
++    add_executable(ps2_iop_mailbox_tests tests/iop_mailbox_tests.cpp)
++    target_link_libraries(ps2_iop_mailbox_tests PRIVATE ps2_iop)
++    target_include_directories(ps2_iop_mailbox_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
++    add_test(NAME ps2_iop_mailbox_tests COMMAND ps2_iop_mailbox_tests)
++
+diff --git a/ps2xIOP/src/emulator/core/iop_kernel.cpp b/ps2xIOP/src/emulator/core/iop_kernel.cpp
+index ee2a6f4..b64819d 100644
+--- a/ps2xIOP/src/emulator/core/iop_kernel.cpp
++++ b/ps2xIOP/src/emulator/core/iop_kernel.cpp
+@@ -7,0 +8 @@
++#include <utility>
+@@ -31,0 +33 @@ namespace ps2x::iop::detail
++        m_mailboxes.clear();
+@@ -32,0 +35 @@ namespace ps2x::iop::detail
++        m_outsideMailboxWait = 0;
+@@ -35,0 +39,2 @@ namespace ps2x::iop::detail
++        m_nextMailboxId = 1;
++        m_mailboxWaitSequence = 0;
+@@ -172,0 +178,2 @@ namespace ps2x::iop::detail
++            else if (it->second.state == IopThreadState::Mailbox || it->second.state == IopThreadState::MailboxSuspended)
++                completeMailboxWait(it->second, -418); // KE_RELEASE_WAIT; never deliver a packet on cancellation
+@@ -238 +245,2 @@ namespace ps2x::iop::detail
+-            it->second.state = IopThreadState::Suspended;
++            it->second.state = it->second.state == IopThreadState::Mailbox || it->second.state == IopThreadState::MailboxSuspended
++                                   ? IopThreadState::MailboxSuspended : IopThreadState::Suspended;
+@@ -255,0 +264,2 @@ namespace ps2x::iop::detail
++            else if (it->second.state == IopThreadState::MailboxSuspended)
++                it->second.state = IopThreadState::Mailbox;
+@@ -326,0 +337 @@ namespace ps2x::iop::detail
++        case IopThreadState::Mailbox:
+@@ -328,0 +340,3 @@ namespace ps2x::iop::detail
++        case IopThreadState::MailboxSuspended:
++            status = 0x0Cu;
++            break;
+@@ -348,0 +363 @@ namespace ps2x::iop::detail
++                                                                                       : thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended ? 5u
+@@ -665,0 +681,171 @@ namespace ps2x::iop::detail
++    int IopKernel::mailboxMessageCount(int id) const
++    {
++        const auto mailbox = m_mailboxes.find(id);
++        return mailbox == m_mailboxes.end() ? -1 : static_cast<int>(mailbox->second.messages.size());
++    }
++
++    void IopKernel::linkMailboxMessages(const Mailbox &mailbox)
++    {
++        // IOP messages are intrusive circular lists: the final packet points back to the first.
++        for (size_t i = 0; i < mailbox.messages.size(); ++i)
++            m_memory.write32(mailbox.messages[i], mailbox.messages[(i + 1u) % mailbox.messages.size()]);
++    }
++
++    void IopKernel::completeMailboxWait(IopThread &thread, int32_t result, uint32_t message)
++    {
++        if (result == 0 && thread.waitResultAddress != 0u)
++            m_memory.write32(thread.waitResultAddress, message);
++        thread.cpu.gpr[2] = static_cast<uint32_t>(result);
++        thread.state = thread.state == IopThreadState::MailboxSuspended ? IopThreadState::Suspended : IopThreadState::Ready;
++        thread.waitId = 0;
++        thread.waitResultAddress = 0;
++        thread.mailboxWaitSequence = 0;
++        // This may be called by an interrupt callback. End the interrupted producer's slice only after the callback
++        // has returned, so a higher-priority receiver runs without abandoning the callback's own stack.
++        if (thread.state == IopThreadState::Ready && m_currentThread && thread.priority < m_currentThread->priority)
++            m_currentThread->cpu.yielded = true;
++    }
++
++    bool IopKernel::dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu, bool interruptContext)
++    {
++        // ABI and error codes: ps2dev/ps2sdk, iop/system/threadman/{include/thmsgbx.h,src/thmsgbx.c},
++        // iop/kernel/include/kerr.h (reviewed at f1ca58a468ead937155ab818d9a38e52c8adf861).
++        // This is a host implementation of those semantics, not a replacement sound-driver RPC.
++        constexpr int32_t kIllegalContext = -100, kIllegalAccess = -219, kIllegalAttr = -401;
++        constexpr int32_t kUnknownMailbox = -410, kCannotWait = -417, kNoMessage = -424, kWaitDelete = -425;
++        const auto result = [&](int32_t value) { cpu.gpr[2] = static_cast<uint32_t>(value); };
++        const auto ramPointer = [](uint32_t address, uint32_t bytes) {
++            return address != 0u && (address & 3u) == 0u && IopMemory::physicalAddress(address) <= IopMemory::RamSize - bytes;
++        };
++        if (ordinal != 4u && ordinal != 5u && ordinal != 6u && ordinal != 7u && ordinal != 8u &&
++            ordinal != 9u && ordinal != 11u && ordinal != 12u)
++            return false; // ordinal 10 is not a declared thmsgbx service
++        const bool interruptOnly = ordinal == 7u || ordinal == 12u;
++        if (interruptContext != interruptOnly)
++        {
++            result(kIllegalContext);
++            return true;
++        }
++        if (ordinal == 4u) // CreateMbx(iop_mbx_t *): attr, option
++        {
++            if (!ramPointer(cpu.gpr[4], 8u))
++            {
++                result(kIllegalAccess); // defensive host boundary; invalid BIOS pointers have undefined behavior
++                return true;
++            }
++            const uint32_t attr = m_memory.read32(cpu.gpr[4]);
++            if ((attr & ~5u) != 0u)
++            {
++                result(kIllegalAttr);
++                return true;
++            }
++            const int id = static_cast<int>(m_nextMailboxId++);
++            Mailbox mailbox;
++            mailbox.attr = attr;
++            mailbox.option = m_memory.read32(cpu.gpr[4] + 4u);
++            m_mailboxes.emplace(id, std::move(mailbox));
++            result(id);
++            return true;
++        }
++        // Receive/Poll use (void **msgvar, int id), the reverse of SendMbx's (int id, void *msg).
++        const int id = static_cast<int>(cpu.gpr[ordinal == 8u || ordinal == 9u ? 5u : 4u]);
++        const auto found = m_mailboxes.find(id);
++        if (found == m_mailboxes.end())
++        {
++            result(kUnknownMailbox);
++            return true;
++        }
++        Mailbox &mailbox = found->second;
++        if (ordinal == 5u) // DeleteMbx wakes all receivers with KE_WAIT_DELETE, without writing their msgvar.
++        {
++            for (auto &[threadId, thread] : m_threads)
++                if ((thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended) && thread.waitId == id)
++                    completeMailboxWait(thread, kWaitDelete);
++            m_mailboxes.erase(found);
++            result(0);
++            return true;
++        }
++        if (ordinal == 6u || ordinal == 7u)
++        {
++            const uint32_t message = cpu.gpr[5];
++            if (!ramPointer(message, 8u))
++            {
++                result(kIllegalAccess);
++                return true;
++            }
++            IopThread *receiver = nullptr;
++            for (auto &[threadId, thread] : m_threads)
++            {
++                if ((thread.state != IopThreadState::Mailbox && thread.state != IopThreadState::MailboxSuspended) || thread.waitId != id)
++                    continue;
++                const bool byPriority = (mailbox.attr & 1u) != 0u;
++                if (!receiver || (byPriority && thread.priority < receiver->priority) ||
++                    ((!byPriority || thread.priority == receiver->priority) && thread.mailboxWaitSequence < receiver->mailboxWaitSequence))
++                    receiver = &thread;
++            }
++            if (receiver)
++                completeMailboxWait(*receiver, 0, message); // direct handoff leaves the packet's next field intact
++            else
++            {
++                auto position = mailbox.messages.end();
++                if ((mailbox.attr & 4u) != 0u) // lower priority byte first, stable for equal priorities
++                    position = std::find_if(mailbox.messages.begin(), mailbox.messages.end(), [&](uint32_t queued) {
++                        return m_memory.read8(message + 4u) < m_memory.read8(queued + 4u);
++                    });
++                mailbox.messages.insert(position, message);
++                linkMailboxMessages(mailbox);
++                if (m_outsideMailboxWait == id && m_currentThread && &cpu == &m_currentThread->cpu)
++                    cpu.yielded = true; // let the outside Receive consume before this producer can poll it back
++            }
++            result(0);
++            return true;
++        }
++        if (ordinal == 8u || ordinal == 9u)
++        {
++            const uint32_t destination = cpu.gpr[4];
++            if (!ramPointer(destination, 4u))
++            {
++                result(kIllegalAccess);
++                return true;
++            }
++            if (!mailbox.messages.empty())
++            {
++                const uint32_t message = mailbox.messages.front();
++                mailbox.messages.erase(mailbox.messages.begin());
++                linkMailboxMessages(mailbox);
++                m_memory.write32(destination, message);
++                result(0);
++            }
++            else if (ordinal == 9u)
++                result(kNoMessage);
++            else if (m_currentThread && &cpu == &m_currentThread->cpu)
++            {
++                m_currentThread->state = IopThreadState::Mailbox;
++                m_currentThread->waitId = id;
++                m_currentThread->waitResultAddress = destination;
++                m_currentThread->mailboxWaitSequence = ++m_mailboxWaitSequence;
++                cpu.yielded = true;
++                result(0); // saved return; the thread cannot resume until Send/Delete/ReleaseWait supplies its result
++            }
++            else
++                result(kCannotWait); // outside caller exhausted its scheduler pump: never report phantom success
++            return true;
++        }
++        if (!ramPointer(cpu.gpr[5], 28u)) // ReferMbxStatus/iReferMbxStatus: two reserved words are left untouched
++        {
++            result(kIllegalAccess);
++            return true;
++        }
++        uint32_t waiters = 0;
++        for (const auto &[threadId, thread] : m_threads)
++            if ((thread.state == IopThreadState::Mailbox || thread.state == IopThreadState::MailboxSuspended) && thread.waitId == id)
++                ++waiters;
++        m_memory.write32(cpu.gpr[5], mailbox.attr);
++        m_memory.write32(cpu.gpr[5] + 4u, mailbox.option);
++        m_memory.write32(cpu.gpr[5] + 8u, waiters);
++        m_memory.write32(cpu.gpr[5] + 12u, static_cast<uint32_t>(mailbox.messages.size()));
++        m_memory.write32(cpu.gpr[5] + 16u, mailbox.messages.empty() ? 0u : mailbox.messages.front());
++        result(0);
++        return true;
++    }
++
+@@ -811 +997 @@ namespace ps2x::iop::detail
+-        static const char *const names[] = {"dormant", "ready", "running", "sleep", "delay", "sema", "evflag", "suspended", "dead"};
++        static const char *const names[] = {"dormant", "ready", "running", "sleep", "delay", "sema", "evflag", "suspended", "dead", "mbx", "mbx+suspend"};
+diff --git a/ps2xIOP/src/emulator/core/iop_kernel.h b/ps2xIOP/src/emulator/core/iop_kernel.h
+index 66525d5..781758d 100644
+--- a/ps2xIOP/src/emulator/core/iop_kernel.h
++++ b/ps2xIOP/src/emulator/core/iop_kernel.h
+@@ -25,0 +26,2 @@ namespace ps2x::iop::detail
++        Mailbox,
++        MailboxSuspended,
+@@ -45,0 +48 @@ namespace ps2x::iop::detail
++        uint64_t mailboxWaitSequence = 0;
+@@ -57,0 +61,3 @@ namespace ps2x::iop::detail
++        [[nodiscard]] bool dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu, bool interruptContext = false);
++        [[nodiscard]] int mailboxMessageCount(int id) const;
++        void setOutsideMailboxWait(int id) noexcept { m_outsideMailboxWait = id; }
+@@ -111,0 +118,10 @@ namespace ps2x::iop::detail
++        struct Mailbox
++        {
++            uint32_t attr = 0;
++            uint32_t option = 0;
++            std::vector<uint32_t> messages; // guest packet pointers, oldest/highest-priority first
++        };
++
++        void linkMailboxMessages(const Mailbox &mailbox);
++        void completeMailboxWait(IopThread &thread, int32_t result, uint32_t message = 0u);
++
+@@ -120,0 +137 @@ namespace ps2x::iop::detail
++        std::map<int, Mailbox> m_mailboxes;
+@@ -123,0 +141,2 @@ namespace ps2x::iop::detail
++        uint32_t m_nextMailboxId = 1;
++        uint64_t m_mailboxWaitSequence = 0;
+@@ -126,0 +146 @@ namespace ps2x::iop::detail
++        int m_outsideMailboxWait = 0; // reserve a queued packet for an outside-thread ReceiveMbx caller
+diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
+index ab92553..26dfdca 100644
+--- a/ps2xIOP/src/emulator/iop_emulator.cpp
++++ b/ps2xIOP/src/emulator/iop_emulator.cpp
+@@ -162,0 +163 @@ namespace ps2x::iop::detail
++            servicingTimerCallbacks = false;
+@@ -366,0 +368,26 @@ namespace ps2x::iop::detail
++            if (iequals(call.library, "thmsgbx"))
++            {
++                const bool interrupt = mailboxInterruptContext();
++                const int id = static_cast<int>(cpu.gpr[5]); // ReceiveMbx(msgvar, id)
++                if (call.ordinal == 8u && !interrupt && !kernel.inThread() && kernel.mailboxMessageCount(id) == 0)
++                {
++                    // Module start / legacy outside-thread guest calls have no resumable kernel context. Pump real
++                    // IOP producers as for WaitSema; reserve their queued packet, never fake an empty receive.
++                    kernel.setOutsideMailboxWait(id);
++                    struct WaitGuard
++                    {
++                        IopKernel &kernel;
++                        ~WaitGuard() { kernel.setOutsideMailboxWait(0); }
++                    } guard{kernel};
++                    runOutsideThreadUntil([&]() { return kernel.mailboxMessageCount(id) != 0; }, totalCycles + 36'864'000ull);
++                    if (kernel.mailboxMessageCount(id) < 0)
++                    {
++                        cpu.gpr[2] = static_cast<uint32_t>(-425); // KE_WAIT_DELETE
++                        return ImportDisposition::Handled;
++                    }
++                    if (kernel.mailboxMessageCount(id) == 0)
++                        log(LogLevel::Warning, "[IOP] ReceiveMbx outside a thread could not complete; returning KE_CAN_NOT_WAIT");
++                }
++                return kernel.dispatchMailboxImport(call.ordinal, cpu, interrupt)
++                           ? ImportDisposition::Handled : ImportDisposition::Missing;
++            }
+@@ -375,0 +403,7 @@ namespace ps2x::iop::detail
++            if (iequals(call.library, "intrman") && call.ordinal == 23u) // QueryIntrContext
++            {
++                // Mailbox clients select SendMbx/iSendMbx from this query. The former hard-coded 0 made callbacks
++                // choose a thread-only entry even when their own CPU context is an interrupt continuation.
++                setV0(mailboxInterruptContext() ? 1u : 0u);
++                return ImportDisposition::Handled;
++            }
+@@ -684,0 +719,18 @@ namespace ps2x::iop::detail
++        bool mailboxInterruptContext() const noexcept
++        {
++            return servicingDmaInterrupts || servicingGuestCallbacks || servicingTimerCallbacks;
++        }
++
++        void serviceTimerCallbacks()
++        {
++            const bool previous = servicingTimerCallbacks;
++            servicingTimerCallbacks = true;
++            struct ContextGuard
++            {
++                bool &flag;
++                bool previous;
++                ~ContextGuard() { flag = previous; }
++            } guard{servicingTimerCallbacks, previous};
++            timrman.serviceDue(totalCycles, *this);
++        }
++
+@@ -839 +891 @@ namespace ps2x::iop::detail
+-                        timrman.serviceDue(totalCycles, *this);
++                        serviceTimerCallbacks();
+@@ -917 +969 @@ namespace ps2x::iop::detail
+-            if (inOutsideSemaphoreWait || servicingDmaInterrupts || servicingGuestCallbacks)
++            if (inOutsideSemaphoreWait || mailboxInterruptContext())
+@@ -954 +1006 @@ namespace ps2x::iop::detail
+-            if (inOutsideSemaphoreWait || servicingDmaInterrupts || servicingGuestCallbacks)
++            if (inOutsideSemaphoreWait || mailboxInterruptContext())
+@@ -965 +1017 @@ namespace ps2x::iop::detail
+-                    timrman.serviceDue(totalCycles, *this);
++                    serviceTimerCallbacks();
+@@ -1190,0 +1243 @@ namespace ps2x::iop::detail
++        bool servicingTimerCallbacks = false;
+diff --git a/ps2xIOP/tests/iop_mailbox_tests.cpp b/ps2xIOP/tests/iop_mailbox_tests.cpp
+new file mode 100644
+index 0000000..4f3d0f9
+--- /dev/null
++++ b/ps2xIOP/tests/iop_mailbox_tests.cpp
+@@ -0,0 +1,254 @@
++#include "iop_compat_test_support.h"
++#include "emulator/core/iop_kernel.h"
++#include "emulator/core/iop_memory.h"
++
++// Behavioral contracts from ps2dev/ps2sdk thmsgbx.h, thmsgbx.c and kerr.h, reviewed at
++// f1ca58a468ead937155ab818d9a38e52c8adf861. No game, sound-driver address or RPC response is substituted.
++namespace
++{
++    using namespace iop_test;
++    using namespace ps2x::iop::detail;
++
++    struct Fixture
++    {
++        IopMemory memory;
++        IopKernel kernel{memory};
++
++        int call(uint16_t ordinal, uint32_t a0, uint32_t a1 = 0u, bool interrupt = false)
++        {
++            IopCpuState cpu{};
++            cpu.gpr[4] = a0;
++            cpu.gpr[5] = a1;
++            require(kernel.dispatchMailboxImport(ordinal, cpu, interrupt), "mailbox ordinal unhandled");
++            return static_cast<int32_t>(cpu.gpr[2]);
++        }
++        int create(uint32_t attr = 0u)
++        {
++            memory.write32(0x1000u, attr);
++            memory.write32(0x1004u, 0x12345678u);
++            return call(4u, 0x1000u);
++        }
++        void packet(uint32_t address, uint8_t priority = 0u)
++        {
++            memory.write32(address, 0xCAFEBABEu);
++            memory.write32(address + 4u, priority);
++        }
++        int thread(uint32_t priority)
++        {
++            for (uint32_t offset = 0u; offset < 20u; offset += 4u)
++                memory.write32(0x1100u + offset, 0u);
++            memory.write32(0x1108u, 0x4000u);
++            memory.write32(0x110Cu, 0x400u);
++            memory.write32(0x1110u, priority);
++            IopCpuState cpu{};
++            cpu.gpr[4] = 0x1100u;
++            require(kernel.dispatchThreadImport(4u, cpu, 0u), "CreateThread unhandled");
++            const int id = static_cast<int>(cpu.gpr[2]);
++            require(id > 0, "CreateThread failed");
++            cpu.gpr[4] = static_cast<uint32_t>(id);
++            require(kernel.dispatchThreadImport(6u, cpu, 0u) && cpu.gpr[2] == 0u, "StartThread failed");
++            return id;
++        }
++        void block(int threadId, int mailbox, uint32_t slot)
++        {
++            IopThread *t = kernel.beginThread(threadId);
++            require(t != nullptr, "receiver thread missing");
++            memory.write32(slot, 0xDEADBEEFu);
++            t->cpu.gpr[4] = slot;
++            t->cpu.gpr[5] = static_cast<uint32_t>(mailbox);
++            require(kernel.dispatchMailboxImport(8u, t->cpu), "ReceiveMbx unhandled");
++            require(t->state == IopThreadState::Mailbox && t->cpu.yielded, "empty Receive did not block");
++            kernel.endTimeslice(*t, 0xFFFFFFFFu);
++        }
++    };
++
++    void fifoAndAbi()
++    {
++        Fixture f;
++        const int box = f.create();
++        require(box > 0, "CreateMbx failed");
++        f.packet(0x2000u, 9u);
++        f.packet(0x2100u, 1u);
++        require(f.call(6u, box, 0x2000u) == 0 && f.call(6u, box, 0x2100u) == 0, "SendMbx failed");
++        require(f.memory.read32(0x2000u) == 0x2100u && f.memory.read32(0x2100u) == 0x2000u,
++                "queued packets do not expose the IOP circular next links");
++        require(f.call(9u, 0x3000u, box) == 0 && f.memory.read32(0x3000u) == 0x2000u,
++                "PollMbx argument order or FIFO delivery wrong");
++        require(f.memory.read32(0x2100u) == 0x2100u, "remaining one-message ring was not repaired");
++        require(f.call(8u, 0x3000u, box) == 0 && f.memory.read32(0x3000u) == 0x2100u,
++                "queued ReceiveMbx did not consume the message");
++        require(f.call(9u, 0x3000u, box) == -424 && f.memory.read32(0x3000u) == 0x2100u,
++                "empty PollMbx must return KE_MBOX_NOMSG without writing msgvar");
++        require(f.call(8u, 0x3000u, box) == -417, "outside empty Receive falsely succeeded");
++    }
++
++    void messagePriorityAndStatus()
++    {
++        Fixture f;
++        const int box = f.create(4u);
++        f.packet(0x2000u, 5u); f.packet(0x2100u, 2u); f.packet(0x2200u, 2u);
++        for (uint32_t packet : {0x2000u, 0x2100u, 0x2200u})
++            require(f.call(6u, box, packet) == 0, "priority Send failed");
++        f.memory.write32(0x3114u, 0xAAAAAAAAu); f.memory.write32(0x3118u, 0xBBBBBBBBu);
++        require(f.call(11u, box, 0x3100u) == 0, "ReferMbxStatus failed");
++        require(f.memory.read32(0x3100u) == 4u && f.memory.read32(0x3104u) == 0x12345678u &&
++                f.memory.read32(0x3108u) == 0u && f.memory.read32(0x310Cu) == 3u &&
++                f.memory.read32(0x3110u) == 0x2100u, "status ABI fields wrong");
++        require(f.memory.read32(0x3114u) == 0xAAAAAAAAu && f.memory.read32(0x3118u) == 0xBBBBBBBBu,
++                "status wrote reserved words");
++        for (uint32_t expected : {0x2100u, 0x2200u, 0x2000u})
++            require(f.call(9u, 0x3000u, box) == 0 && f.memory.read32(0x3000u) == expected,
++                    "MBA_MSPRI is not stable ascending message priority");
++    }
++
++    void receiverOrdering()
++    {
++        for (uint32_t attr : {0u, 1u})
++        {
++            Fixture f;
++            const int box = f.create(attr);
++            const int high = f.thread(10u), low = f.thread(50u);
++            f.block(low, box, 0x3000u);
++            f.block(high, box, 0x3004u);
++            require(f.call(11u, box, 0x3100u) == 0 && f.memory.read32(0x3108u) == 2u,
++                    "blocked receivers missing from mailbox status");
++            IopCpuState status{};
++            status.gpr[4] = high; status.gpr[5] = 0x3200u;
++            require(f.kernel.dispatchThreadImport(22u, status, 0u) && f.memory.read32(0x3224u) == 5u,
++                    "thread waitType is not TSW_MBX");
++            f.packet(0x2000u);
++            require(f.call(6u, box, 0x2000u) == 0, "direct Send failed");
++            require(f.memory.read32(attr == 0u ? 0x3000u : 0x3004u) == 0x2000u,
++                    "MBA_THFIFO/THPRI selected the wrong receiver");
++            require(f.memory.read32(0x2000u) == 0xCAFEBABEu, "direct delivery touched packet.next");
++            require(f.kernel.mailboxMessageCount(box) == 0, "direct delivery was also queued");
++        }
++        Fixture f;
++        const int box = f.create(1u), first = f.thread(30u), second = f.thread(30u);
++        f.block(second, box, 0x3004u); f.block(first, box, 0x3000u);
++        f.packet(0x2000u);
++        require(f.call(6u, box, 0x2000u) == 0 && f.memory.read32(0x3004u) == 0x2000u,
++                "equal-priority receivers did not retain arrival order");
++    }
++
++    void deleteReleaseAndSuspend()
++    {
++        Fixture f;
++        const int box = f.create(), a = f.thread(20u), b = f.thread(30u);
++        f.block(a, box, 0x3000u); f.block(b, box, 0x3004u);
++        IopCpuState cpu{}; cpu.gpr[4] = b;
++        require(f.kernel.dispatchThreadImport(29u, cpu, 0u), "SuspendThread unhandled");
++        require(f.kernel.findThread(b)->state == IopThreadState::MailboxSuspended, "suspension lost mailbox wait");
++        require(f.call(5u, box) == 0, "DeleteMbx failed");
++        require(f.kernel.findThread(a)->state == IopThreadState::Ready &&
++                f.kernel.findThread(b)->state == IopThreadState::Suspended &&
++                static_cast<int32_t>(f.kernel.findThread(a)->cpu.gpr[2]) == -425 &&
++                static_cast<int32_t>(f.kernel.findThread(b)->cpu.gpr[2]) == -425,
++                "deletion failed to wake/cancel both normal and suspended waits");
++        require(f.memory.read32(0x3000u) == 0xDEADBEEFu && f.memory.read32(0x3004u) == 0xDEADBEEFu,
++                "DeleteMbx wrote a phantom packet");
++        const int next = f.create();
++        f.block(a, next, 0x3000u);
++        cpu.gpr[4] = a;
++        require(f.kernel.dispatchThreadImport(18u, cpu, 0u), "ReleaseWaitThread unhandled");
++        require(static_cast<int32_t>(f.kernel.findThread(a)->cpu.gpr[2]) == -418,
++                "mailbox ReleaseWaitThread did not return KE_RELEASE_WAIT");
++        f.packet(0x2000u);
++        require(f.call(6u, next, 0x2000u) == 0 && f.kernel.mailboxMessageCount(next) == 1,
++                "released receiver stole a later message");
++        f.kernel.reset();
++        require(f.call(5u, next) == -410, "kernel reset retained mailbox");
++    }
++
++    void interruptsAndPreemption()
++    {
++        Fixture f;
++        const int box = f.create(), receiver = f.thread(10u), producer = f.thread(50u);
++        f.block(receiver, box, 0x3000u);
++        IopThread *sender = f.kernel.beginThread(producer);
++        require(sender != nullptr, "producer missing");
++        f.packet(0x2000u);
++        IopCpuState interrupt{}; interrupt.gpr[4] = box; interrupt.gpr[5] = 0x2000u;
++        require(f.kernel.dispatchMailboxImport(7u, interrupt, true) && interrupt.gpr[2] == 0u,
++                "iSendMbx failed from interrupt context");
++        require(sender->cpu.yielded && !interrupt.yielded && f.kernel.findThread(receiver)->state == IopThreadState::Ready,
++                "higher-priority receiver did not preempt after the callback returns");
++        f.kernel.endTimeslice(*sender, 0xFFFFFFFFu);
++        require(f.call(7u, box, 0x2000u) == -100, "iSendMbx allowed thread context");
++        require(f.call(6u, box, 0x2000u, true) == -100, "SendMbx allowed interrupt context");
++        require(f.call(8u, 0x3004u, box, true) == -100, "ReceiveMbx allowed interrupt context");
++        require(f.call(12u, box, 0x3100u, true) == 0 && f.call(12u, box, 0x3100u) == -100,
++                "iReferMbxStatus context rules wrong");
++        require(f.create(2u) == -401 && f.call(6u, 999u, 0x2000u) == -410,
++                "Create attr / unknown mailbox errors wrong");
++        IopCpuState unknown{};
++        require(!f.kernel.dispatchMailboxImport(10u, unknown), "undeclared ordinal 10 fabricated success");
++    }
++
++    Irx outsideReceiver(bool producer)
++    {
++        Irx image(0x10000u, 0x600u);
++        uint32_t offset = 0u;
++        const auto emit = [&](std::initializer_list<uint32_t> words) { image.words(offset, words); offset += 4u * words.size(); };
++        const auto pointer = [&](uint32_t reg, uint32_t low) {
++            emit({0x3C000001u | (reg << 16u), 0x34000000u | (reg << 21u) | (reg << 16u) | low});
++        };
++        emit({0x27BDFFE0u, 0xAFBF001Cu, 0xAFB00018u});
++        pointer(4u, 0x200u); emit({0x0C004045u, 0u, 0x00408021u}); // CreateMbx @0x10114; s0=id
++        pointer(8u, 0x310u); emit({0xAD100000u});
++        if (producer)
++        {
++            pointer(4u, 0x220u); emit({0x0C004065u, 0u, 0x00402021u, 0x00002821u}); // CreateThread @0x10194
++            emit({0x0C004067u, 0u}); // StartThread @0x1019c
++        }
++        pointer(4u, 0x300u); emit({0x02002821u, 0x0C004049u, 0u}); // ReceiveMbx @0x10124, outside kernel thread
++        pointer(8u, 0x304u); emit({0xAD020000u, 0x8FB00018u, 0x8FBF001Cu, 0x27BD0020u, 0x00001021u, 0x03E00008u, 0u});
++        image.words(0x100u, {0x41E00000u, 0u, 0x0101u, 0x736D6874u, 0x00786267u,
++                            0x03E00008u, 0x24000004u, 0x03E00008u, 0x24000006u,
++                            0x03E00008u, 0x24000008u, 0u, 0u});
++        image.words(0x180u, {0x41E00000u, 0u, 0x0101u, 0x61626874u, 0x00006573u,
++                            0x03E00008u, 0x24000004u, 0x03E00008u, 0x24000006u, 0u, 0u});
++        image.words(0x200u, {0u, 0x1234u});
++        image.words(0x220u, {0u, 0u, 0x10400u, 0x400u, 0x20u});
++        image.words(0x240u, {0u, 1u});
++        image.words(0x300u, {0xDEADBEEFu, 0xDEADBEEFu, 0u, 0u, 0u});
++        offset = 0x400u;
++        emit({0x27BDFFF0u, 0xAFBF000Cu});
++        pointer(8u, 0x310u); emit({0x8D040000u});
++        pointer(5u, 0x240u); emit({0x0C004047u, 0u, 0x8FBF000Cu, 0x27BD0010u, 0x03E00008u, 0u}); // SendMbx @0x1011c
++        return image;
++    }
++
++    void physicalImportAndOutsideWait()
++    {
++        for (bool producer : {false, true})
++        {
++            Host host;
++            IopSubsystem iop(host);
++            outsideReceiver(producer).install(host);
++            const auto result = iop.loadModuleBuffer(0x1000u);
++            require(result.handled && result.moduleId > 0 && result.startResult == 0, "physical mailbox IRX failed to load");
++            uint32_t output[2]{};
++            require(iop.readMemory(0x10300u, output, sizeof(output)), "cannot read physical mailbox results");
++            require(static_cast<int32_t>(output[1]) == (producer ? 0 : -417),
++                    "outside Receive returned the wrong completion/error code");
++            require(output[0] == (producer ? 0x10240u : 0xDEADBEEFu),
++                    "outside Receive lost the producer's actual pointer or invented a message");
++            for (const auto &line : host.logs)
++                require(line.find("missing import thmsgbx") == std::string::npos, "thmsgbx still missing from physical dispatch");
++        }
++    }
++}
++
++int main()
++{
++    const Test tests[] = {
++        {"FIFO, Receive/Poll ABI and no-message errors", fifoAndAbi},
++        {"Stable message priority, circular links and status layout", messagePriorityAndStatus},
++        {"Receiver FIFO, priority and equal-priority arrival order", receiverOrdering},
++        {"Delete, release, suspended waits and reset", deleteReleaseAndSuspend},
++        {"Interrupt API context and higher-priority handoff", interruptsAndPreemption},
++        {"Physical IRX imports and real outside-thread receive pumping", physicalImportAndOutsideWait},
++    };
++    return run(tests);
++}
+diff --git a/ps2xRecomp/include/ps2recomp/Emitters/control_flow_emitter.h b/ps2xRecomp/include/ps2recomp/Emitters/control_flow_emitter.h
+index a1ab9a0..a7148d2 100644
+--- a/ps2xRecomp/include/ps2recomp/Emitters/control_flow_emitter.h
++++ b/ps2xRecomp/include/ps2recomp/Emitters/control_flow_emitter.h
+@@ -57,0 +58 @@ namespace ps2recomp
++        void emitDelaySlotInstruction(std::string_view indent);
+diff --git a/ps2xRecomp/include/ps2recomp/ps2_recompiler.h b/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
+index dd62275..0cb581f 100644
+--- a/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
++++ b/ps2xRecomp/include/ps2recomp/ps2_recompiler.h
+@@ -71,0 +72 @@ namespace ps2recomp
++        std::unordered_set<uint32_t> m_nativeFunctionStarts;
+diff --git a/ps2xRecomp/include/ps2recomp/types.h b/ps2xRecomp/include/ps2recomp/types.h
+index 9bd687d..ced60e1 100644
+--- a/ps2xRecomp/include/ps2recomp/types.h
++++ b/ps2xRecomp/include/ps2recomp/types.h
+@@ -189,0 +190,2 @@ namespace ps2recomp
++        // Explicit address selectors override automatic SDK-name substitution and skip rules.
++        std::vector<std::string> nativeFunctions;
+diff --git a/ps2xRecomp/src/lib/config_manager.cpp b/ps2xRecomp/src/lib/config_manager.cpp
+index 97dc2dd..93a40e9 100644
+--- a/ps2xRecomp/src/lib/config_manager.cpp
++++ b/ps2xRecomp/src/lib/config_manager.cpp
+@@ -75,0 +76,4 @@ namespace ps2recomp
++            if (general.contains("native"))
++            {
++                config.nativeFunctions = toml::find<std::vector<std::string>>(general, "native");
++            }
+@@ -299,0 +304 @@ namespace ps2recomp
++        general["native"] = config.nativeFunctions;
+diff --git a/ps2xRecomp/src/lib/control_flow_emitter.cpp b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+index 7c5bc7c..fd02ac8 100644
+--- a/ps2xRecomp/src/lib/control_flow_emitter.cpp
++++ b/ps2xRecomp/src/lib/control_flow_emitter.cpp
+@@ -137,0 +138,7 @@ namespace ps2recomp
++        emitDelaySlotInstruction(indent);
++        m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
++    }
++
++    void ControlFlowEmitter::emitDelaySlotInstruction(std::string_view indent)
++    {
++        if (!hasRealDelaySlot()) return;
+@@ -148,2 +154,0 @@ namespace ps2recomp
+-
+-        m_ss << fmt::format("{}ctx->in_delay_slot = false;\n", indent);
+@@ -160 +165,6 @@ namespace ps2recomp
+-        emitDelaySlot("        ");
++        // A branch target may also be the delay-slot address of an unrelated branch.
++        // Only a context explicitly stopped in this branch's slot carries its control flow.
++        m_ss << fmt::format("        const bool resume_delay_branch = ctx->in_delay_slot && ctx->branch_pc == 0x{:X}u;\n", branchPc());
++        m_ss << "        ctx->in_delay_slot = resume_delay_branch;\n";
++        emitDelaySlotInstruction("        ");
++        m_ss << "        ctx->in_delay_slot = false;\n";
+@@ -187,4 +197,4 @@ namespace ps2recomp
+-                m_ss << fmt::format("        ctx->pc = 0x{:X}u;\n", takenTarget);
+-                m_ss << fmt::format("        goto label_{:x};\n", takenTarget);
+-                m_ss << "    }\n";
+-                return;
++                m_ss << "        if (resume_delay_branch) {\n";
++                m_ss << fmt::format("            ctx->pc = 0x{:X}u;\n", takenTarget);
++                m_ss << fmt::format("            goto label_{:x};\n", takenTarget);
++                m_ss << "        }\n";
+diff --git a/ps2xRecomp/src/lib/function_table_emitter.cpp b/ps2xRecomp/src/lib/function_table_emitter.cpp
+index b82b259..df86b28 100644
+--- a/ps2xRecomp/src/lib/function_table_emitter.cpp
++++ b/ps2xRecomp/src/lib/function_table_emitter.cpp
+@@ -10,0 +11 @@
++#include <unordered_map>
+@@ -59,0 +61,16 @@ namespace ps2recomp
++        // Only synthetic, nested entry_* names may yield to a proven resume
++        // owner. Named functions, standalone entries and HLE bindings retain
++        // their own registrations. Choose the innermost owner deterministically.
++        std::unordered_map<uint32_t, uint32_t> resumeOwners;
++        for (const auto &[ownerStart, targets] : cg.m_resumeEntryTargetsByOwner)
++        {
++            for (uint32_t target : targets)
++            {
++                if (target == ownerStart)
++                    continue;
++                auto [it, inserted] = resumeOwners.emplace(target, ownerStart);
++                if (!inserted && ownerStart > it->second)
++                    it->second = ownerStart;
++            }
++        }
++
+@@ -84,0 +102,10 @@ namespace ps2recomp
++                if (function.name.rfind("entry_", 0) == 0)
++                {
++                    const auto owner = resumeOwners.find(function.start);
++                    if (owner != resumeOwners.end())
++                    {
++                        const std::string ownerName = cg.getFunctionName(owner->second);
++                        if (!ownerName.empty())
++                            generatedName = ownerName;
++                    }
++                }
+diff --git a/ps2xRecomp/src/lib/ps2_recompiler.cpp b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+index ca289bb..2962e82 100644
+--- a/ps2xRecomp/src/lib/ps2_recompiler.cpp
++++ b/ps2xRecomp/src/lib/ps2_recompiler.cpp
+@@ -850,0 +851 @@ namespace ps2recomp
++            m_nativeFunctionStarts.clear();
+@@ -893,0 +895,11 @@ namespace ps2recomp
++            for (const auto &raw : m_config.nativeFunctions)
++            {
++                const FunctionSelector selector = parseFunctionSelector(raw);
++                if (!selector.start.has_value() || *selector.start == 0u || (*selector.start & 3u) != 0u)
++                {
++                    throw std::invalid_argument("native requires an aligned nonzero address selector: " + raw);
++                }
++                // A retained symbol name can describe different code in another revision.
++                // Never expand an address-qualified native rule to every matching name.
++                m_nativeFunctionStarts.insert(*selector.start);
++            }
+@@ -917,0 +930,7 @@ namespace ps2recomp
++            for (const uint32_t address : m_nativeFunctionStarts)
++            {
++                if (std::none_of(m_functions.begin(), m_functions.end(), [address](const Function &fn) { return fn.start == address; }))
++                {
++                    throw std::invalid_argument("native selector has no discovered guest function: " + std::to_string(address));
++                }
++            }
+@@ -1011,0 +1031,10 @@ namespace ps2recomp
++                // Retained relocations may also name a replaced SDK function. A native
++                // address must remain a guest call, not be lowered back to HLE here.
++                const uint32_t word = m_elfParser->readWord(reloc.offset);
++                const uint32_t opcode = word >> 26u;
++                const uint32_t target = ((reloc.offset + 4u) & 0xF0000000u) | ((word & 0x03FFFFFFu) << 2u);
++                if ((opcode == OPCODE_J || opcode == OPCODE_JAL) && m_nativeFunctionStarts.contains(target))
++                {
++                    continue;
++                }
++
+@@ -2045,0 +2075,9 @@ namespace ps2recomp
++                // Imported entry_* blocks can end in the middle of their owning
++                // function. Dispatch their start through the complete owner so
++                // a scheduler resume cannot fall out of a truncated block into
++                // an unregistered instruction (including a branch fallthrough).
++                const Function *owner = findContainingFunction(function.start);
++                if (owner && owner->start != function.start)
++                {
++                    m_resumeEntryTargetsByOwner[owner->start].push_back(function.start);
++                }
+@@ -2219,0 +2258 @@ namespace ps2recomp
++        if (m_nativeFunctionStarts.contains(function.start)) return false;
+@@ -2229,0 +2269 @@ namespace ps2recomp
++        if (m_nativeFunctionStarts.contains(function.start)) return false;
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index 6e4c09a..14ab252 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -19,0 +20,22 @@ option(PS2X_ENABLE_DEBUG_UI "Build the desktop runtime debug UI" ON)
++# ---------------------------------------------------------------------------------------------------------------------
++# Optional cheat tools: both are OFF by default (預設為屏蔽狀態). A default build has no F2/F3 handling, reads no cheat
++# file, registers no GS menu and never writes guest RAM for a cheat. Turn one on only for a build that wants it
++# (如有需要可以使用): -DPS2X_ENABLE_CHEAT_MENU=ON / -DPS2X_ENABLE_TRAINER=ON, or build_all.ps1 -CheatMenu / -Trainer.
++#   F2 cheat menu (金手指): RAM cheats from the game's own cheats.ini, docs/CHEATS.md.
++#   F3 trainer (修改器): a panel for the switches a port registers for its own code hooks, docs/TRAINER.md.
++# PS2X_CHEAT_MENU / PS2X_TRAINER (0 or 1) are PUBLIC definitions, so a port's runner and generated code can test them.
++# ---------------------------------------------------------------------------------------------------------------------
++option(PS2X_ENABLE_CHEAT_MENU "F2 cheat menu (cheats.ini RAM cheats); default OFF = not compiled in" OFF)
++option(PS2X_ENABLE_TRAINER "F3 trainer panel for a port's registered switches; default OFF = switches are constant off" OFF)
++if(PS2X_ENABLE_CHEAT_MENU)
++    set(PS2X_CHEAT_MENU_SOURCE src/lib/ps2_cheats.cpp)
++else()
++    set(PS2X_CHEAT_MENU_SOURCE src/lib/ps2_cheats_disabled.cpp)
++endif()
++if(PS2X_ENABLE_TRAINER)
++    set(PS2X_TRAINER_SOURCE src/lib/ps2_trainer.cpp)
++else()
++    set(PS2X_TRAINER_SOURCE src/lib/ps2_trainer_disabled.cpp)
++endif()
++message(STATUS "PS2X F2 cheat menu: ${PS2X_ENABLE_CHEAT_MENU}, F3 trainer: ${PS2X_ENABLE_TRAINER} (both default OFF)")
++
+@@ -400 +422,2 @@ add_library(ps2_runtime STATIC
+-    src/lib/ps2_cheats.cpp
++    ${PS2X_CHEAT_MENU_SOURCE}
++    ${PS2X_TRAINER_SOURCE}
+@@ -441,0 +465,6 @@ endif()
++# Optional F2 / F3 cheat tools (default OFF, see the options at the top of this file).
++target_compile_definitions(ps2_runtime PUBLIC
++    PS2X_CHEAT_MENU=$<BOOL:${PS2X_ENABLE_CHEAT_MENU}>
++    PS2X_TRAINER=$<BOOL:${PS2X_ENABLE_TRAINER}>
++)
++
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
+index 0551a62..0b064b1 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/GS.cpp
+@@ -340 +340 @@ namespace ps2_stubs
+-            if (flag != 2u)
++            if (flag < 2u) // IMAGE (2) and FLG=3 count qwords directly, not NREG groups (upstream #384)
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
+index e7e8640..64f7eff 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
+@@ -87 +86,0 @@ namespace ps2_stubs
+-        int32_t g_mcNextFd = 1;
+@@ -430,0 +430,14 @@ namespace ps2_stubs
++        int32_t nextAvailableMcFdLocked()
++        {
++            // MCMAN scans its handle table from zero on every open. Descriptor
++            // zero is valid, and closing a file makes that slot reusable.
++            for (int32_t fd = 0; fd < static_cast<int32_t>(kMcMaxOpenFiles); ++fd)
++            {
++                if (g_mcFiles.find(fd) == g_mcFiles.end())
++                {
++                    return fd;
++                }
++            }
++            return kMcResultUpLimitHandle;
++        }
++
+@@ -437,6 +450,2 @@ namespace ps2_stubs
+-            if (g_mcFiles.size() >= kMcMaxOpenFiles)
+-            {
+-                return kMcResultUpLimitHandle;
+-            }
+-
+-            for (int attempt = 0; attempt < 0x10000; ++attempt)
++            const int32_t fd = nextAvailableMcFdLocked();
++            if (fd < 0)
+@@ -444,12 +452,0 @@ namespace ps2_stubs
+-                if (g_mcNextFd <= 0)
+-                {
+-                    g_mcNextFd = 1;
+-                }
+-
+-                const int32_t fd = g_mcNextFd++;
+-                if (g_mcFiles.find(fd) != g_mcFiles.end())
+-                {
+-                    continue;
+-                }
+-
+-                g_mcFiles.emplace(fd, McOpenFile{file, port, hostPath});
+@@ -458,2 +455,2 @@ namespace ps2_stubs
+-
+-            return kMcResultUpLimitHandle;
++            g_mcFiles.emplace(fd, McOpenFile{file, port, hostPath});
++            return fd;
+@@ -521 +518 @@ namespace ps2_stubs
+-        snapshot.nextFd = g_mcNextFd;
++        snapshot.nextFd = nextAvailableMcFdLocked();
+@@ -673 +669,0 @@ namespace ps2_stubs
+-            g_mcNextFd = 1;
+@@ -960 +955,0 @@ namespace ps2_stubs
+-            g_mcNextFd = 1;
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+index b50a4cf..df1fc40 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
+@@ -2,0 +3,2 @@
++#include "GuestAddress.h"
++#include "../../dod_gamepad.h"
+@@ -60,0 +63,3 @@ namespace ps2_stubs
++            std::array<uint8_t, 6> motorMap{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
++            uint8_t largeMotor = 0u;
++            uint8_t smallMotor = 0u;
+@@ -196,0 +202,3 @@ namespace ps2_stubs
++            // HLE bypasses SIO2: explicitly retire its outstanding motor command.
++            for (size_t port = 0; port < kPadPortCount; ++port)
++                dodRequestPadRumble(static_cast<int>(port), 0, 0);
+@@ -330,0 +339,3 @@ namespace ps2_stubs
++                    // Keep a held guest command alive while the guest keeps polling.
++                    // The host watchdog still stops output if the guest stalls.
++                    dodRequestPadRumble(port, sharedPortState->largeMotor, sharedPortState->smallMotor);
+@@ -488 +499 @@ namespace ps2_stubs
+-        if (act < 0)
++        if (act == -1)
+@@ -493 +504,4 @@ namespace ps2_stubs
+-        setReturnS32(ctx, (act < 2) ? 1 : 0);
++        const uint32_t cmd = getRegU32(ctx, 7);
++        // DualShock actuator descriptors, as returned by its 0x46 command.
++        static constexpr uint8_t info[2][4] = {{1, 2, 0, 10}, {1, 1, 1, 20}};
++        setReturnS32(ctx, (act >= 0 && act < 2 && cmd < 4) ? info[act][cmd] : 0);
+@@ -590,0 +605,3 @@ namespace ps2_stubs
++        dodRequestPadRumble(static_cast<int>(getRegU32(ctx, 4)), 0, 0);
++        portState->motorMap.fill(0xFFu);
++        portState->largeMotor = portState->smallMotor = 0u;
+@@ -611,0 +629,3 @@ namespace ps2_stubs
++        dodRequestPadRumble(static_cast<int>(getRegU32(ctx, 4)), 0, 0);
++        portState->motorMap.fill(0xFFu);
++        portState->largeMotor = portState->smallMotor = 0u;
+@@ -690 +709,0 @@ namespace ps2_stubs
+-        (void)rdram;
+@@ -691,0 +711,22 @@ namespace ps2_stubs
++        const int port = static_cast<int>(getRegU32(ctx, 4));
++        const uint32_t addr = getRegU32(ctx, 6);
++        std::lock_guard<std::mutex> lock(g_padStateMutex);
++        PadPortState *state = lookupPadPortStateLocked(port, static_cast<int>(getRegU32(ctx, 5)));
++        if (!state || !state->open || !rdram || !addr || !validProfileRamRange(addr, 6, 1))
++        {
++            setReturnS32(ctx, 0);
++            return;
++        }
++        const uint8_t *map = getMemPtr(rdram, addr);
++        if (!map || std::any_of(map, map + 6, [](uint8_t v) { return v != 0 && v != 1 && v != 0xFF; }))
++        {
++            setReturnS32(ctx, 0);
++            return;
++        }
++        std::copy(map, map + 6, state->motorMap.begin());
++        state->largeMotor = state->smallMotor = 0;
++        dodRequestPadRumble(port, 0, 0);
++        state->reqState = 0u;
++        queueExecCmdStateLocked(*state);
++        if (std::getenv("PS2_RUMBLE_TRACE"))
++            std::fprintf(stderr, "[pad-rumble] align port=%d map=%02X,%02X,%02X,%02X,%02X,%02X\n", port, map[0], map[1], map[2], map[3], map[4], map[5]);
+@@ -697 +737,0 @@ namespace ps2_stubs
+-        (void)rdram;
+@@ -698,0 +739,21 @@ namespace ps2_stubs
++        const int port = static_cast<int>(getRegU32(ctx, 4));
++        const uint32_t addr = getRegU32(ctx, 6);
++        std::lock_guard<std::mutex> lock(g_padStateMutex);
++        PadPortState *state = lookupPadPortStateLocked(port, static_cast<int>(getRegU32(ctx, 5)));
++        if (!state || !state->open || !rdram || !addr || !validProfileRamRange(addr, 6, 1))
++        {
++            setReturnS32(ctx, 0);
++            return;
++        }
++        const uint8_t *data = getMemPtr(rdram, addr);
++        if (!data) { setReturnS32(ctx, 0); return; }
++        uint8_t large = 0, small = 0;
++        for (size_t i = 0; i < state->motorMap.size(); ++i)
++        {
++            if (state->motorMap[i] == 0) small = data[i] & 1u;
++            if (state->motorMap[i] == 1) large = data[i];
++        }
++        if (std::getenv("PS2_RUMBLE_TRACE") && (state->largeMotor != large || state->smallMotor != small))
++            std::fprintf(stderr, "[pad-rumble] direct port=%d large=%u small=%u pc=%08X\n", port, large, small, ctx->pc);
++        state->largeMotor = large; state->smallMotor = small;
++        dodRequestPadRumble(port, large, small);
+diff --git a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+index 539783e..f9e7413 100644
+--- a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+@@ -20 +20,3 @@ bool GifArbiter::isImagePacket(const uint8_t *data, uint32_t sizeBytes)
+-    return flg == 2u;
++    // FLG=3 ("disabled" in the GS manual) behaves exactly like IMAGE: NLOOP qwords of image data (PCSX2
++    // Gif_Unit.h GIF_FLG_IMAGE2; upstream #384).
++    return flg == 2u || flg == 3u;
+diff --git a/ps2xRuntime/src/lib/ps2_cheats.h b/ps2xRuntime/src/lib/ps2_cheats.h
+index 50d63da..c1a56d2 100644
+--- a/ps2xRuntime/src/lib/ps2_cheats.h
++++ b/ps2xRuntime/src/lib/ps2_cheats.h
+@@ -4,0 +5,6 @@
++// =====================================================================================================================
++// F2 cheat menu (金手指) - OPTIONAL, OFF BY DEFAULT.
++// 選用功能，預設為屏蔽（關閉）狀態；如有需要可以使用：CMake 設定 -DPS2X_ENABLE_CHEAT_MENU=ON 後，遊戲中按 F2 開啟。
++// The default build compiles ps2_cheats_disabled.cpp instead of ps2_cheats.cpp: F2 does nothing, no cheats.ini is read
++// and no guest RAM is written. The F3 trainer (ps2_trainer.h) is the companion for cheats that need code hooks.
++// =====================================================================================================================
+diff --git a/ps2xRuntime/src/lib/ps2_cheats_disabled.cpp b/ps2xRuntime/src/lib/ps2_cheats_disabled.cpp
+new file mode 100644
+index 0000000..c1e0313
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_cheats_disabled.cpp
+@@ -0,0 +1,10 @@
++// F2 cheat menu (金手指) DISABLED - the default build. 預設屏蔽：此檔取代 ps2_cheats.cpp。
++// CMake PS2X_ENABLE_CHEAT_MENU=OFF (the default) builds this file instead of ps2_cheats.cpp. These entry points keep the
++// shared input / presentation code unchanged without polling F2, reading cheats.ini or PS2_CHEATS* variables,
++// registering a GS menu or writing guest RAM. (Pattern first used by a port that ships without cheats.)
++// 如有需要可以使用：-DPS2X_ENABLE_CHEAT_MENU=ON 後按 F2 開啟，金手指由各遊戲自己的 cheats.ini 提供（docs/CHEATS.md）。
++#include "ps2_cheats.h"
++
++void ps2CheatsHostTick(uint8_t *) {}
++bool ps2CheatsMenuOpen() { return false; }
++void ps2CheatsSetHostPad(uint16_t, bool) {}
+diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
+index f30d20e..09e6265 100644
+--- a/ps2xRuntime/src/lib/ps2_pad.cpp
++++ b/ps2xRuntime/src/lib/ps2_pad.cpp
+@@ -5,0 +6 @@
++#include "ps2_trainer.h"
+@@ -30,0 +32,6 @@ namespace
++    // An optional host panel (F2 cheat menu or F3 trainer, both off by default) holds the keyboard and controller.
++    bool hostMenuOpen()
++    {
++        return ps2CheatsMenuOpen() || ps2TrainerMenuOpen();
++    }
++
+@@ -369,2 +376,3 @@ void dodPollHostPadInput()
+-    // The F2 cheat menu (ps2_cheats.cpp) navigates with this frame's buttons; while it is open the game gets a
+-    // released pad (sticks centred, no queued presses).
++    // The optional F2 cheat menu (ps2_cheats.cpp) and F3 trainer panel (ps2_trainer.cpp) navigate with this frame's
++    // buttons; while one is open the game gets a released pad (sticks centred, no queued presses). Both are off by
++    // default, and then these calls are no-ops that report "closed".
+@@ -372 +380,2 @@ void dodPollHostPadInput()
+-    const bool captured = ps2CheatsMenuOpen();
++    ps2TrainerSetHostPad(static_cast<uint16_t>(btns & ~queuedPresses), useGamepad);
++    const bool captured = hostMenuOpen();
+@@ -412 +421 @@ static bool readHostPadSnapshot(uint8_t *data, size_t size, bool consumePresses)
+-    if (ps2CheatsMenuOpen()) releaseCapturedInput();
++    if (hostMenuOpen()) releaseCapturedInput();
+@@ -483 +492 @@ bool ps2input::readLatest(Reader token, uint8_t* data, size_t size)
+-    if (ps2CheatsMenuOpen())
++    if (hostMenuOpen())
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 3a00e88..aa503ff 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -10,0 +11 @@
++#include "ps2_trainer.h"
+@@ -2957 +2958,4 @@ void PS2Runtime::run()
+-        ps2CheatsHostTick(m_memory.getRDRAM()); // F2 cheat menu, RAM cheats (ps2_cheats.cpp)
++        // Optional host tools, both off by default (no-ops then): the F2 cheat menu and its RAM cheats (ps2_cheats.cpp),
++        // then the F3 trainer panel (ps2_trainer.cpp), which yields to an open F2 panel.
++        ps2CheatsHostTick(m_memory.getRDRAM());
++        ps2TrainerHostTick();
+diff --git a/ps2xRuntime/src/lib/ps2_trainer.cpp b/ps2xRuntime/src/lib/ps2_trainer.cpp
+new file mode 100644
+index 0000000..cc2822e
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_trainer.cpp
+@@ -0,0 +1,372 @@
++// F3 trainer (修改器) panel. Compiled only when CMake PS2X_ENABLE_TRAINER=ON (default OFF: ps2_trainer_disabled.cpp is
++// built instead and none of this exists in the program). 預設屏蔽；如有需要可以使用（見 docs/TRAINER.md）。
++//
++// The base ships no game's trainer: the panel lists the switches and choices a port registered (ps2_trainer.h) and the
++// port's own hooks read them. Values are lock-free atomics, so the EE thread's generated code can query them at any
++// time; the panel only publishes the user's choice. Everything is off / option 0 at each launch.
++// The panel is the GS's ImGui menu (pcsx2gs_api.h set_menu), docked at the right edge (the F2 cheat menu is on the
++// left). The two panels share the GS menu slot: F3 does nothing while the F2 panel is open, and F2 pressed while this
++// panel is open switches over to the F2 panel.
++#include "ps2_trainer.h"
++
++#include "ps2_cheats.h"
++#include "gs/dod_pcsx2_gs.h"
++#include "gs/pcsx2gs_api.h"
++#include "ps2_host_backend.h"
++
++#include <array>
++#include <atomic>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <string>
++#include <utility>
++#include <vector>
++
++#if !PS2X_TRAINER
++#error "ps2_trainer.cpp is the enabled F3 trainer: build it with PS2X_TRAINER=1 (CMake -DPS2X_ENABLE_TRAINER=ON)"
++#endif
++
++namespace
++{
++    constexpr int kMaxEntries = 256;
++    constexpr int kMaxOptions = 32;
++
++    enum class Kind
++    {
++        Section,
++        Switch,
++        Choice,
++    };
++
++    struct Entry
++    {
++        Kind kind = Kind::Switch;
++        std::string label;
++        std::string help;
++        std::vector<std::string> options;
++    };
++
++    // Guest-visible state: 0 = off / option 0 (the original behaviour). Static storage, zero before any registration.
++    std::array<std::atomic<int>, kMaxEntries> s_values{};
++
++    // Registration may run from static initialisers of a port's generated files: construct on first use.
++    std::mutex &registryMutex()
++    {
++        static std::mutex mutex;
++        return mutex;
++    }
++    std::vector<Entry> &registry()
++    {
++        static std::vector<Entry> entries;
++        return entries;
++    }
++
++    std::atomic<bool> s_open{false};
++    std::atomic<bool> s_justOpened{false};
++    std::atomic<uint16_t> s_hostButtons{0xFFFFu};
++    std::atomic<bool> s_hostGamepad{false};
++
++    bool validId(ps2trainer::Id id) noexcept
++    {
++        return id >= 0 && id < kMaxEntries;
++    }
++
++    ps2trainer::Id add(Entry entry)
++    {
++        std::lock_guard<std::mutex> lock(registryMutex());
++        std::vector<Entry> &entries = registry();
++        if (static_cast<int>(entries.size()) >= kMaxEntries)
++        {
++            std::fprintf(stderr, "[trainer] more than %d entries; '%s' ignored\n", kMaxEntries, entry.label.c_str());
++            return -1;
++        }
++        entries.push_back(std::move(entry));
++        const ps2trainer::Id id = static_cast<ps2trainer::Id>(entries.size()) - 1;
++        s_values[static_cast<size_t>(id)].store(0, std::memory_order_relaxed);
++        return id;
++    }
++
++    // Caller holds registryMutex.
++    void setValueLocked(ps2trainer::Id id, int value)
++    {
++        const std::vector<Entry> &entries = registry();
++        if (!validId(id) || id >= static_cast<int>(entries.size()))
++            return;
++        const Entry &entry = entries[static_cast<size_t>(id)];
++        if (entry.kind == Kind::Section)
++            return;
++        if (entry.kind == Kind::Switch)
++            value = value != 0 ? 1 : 0;
++        else if (value < 0 || value >= static_cast<int>(entry.options.size()))
++            return;
++        if (s_values[static_cast<size_t>(id)].exchange(value, std::memory_order_relaxed) == value)
++            return;
++        if (entry.kind == Kind::Switch)
++            std::fprintf(stderr, "[trainer] %s: %s\n", entry.label.c_str(), value ? "on" : "off");
++        else
++            std::fprintf(stderr, "[trainer] %s: %s\n", entry.label.c_str(), entry.options[static_cast<size_t>(value)].c_str());
++    }
++
++    // GS thread, at every present while the panel is shown.
++    void drawMenu(const Pcsx2GsUi *ui, void *)
++    {
++        int open = 1;
++        const char *title = "Trainer###ps2trainer";
++        const uint32_t flags = s_justOpened.exchange(false) ? PCSX2GS_PANEL_FOCUS : 0u; // no PANEL_LEFT: right edge
++        const bool panel = ui->version >= 3u && ui->begin_panel;
++        const int visible = panel ? ui->begin_panel(title, &open, 440.0f, 860.0f, flags) : ui->begin_window(title, &open, 440.0f, 860.0f);
++        if (visible)
++        {
++            ui->text_disabled("F3 or Esc closes");
++            ui->text_disabled("mouse / arrows + space / pad D-pad + A");
++            std::lock_guard<std::mutex> lock(registryMutex());
++            const std::vector<Entry> &entries = registry();
++            if (entries.empty())
++                ui->text_wrapped("This port registered no trainer switches (docs/TRAINER.md).");
++            std::vector<const char *> items;
++            for (size_t i = 0; i < entries.size(); ++i)
++            {
++                const Entry &e = entries[i];
++                const ps2trainer::Id id = static_cast<ps2trainer::Id>(i);
++                if (e.kind == Kind::Section)
++                {
++                    if (ui->version >= 2u && ui->separator_text)
++                        ui->separator_text(e.label.c_str());
++                    else
++                        ui->heading(e.label.c_str());
++                    continue;
++                }
++                ui->push_id(id);
++                int value = s_values[i].load(std::memory_order_relaxed);
++                if (e.kind == Kind::Switch)
++                {
++                    if (ui->checkbox(e.label.c_str(), &value))
++                        setValueLocked(id, value);
++                }
++                else if (ui->version >= 2u && ui->combo)
++                {
++                    items.clear();
++                    for (const std::string &option : e.options)
++                        items.push_back(option.c_str());
++                    if (ui->combo(e.label.c_str(), &value, items.data(), static_cast<int>(items.size())))
++                        setValueLocked(id, value);
++                }
++                else
++                {
++                    const std::string line = e.label + ": " + e.options[static_cast<size_t>(value)];
++                    ui->text(line.c_str());
++                }
++                if (panel && ui->tooltip && !e.help.empty())
++                    ui->tooltip(e.help.c_str());
++                ui->pop_id();
++            }
++            ui->spacing();
++            if (!entries.empty() && ui->button("All off"))
++                for (size_t i = 0; i < entries.size(); ++i)
++                    setValueLocked(static_cast<ps2trainer::Id>(i), 0);
++            ui->text_wrapped("Only for this run; everything is off again at the next launch.");
++        }
++        ui->end_window();
++        if (!open)
++            s_open.store(false, std::memory_order_relaxed);
++    }
++
++    // PS2_TRAINER=all | <n>,<n>... (tests): switches on at the first host frame, n = the switch's number counted from 0
++    // among the switches (sections and choices do not count). PS2_TRAINER_MENU_AT=<seconds> opens the panel then.
++    void applyTestEnv()
++    {
++        const char *v = std::getenv("PS2_TRAINER");
++        if (!v || !*v)
++            return;
++        std::lock_guard<std::mutex> lock(registryMutex());
++        const std::vector<Entry> &entries = registry();
++        const bool all = std::strcmp(v, "all") == 0;
++        for (const char *p = v; all || *p;)
++        {
++            long want = -1;
++            if (!all)
++            {
++                char *end = nullptr;
++                want = std::strtol(p, &end, 10);
++                if (end == p || want < 0)
++                {
++                    std::fprintf(stderr, "[trainer] PS2_TRAINER='%s' is not 'all' or a list of switch numbers\n", v);
++                    return;
++                }
++                p = *end == ',' ? end + 1 : end;
++            }
++            long n = 0;
++            for (size_t i = 0; i < entries.size(); ++i)
++                if (entries[i].kind == Kind::Switch && (all || n++ == want))
++                    setValueLocked(static_cast<ps2trainer::Id>(i), 1);
++            if (all)
++                return;
++        }
++    }
++
++    uint32_t menuKeys()
++    {
++        uint32_t keys = 0u;
++        const auto key = [&](int raylibKey, uint32_t bit) {
++            if (IsKeyDown(raylibKey))
++                keys |= bit;
++        };
++        key(KEY_UP, PCSX2GS_KEY_UP);
++        key(KEY_DOWN, PCSX2GS_KEY_DOWN);
++        key(KEY_LEFT, PCSX2GS_KEY_LEFT);
++        key(KEY_RIGHT, PCSX2GS_KEY_RIGHT);
++        key(KEY_ENTER, PCSX2GS_KEY_ENTER);
++        key(KEY_KP_ENTER, PCSX2GS_KEY_ENTER);
++        key(KEY_SPACE, PCSX2GS_KEY_SPACE);
++        key(KEY_ESCAPE, PCSX2GS_KEY_ESCAPE);
++        key(KEY_TAB, PCSX2GS_KEY_TAB);
++        key(KEY_LEFT_SHIFT, PCSX2GS_KEY_SHIFT);
++        key(KEY_RIGHT_SHIFT, PCSX2GS_KEY_SHIFT);
++        key(KEY_LEFT_CONTROL, PCSX2GS_KEY_CTRL);
++        key(KEY_RIGHT_CONTROL, PCSX2GS_KEY_CTRL);
++        return keys;
++    }
++
++    // As the F2 menu: the controller drives the panel only when it is the active device.
++    uint32_t menuPad()
++    {
++        if (!s_hostGamepad.load(std::memory_order_relaxed))
++            return 0u;
++        const uint16_t held = static_cast<uint16_t>(~s_hostButtons.load(std::memory_order_relaxed));
++        uint32_t pad = 0u;
++        if (held & 0x0010u) pad |= PCSX2GS_PAD_UP;
++        if (held & 0x0040u) pad |= PCSX2GS_PAD_DOWN;
++        if (held & 0x0080u) pad |= PCSX2GS_PAD_LEFT;
++        if (held & 0x0020u) pad |= PCSX2GS_PAD_RIGHT;
++        if (held & 0x4000u) pad |= PCSX2GS_PAD_ACCEPT;
++        if (held & 0x2000u) pad |= PCSX2GS_PAD_BACK;
++        if (held & 0x0400u) pad |= PCSX2GS_PAD_L1;
++        if (held & 0x0800u) pad |= PCSX2GS_PAD_R1;
++        return pad;
++    }
++}
++
++namespace ps2trainer
++{
++    Id addSwitch(const char *label, const char *help)
++    {
++        if (!label || !*label)
++        {
++            std::fprintf(stderr, "[trainer] a switch needs a label\n");
++            return -1;
++        }
++        Entry e;
++        e.kind = Kind::Switch;
++        e.label = label;
++        e.help = help ? help : "";
++        return add(std::move(e));
++    }
++
++    Id addChoice(const char *label, const char *const *options, int count, const char *help)
++    {
++        if (!label || !*label || !options || count < 2 || count > kMaxOptions)
++        {
++            std::fprintf(stderr, "[trainer] choice '%s' needs a label and 2..%d options\n", label ? label : "", kMaxOptions);
++            return -1;
++        }
++        Entry e;
++        e.kind = Kind::Choice;
++        e.label = label;
++        e.help = help ? help : "";
++        for (int i = 0; i < count; ++i)
++            e.options.emplace_back(options[i] && *options[i] ? options[i] : "?");
++        return add(std::move(e));
++    }
++
++    void addSection(const char *title)
++    {
++        Entry e;
++        e.kind = Kind::Section;
++        e.label = title ? title : "";
++        add(std::move(e));
++    }
++
++    bool on(Id id) noexcept
++    {
++        return validId(id) && s_values[static_cast<size_t>(id)].load(std::memory_order_relaxed) != 0;
++    }
++
++    int choice(Id id) noexcept
++    {
++        return validId(id) ? s_values[static_cast<size_t>(id)].load(std::memory_order_relaxed) : 0;
++    }
++
++    void set(Id id, bool value) noexcept
++    {
++        std::lock_guard<std::mutex> lock(registryMutex());
++        const std::vector<Entry> &entries = registry();
++        if (validId(id) && id < static_cast<int>(entries.size()) && entries[static_cast<size_t>(id)].kind == Kind::Switch)
++            setValueLocked(id, value ? 1 : 0);
++    }
++}
++
++void ps2TrainerSetHostPad(uint16_t buttons, bool gamepad)
++{
++    s_hostButtons.store(buttons, std::memory_order_relaxed);
++    s_hostGamepad.store(gamepad, std::memory_order_relaxed);
++}
++
++bool ps2TrainerMenuOpen()
++{
++    return s_open.load(std::memory_order_relaxed);
++}
++
++void ps2TrainerHostTick()
++{
++    static bool started = false;
++    static bool shown = false;
++    static double menuAt = []() { const char *v = std::getenv("PS2_TRAINER_MENU_AT"); return v ? std::atof(v) : 0.0; }();
++    if (!started)
++    {
++        started = true;
++        size_t count = 0;
++        {
++            std::lock_guard<std::mutex> lock(registryMutex());
++            count = registry().size();
++        }
++        std::fprintf(stderr, "[trainer] F3 trainer enabled in this build, %zu entries registered\n", count);
++        applyTestEnv();
++    }
++    const bool autoOpen = menuAt > 0.0 && GetTime() >= menuAt;
++    if (autoOpen)
++        menuAt = 0.0;
++
++    if (ps2CheatsMenuOpen())
++    {
++        // The F2 panel took the shared GS menu slot and this frame's menu input (its tick runs first): leave both.
++        if (s_open.exchange(false, std::memory_order_relaxed) || shown)
++        {
++            shown = false;
++            std::fprintf(stderr, "[trainer] panel closed (F2 panel opened)\n");
++        }
++        return;
++    }
++    if (IsKeyPressed(KEY_F3) || autoOpen)
++    {
++        const bool open = autoOpen || !s_open.load(std::memory_order_relaxed);
++        s_open.store(open, std::memory_order_relaxed);
++        if (open)
++            s_justOpened.store(true, std::memory_order_relaxed);
++    }
++    else if (shown && IsKeyPressed(KEY_ESCAPE))
++        s_open.store(false, std::memory_order_relaxed);
++
++    const bool open = s_open.load(std::memory_order_relaxed);
++    if (open != shown)
++    {
++        dodpcsx2::setMenu(open ? drawMenu : nullptr, nullptr);
++        if (!open)
++            dodpcsx2::menuInput(0u, 0u, 0.0f); // nothing held when it opens again
++        shown = open;
++        std::fprintf(stderr, "[trainer] panel %s\n", open ? "open" : "closed");
++    }
++    if (open)
++        dodpcsx2::menuInput(menuKeys(), menuPad(), GetMouseWheelMove());
++}
+diff --git a/ps2xRuntime/src/lib/ps2_trainer.h b/ps2xRuntime/src/lib/ps2_trainer.h
+new file mode 100644
+index 0000000..10cb104
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_trainer.h
+@@ -0,0 +1,62 @@
++#pragma once
++// =====================================================================================================================
++// F3 trainer (修改器) - OPTIONAL, OFF BY DEFAULT.
++// 選用功能，預設為屏蔽（關閉）狀態；如有需要可以使用：CMake 設定 -DPS2X_ENABLE_TRAINER=ON 後，遊戲中按 F3 開啟。
++// =====================================================================================================================
++// The shared base contains no game's trainer. A port that wants one:
++//   1. configures the runtime with -DPS2X_ENABLE_TRAINER=ON (CMake option, default OFF; build_all.ps1 -Trainer),
++//   2. registers its switches / choices once, before the game runs (for example in its runner's main),
++//   3. reads them in its own hand-patched generated functions or runner hooks, keeping the original code path when a
++//      switch is off. Example (a game's damage store, in the port's own generated file):
++//          static const ps2trainer::Id kNoDamage = ps2trainer::addSwitch("No damage", "Player HP never drops");
++//          if (!ps2trainer::on(kNoDamage)) { /* the original store */ }
++//
++// With the option OFF (the default) every query below is a compile-time constant (false / option 0), the F3 key does
++// nothing, no panel is registered and no guest memory is touched, so a port's hooks compile back to its original code.
++// 預設關閉時：所有查詢都是編譯期常數（false／第 0 項），F3 不作用、不註冊面板、不改任何遊戲記憶體。
++//
++// Invariant that keeps "off" and "on but untouched" identical: every switch starts off and every choice starts at
++// option 0 at each launch, and option 0 must be the game's original behaviour. See docs/TRAINER.md.
++#include <cstdint>
++
++#ifndef PS2X_TRAINER
++#define PS2X_TRAINER 0
++#endif
++
++namespace ps2trainer
++{
++    // True only in a build configured with PS2X_ENABLE_TRAINER=ON.
++    constexpr bool kEnabled = PS2X_TRAINER != 0;
++
++    using Id = int; // -1: not registered (always reads as off / option 0)
++
++#if PS2X_TRAINER
++    // Registration: any thread, at any time (later entries appear at the end of the panel). At most 256 entries.
++    Id addSwitch(const char *label, const char *help = nullptr);
++    // 2..32 options; option 0 must be the original behaviour (it is the start value and the disabled build's value).
++    Id addChoice(const char *label, const char *const *options, int count, const char *help = nullptr);
++    void addSection(const char *title);
++
++    // Queries: lock-free, any thread (the EE thread's generated code included). A value can change between two calls;
++    // a hook that needs one value for a whole guest frame reads it once at its own frame boundary.
++    bool on(Id id) noexcept;
++    int choice(Id id) noexcept;
++    // A port's own hotkey or test harness may set a switch (registered switches only).
++    void set(Id id, bool value) noexcept;
++#else
++    inline Id addSwitch(const char *, const char * = nullptr) noexcept { return -1; }
++    inline Id addChoice(const char *, const char *const *, int, const char * = nullptr) noexcept { return -1; }
++    inline void addSection(const char *) noexcept {}
++    constexpr bool on(Id) noexcept { return false; }
++    constexpr int choice(Id) noexcept { return 0; }
++    inline void set(Id, bool) noexcept {}
++#endif
++}
++
++// Runtime side: ps2_trainer.cpp when enabled, ps2_trainer_disabled.cpp (no-ops) by default.
++// Window thread, once per host frame after the F2 cheat menu's tick: F3 opens / closes the panel.
++void ps2TrainerHostTick();
++// While the panel is open the game gets a released pad (ps2_pad.cpp), as with the F2 menu.
++bool ps2TrainerMenuOpen();
++// This frame's host pad buttons (active low, PS2 order) and whether they came from a controller: menu navigation.
++void ps2TrainerSetHostPad(uint16_t buttons, bool gamepad);
+diff --git a/ps2xRuntime/src/lib/ps2_trainer_disabled.cpp b/ps2xRuntime/src/lib/ps2_trainer_disabled.cpp
+new file mode 100644
+index 0000000..02e5f4f
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_trainer_disabled.cpp
+@@ -0,0 +1,13 @@
++// F3 trainer (修改器) DISABLED - the default build. 預設屏蔽：此檔取代 ps2_trainer.cpp。
++// CMake PS2X_ENABLE_TRAINER=OFF (the default) builds this file instead of ps2_trainer.cpp: F3 is not read, no panel is
++// registered with the GS, and ps2_trainer.h turns every switch a port queries into a constant "off" / option 0, so the
++// port's hooks compile back to the original game code. 如有需要可以使用：-DPS2X_ENABLE_TRAINER=ON（docs/TRAINER.md）。
++#include "ps2_trainer.h"
++
++#if PS2X_TRAINER
++#error "ps2_trainer_disabled.cpp is the disabled F3 trainer: build ps2_trainer.cpp when PS2X_TRAINER=1"
++#endif
++
++void ps2TrainerHostTick() {}
++bool ps2TrainerMenuOpen() { return false; }
++void ps2TrainerSetHostPad(uint16_t, bool) {}
+diff --git a/ps2xRuntime/src/lib/vu/dod_kzvu.cpp b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
+index 4667d2f..7a55bb4 100644
+--- a/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
++++ b/ps2xRuntime/src/lib/vu/dod_kzvu.cpp
+@@ -8,2 +8,4 @@
+-// Settings use the normal shared baseline: clamp mode 1 (normal),
+-// IbitHack off, mVU flag hack on.
++// Settings use the normal shared baseline: VU1 and VU0 clamp mode 1 (normal), IbitHack off, mVU flag hack on.
++// The two clamp modes are independent PS2_VU1_CLAMP / PS2_VU0_CLAMP settings (0..3, each defaults to 1), so a
++// port whose game needs PCSX2's stronger per-game clamp (its GameIndex entry) selects it in its own runner
++// environment instead of changing the shared default.
+@@ -14,0 +17 @@
++#include <cstdlib>
+@@ -25,0 +29,15 @@ namespace dodkzvu
++        int clampModeFromEnvironment(const char *name)
++        {
++            const char *value = std::getenv(name);
++            if (!value)
++                return 1;
++            if (value[0] < '0' || value[0] > '3' || value[1] != '\0')
++            {
++                // Reported, never silently replaced, and never an exception that would close a windowed build
++                // without a message: keep the shared default.
++                std::fprintf(stderr, "[vu] %s='%s' is not 0..3; using clamp mode 1\n", name, value);
++                return 1;
++            }
++            return value[0] - '0';
++        }
++
+@@ -64,0 +83,2 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
++    const int vu1Clamp = clampModeFromEnvironment("PS2_VU1_CLAMP");
++    const int vu0Clamp = clampModeFromEnvironment("PS2_VU0_CLAMP");
+@@ -72 +92,2 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
+-    config.clampMode = 1;
++    config.clampMode = vu1Clamp;
++    config.vu0ClampMode = vu0Clamp; // never inherit VU1's stronger per-game clamp mode
+@@ -100,2 +121,2 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
+-    std::fprintf(stderr, "[vu1] %s (kzvu, PCSX2 646df006a4), clamp 1\n",
+-                 config.useJit ? "microVU recompiler" : "PCSX2 VU interpreter");
++    std::fprintf(stderr, "[vu1] %s (kzvu, PCSX2 646df006a4), clamp %d; VU0 clamp %d\n",
++                 config.useJit ? "microVU recompiler" : "PCSX2 VU interpreter", vu1Clamp, vu0Clamp);
+diff --git a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+index ffc621c..4b76230 100644
+--- a/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
++++ b/ps2xRuntime/src/lib/vu/ps2_vu1_core.cpp
+@@ -890 +890 @@ void VU1Interpreter::progressXgkick()
+-            else if (format == 2u)
++            else if (format == 2u || format == 3u) // FLG=3 behaves exactly like IMAGE (upstream #384)
+diff --git a/ps2xTest/src/ps2_gs_tests.cpp b/ps2xTest/src/ps2_gs_tests.cpp
+index 0458a8c..b957971 100644
+--- a/ps2xTest/src/ps2_gs_tests.cpp
++++ b/ps2xTest/src/ps2_gs_tests.cpp
+@@ -2172,0 +2173,56 @@ void register_ps2_gs_tests()
++        tc.Run("GIF FLG=3 (IMAGE2) packet writes host-to-local data like IMAGE", [](TestCase &t)
++        {
++            // Ported from upstream PS2Recomp e5636981a1 (#384).
++            std::vector<uint8_t> vram(PS2_GS_VRAM_SIZE, 0u);
++            GS gs;
++            gs.init(vram.data(), static_cast<uint32_t>(vram.size()), nullptr);
++
++            // Setup for host->local transfer to DBP=0, DBW=1, PSMCT32, rect 2x2.
++            const uint64_t bitblt =
++                (static_cast<uint64_t>(0u) << 0) |      // SBP
++                (static_cast<uint64_t>(1u) << 16) |     // SBW
++                (static_cast<uint64_t>(0u) << 24) |     // SPSM
++                (static_cast<uint64_t>(0u) << 32) |     // DBP
++                (static_cast<uint64_t>(1u) << 48) |     // DBW
++                (static_cast<uint64_t>(0u) << 56);      // DPSM (CT32)
++            gs.writeRegister(GS_REG_BITBLTBUF, bitblt);
++            gs.writeRegister(GS_REG_TRXPOS, 0ull);
++            gs.writeRegister(GS_REG_TRXREG, (2ull << 0) | (2ull << 32));
++            gs.writeRegister(GS_REG_TRXDIR, 0ull);
++
++            std::vector<uint8_t> packet;
++            appendU64(packet, makeGifTag(1u, GIF_FMT_DISABLED, 0u, true));
++            appendU64(packet, 0ull);
++
++            const uint8_t payload[16] = {
++                0x10u, 0x11u, 0x12u, 0x13u,
++                0x20u, 0x21u, 0x22u, 0x23u,
++                0x30u, 0x31u, 0x32u, 0x33u,
++                0x40u, 0x41u, 0x42u, 0x43u,
++            };
++            packet.insert(packet.end(), payload, payload + sizeof(payload));
++
++            gs.processGIFPacket(packet.data(), static_cast<uint32_t>(packet.size()));
++
++            bool same = true;
++            for (uint32_t y = 0; y < 2u && same; ++y)
++            {
++                for (uint32_t x = 0; x < 2u; ++x)
++                {
++                    const uint32_t pixelIndex = y * 2u + x;
++                    const uint32_t off = referenceAddrPSMCT32(0u, 1u, x, y);
++                    for (uint32_t c = 0; c < 4u; ++c)
++                    {
++                        if (vram[off + c] != payload[pixelIndex * 4u + c])
++                        {
++                            same = false;
++                            break;
++                        }
++                    }
++                    if (!same)
++                        break;
++                }
++            }
++            t.IsTrue(same, "GIF FLG=3 transfer should write payload bytes into GS VRAM like IMAGE");
++        });
++
+diff --git a/ps2xTest/src/ps2_recompiler_tests.cpp b/ps2xTest/src/ps2_recompiler_tests.cpp
+index 201b71e..224cf3c 100644
+--- a/ps2xTest/src/ps2_recompiler_tests.cpp
++++ b/ps2xTest/src/ps2_recompiler_tests.cpp
+@@ -770 +770,2 @@ static bool writeRecompilerTestConfig(const std::filesystem::path &configPath,
+-                                      const std::vector<std::string> &entryPoints = {})
++                                      const std::vector<std::string> &entryPoints = {},
++                                      const std::vector<std::string> &native = {})
+@@ -802,0 +804,7 @@ static bool writeRecompilerTestConfig(const std::filesystem::path &configPath,
++    config << "native = [";
++    for (size_t i = 0; i < native.size(); ++i)
++    {
++        if (i != 0u) config << ", ";
++        config << '"' << native[i] << '"';
++    }
++    config << "]\n";
+@@ -1808,0 +1817,29 @@ void register_ps2_recompiler_tests()
++        tc.Run("native addresses override automatic and explicit SDK stubs", [](TestCase &t) {
++            const auto tempRoot = std::filesystem::temp_directory_path() /
++                ("ps2recomp-native-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
++            std::filesystem::create_directories(tempRoot);
++            const auto elfPath = tempRoot / "fixture.elf";
++            const auto configPath = tempRoot / "fixture.toml";
++            const auto outputPath = tempRoot / "output";
++            t.IsTrue(writeMinimalMipsElfWithInitializer(elfPath, "_printf", 0x00100000u), "fixture should be written");
++            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath, {}), "default config should be written");
++            PS2Recompiler automatic(configPath.string());
++            t.IsTrue(automatic.initialize() && automatic.recompile(), "default SDK binding should compile");
++            t.Equals(automatic.reportCounters().functionsStubbed, size_t{1}, "known symbol should bind by default");
++            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath,
++                {"_printf"}, {"_printf@0x00100000"}, {}, {"_printf@0x00100000"}), "native config should be written");
++            ConfigManager manager(configPath.string());
++            const auto config = manager.loadConfig();
++            manager.saveConfig(config);
++            t.Equals(manager.loadConfig().nativeFunctions.size(), size_t{1}, "native override should round-trip");
++            PS2Recompiler native(configPath.string());
++            t.IsTrue(native.initialize() && native.recompile(), "explicit native entry should compile guest code");
++            t.Equals(native.reportCounters().functionsStubbed, size_t{0}, "native entry must not be stubbed");
++            t.Equals(native.reportCounters().functionsRecompiled, size_t{1}, "original body must be generated");
++            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath, {}, {}, {}, {"_printf"}), "invalid config should be written");
++            PS2Recompiler invalid(configPath.string());
++            t.IsFalse(invalid.initialize(), "native rules require an address, preventing name-wide changes");
++            std::error_code removeError;
++            std::filesystem::remove_all(tempRoot, removeError);
++        });
++
+diff --git a/ps2xTest/src/ps2_runtime_io_tests.cpp b/ps2xTest/src/ps2_runtime_io_tests.cpp
+index 4f979be..46f97ce 100644
+--- a/ps2xTest/src/ps2_runtime_io_tests.cpp
++++ b/ps2xTest/src/ps2_runtime_io_tests.cpp
+@@ -471,0 +472,2 @@ void register_ps2_runtime_io_tests()
++            clearContext(test.ctx);
++            ps2_stubs::sceMcInit(test.rdram.data(), &test.ctx, nullptr);
+@@ -503 +505 @@ void register_ps2_runtime_io_tests()
+-            t.IsTrue(fd > 0, "sceMcOpen should produce a positive descriptor in sceMcSync");
++            t.Equals(fd, 0, "sceMcOpen should allocate descriptor zero first, as MCMAN does");
+@@ -543,0 +546,37 @@ void register_ps2_runtime_io_tests()
++
++            auto reopen = [&]()
++            {
++                clearContext(test.ctx);
++                setRegU32(test.ctx, 6, fileAddr);
++                setRegU32(test.ctx, 7, PS2_FIO_O_RDONLY);
++                ps2_stubs::sceMcOpen(test.rdram.data(), &test.ctx, nullptr);
++                return syncMc(test.rdram);
++            };
++            auto close = [&](int32_t handle)
++            {
++                clearContext(test.ctx);
++                setRegU32(test.ctx, 4, static_cast<uint32_t>(handle));
++                ps2_stubs::sceMcClose(test.rdram.data(), &test.ctx, nullptr);
++                t.Equals(syncMc(test.rdram), 0, "closing an allocated handle should succeed");
++            };
++            const int32_t first = reopen();
++            const int32_t second = reopen();
++            t.Equals(first, 0, "closed descriptor zero should be reused");
++            t.Equals(second, 1, "simultaneously open files need distinct handles");
++            close(first);
++            const int32_t reused = reopen();
++            t.Equals(reused, 0, "allocation should select the lowest free slot with another file still open");
++            for (int32_t handle : {second, reused})
++            {
++                std::memset(test.rdram.data() + readBufAddr, 0, payload.size());
++                clearContext(test.ctx);
++                setRegU32(test.ctx, 4, static_cast<uint32_t>(handle));
++                setRegU32(test.ctx, 5, readBufAddr);
++                setRegU32(test.ctx, 6, static_cast<uint32_t>(payload.size()));
++                ps2_stubs::sceMcRead(test.rdram.data(), &test.ctx, nullptr);
++                t.Equals(syncMc(test.rdram), static_cast<int32_t>(payload.size()),
++                         "reopened descriptors should have independent read positions");
++                t.Equals(std::string(reinterpret_cast<const char *>(test.rdram.data() + readBufAddr), payload.size()),
++                         payload, "reopened handle should read the saved bytes");
++                close(handle);
++            }

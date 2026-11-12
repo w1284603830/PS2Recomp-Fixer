@@ -1,4 +1,21 @@
-# In-game cheat menu (F2)
+# In-game cheat menu (F2, optional, off by default)
+
+> **繁體中文摘要：** F2 金手指是**選用功能，預設為屏蔽（關閉）狀態**。如有需要可以使用：CMake 加
+> `-DPS2X_ENABLE_CHEAT_MENU=ON`（或 `build_all.ps1 -CheatMenu`），遊戲中按 F2 開啟，金手指由各遊戲自己的
+> `cheats.ini` 提供。預設關閉時編入的是空殼 `ps2_cheats_disabled.cpp`：不讀 F2、不讀 `cheats.ini`、不寫遊戲記憶體。
+> 需要改遊戲程式碼的金手指請用 F3 修改器（[TRAINER.md](TRAINER.md)）。
+
+## Turning it on
+
+| Build | F2 | `cheats.ini`, `PS2_CHEATS*` | Guest RAM |
+|---|---|---|---|
+| default (`PS2X_ENABLE_CHEAT_MENU=OFF`) | does nothing | not read | never written by a cheat |
+| `-DPS2X_ENABLE_CHEAT_MENU=ON` / `build_all.ps1 -CheatMenu` | opens the panel at the left edge | read as below | the enabled entries' writes |
+
+`PS2X_CHEAT_MENU` (`0` or `1`) is a public compile definition of `ps2_runtime`. A port that wants the menu for its
+players builds with the option on; a port that ships without cheats keeps the default.
+
+## The panel
 
 The runtime has a small cheat panel, but it ships **no cheats of any game**. You write the cheats for your own game in a
 text file, `cheats.ini`, and the panel lists them as checkboxes. Everything starts off at each launch.
@@ -47,14 +64,15 @@ repeats the same address, so it is applied just once per frame.
 
 While a checkbox is on, its writes are applied once per host frame, the way an emulator applies a RAM cheat code. Cheats
 that change game *code* are not part of this file: the recompiled functions do not read their instructions from RAM, so
-such a cheat has to be a switch you add to the generated source of your own port.
+such a cheat has to be a switch you add to the generated source of your own port: the optional F3 trainer
+([TRAINER.md](TRAINER.md)) provides the registry, panel and constant-off default for those switches.
 
 Bad lines are skipped and reported on stderr as `[cheats] file:line: ...`.
 
 ## Menu input
 
 F2 opens and closes the panel (Esc also closes it). Mouse, arrow keys + space, or the controller's D-pad + A. While it is
-open the game gets a released pad.
+open the game gets a released pad. F2 pressed while the F3 trainer panel is open switches over to the F2 panel.
 
 ## Testing
 

@@ -1,5 +1,16 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-12, maintenance (`maint/20261112-harvest`):** shared fixes collected from the local port trees, upstream
+#384 (GIF FLG=3), optional F2/F3 cheat tools (both compiled out by default) and `tools/new_port.py`
+([IMPROVEMENTS.md](IMPROVEMENTS.md) section 13). Windows/MSVC (VS 2022 Build Tools 17.14), `build_all.ps1` from an
+empty build folder with the pinned dependencies: kzvu, pcsx2gs and PS2Recomp built; `ps2x_tests` 448 cases, 424
+passed, 24 named known differences (the historical exception `PS2GS/sceGsSyncV resumes through the scheduler with
+deterministic field parity` passes in this build; this branch does not touch `sceGsSyncV`, the list is unchanged for
+a separate review); IOP suites 6/6 including the new `ps2_iop_mailbox_tests` (6/6 cases); GS cache 45/45. A second
+configuration with `-CheatMenu -Trainer` built the full runtime and runner. The trainer's headless cases were compiled
+and run with MSVC locally (registry, limit, hotkeys, shared menu slot, panel controls, test variables, disabled build);
+GCC/UBSan runs them in CI. `test_new_port.py` and the static switch checks pass. No game was run for this entry.
+
 **2026-11-03, final portability review:** fixed MPEG exact-entry detection, hook ownership/release/rollback,
 dynamic image/work/reference bounds and allocation failure. Font loading validates complete payloads and allocations;
 font close checks owned pointers and distinguishes single/double-byte resources. MiniTest emits structured results;

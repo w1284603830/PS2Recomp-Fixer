@@ -5,13 +5,16 @@
 //
 // Wiring (no header that generated code includes is touched): VU1 code/data memory become kzvu's buffers, MSCAL/MSCNT
 // from VIF1 run kzvu to the program's E bit, XGKICK packets go to the GIF as PATH1. All of it on the game thread.
-// Settings use the normal shared baseline: clamp mode 1 (normal),
-// IbitHack off, mVU flag hack on.
+// Settings use the normal shared baseline: VU1 and VU0 clamp mode 1 (normal), IbitHack off, mVU flag hack on.
+// The two clamp modes are independent PS2_VU1_CLAMP / PS2_VU0_CLAMP settings (0..3, each defaults to 1), so a
+// port whose game needs PCSX2's stronger per-game clamp (its GameIndex entry) selects it in its own runner
+// environment instead of changing the shared default.
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 #include "kzvu.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -22,6 +25,21 @@ namespace dodkzvu
         PS2Runtime *g_runtime = nullptr;
         uint64_t g_codeGeneration = ~0ull;
         constexpr uint32_t kBudget = 1u << 24; // run programs to their E bit (VIF1 is synchronous here)
+
+        int clampModeFromEnvironment(const char *name)
+        {
+            const char *value = std::getenv(name);
+            if (!value)
+                return 1;
+            if (value[0] < '0' || value[0] > '3' || value[1] != '\0')
+            {
+                // Reported, never silently replaced, and never an exception that would close a windowed build
+                // without a message: keep the shared default.
+                std::fprintf(stderr, "[vu] %s='%s' is not 0..3; using clamp mode 1\n", name, value);
+                return 1;
+            }
+            return value[0] - '0';
+        }
 
         void onXgkick(void *, const uint8_t *packet, uint32_t bytes, uint32_t)
         {
@@ -62,6 +80,8 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
 {
     using namespace dodkzvu;
     const std::string m = mode ? mode : "microvu";
+    const int vu1Clamp = clampModeFromEnvironment("PS2_VU1_CLAMP");
+    const int vu0Clamp = clampModeFromEnvironment("PS2_VU0_CLAMP");
     if (m == "builtin")
     {
         std::fprintf(stderr, "[vu1] PS2Recomp VU1 interpreter (vu1=builtin)\n");
@@ -69,7 +89,8 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
     }
     KzvuConfig config;
     config.useJit = m != "interp";
-    config.clampMode = 1;
+    config.clampMode = vu1Clamp;
+    config.vu0ClampMode = vu0Clamp; // never inherit VU1's stronger per-game clamp mode
     config.iBitHack = false;
     config.flagHack = true;
     config.xgkick = &onXgkick;
@@ -97,7 +118,7 @@ bool dodKzvuInstall(PS2Runtime &runtime, const char *mode)
                                    prepare(top, itop);
                                    kzvuExecute(0xFFFFFFFFu, kBudget);
                                    finish(); });
-    std::fprintf(stderr, "[vu1] %s (kzvu, PCSX2 646df006a4), clamp 1\n",
-                 config.useJit ? "microVU recompiler" : "PCSX2 VU interpreter");
+    std::fprintf(stderr, "[vu1] %s (kzvu, PCSX2 646df006a4), clamp %d; VU0 clamp %d\n",
+                 config.useJit ? "microVU recompiler" : "PCSX2 VU interpreter", vu1Clamp, vu0Clamp);
     return true;
 }
