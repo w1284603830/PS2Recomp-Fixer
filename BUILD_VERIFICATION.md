@@ -10,6 +10,11 @@ a separate review); IOP suites 6/6 including the new `ps2_iop_mailbox_tests` (6/
 configuration with `-CheatMenu -Trainer` built the full runtime and runner. The trainer's headless cases were compiled
 and run with MSVC locally (registry, limit, hotkeys, shared menu slot, panel controls, test variables, disabled build);
 GCC/UBSan runs them in CI. `test_new_port.py` and the static switch checks pass. No game was run for this entry.
+Fresh clone of `88fe7bf` with an LF checkout (as CI): every Python suite that needs no compiler passes, including the
+upstream patch-series parity check (on a Windows machine with global `core.autocrlf=true`, run it with
+`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false`); the pinned dependencies were added and
+`build_all.ps1` from an empty build folder gave the identical results above (default configuration: F2 menu OFF,
+F3 trainer OFF).
 
 **2026-11-03, final portability review:** fixed MPEG exact-entry detection, hook ownership/release/rollback,
 dynamic image/work/reference bounds and allocation failure. Font loading validates complete payloads and allocations;
