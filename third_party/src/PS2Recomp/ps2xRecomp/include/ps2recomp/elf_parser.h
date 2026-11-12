@@ -14,6 +14,7 @@ namespace ps2recomp
         struct Section;
         struct Function;
         struct Symbol;
+        struct OverlayConfig;
         class RecompilerReporter;
 
         class ElfParser
@@ -23,6 +24,11 @@ namespace ps2recomp
                 ~ElfParser();
 
                 bool parse();
+                // The file is a raw EE code image copied to overlay.loadAddress at run time. It is presented as an
+                // in-memory ELF: data before overlay.rawCodeOffset, the code range as .text, data after it and
+                // overlay.rawBssSize uninitialized bytes. Its entry is the first function start.
+                bool parseRawImage(const OverlayConfig &overlay);
+                static bool HasElfMagic(const std::string &filePath);
 
                 bool loadGhidraFunctionMap(const std::string &mapPath);
                 std::vector<Function> extractFunctions() const;

@@ -172,6 +172,32 @@ namespace ps2recomp
         std::string calleeName;
     };
 
+    // [overlay]: the input is a code image the game copies into EE RAM at run time. Output goes into its own
+    // C++ namespace and file names, and a ps2_overlays registration replaces the main dense function table.
+    // All values come from the port's configuration.
+    struct OverlayConfig
+    {
+        enum class InputFormat
+        {
+            Auto, // ELF when the file starts with the ELF magic, raw image otherwise
+            Elf,
+            Raw,
+        };
+
+        bool enabled = false;
+        std::string name;              // C identifier: namespace ps2x_overlay_<name>, files <name>_*
+        uint32_t loadAddress = 0;      // EE RAM address the game copies the image to
+        uint32_t imageSize = 0;        // 0: the initialized bytes from loadAddress (raw: the file size)
+        uint32_t signatureOffset = 0;  // relative to loadAddress
+        uint32_t signatureSize = 0;    // 1..256 bytes, read from the input image
+        InputFormat inputFormat = InputFormat::Auto;
+        // Raw input only: which part of the file is EE code, uninitialized bytes after it, first function.
+        uint32_t rawCodeOffset = 0;
+        uint32_t rawCodeSize = 0;      // 0: to the end of the file
+        uint32_t rawBssSize = 0;
+        uint32_t rawEntry = 0;         // 0: loadAddress + rawCodeOffset
+    };
+
     // Recompiler configuration
     struct RecompilerConfig
     {
@@ -192,6 +218,7 @@ namespace ps2recomp
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;
+        OverlayConfig overlay;
     };
 
 } // namespace ps2recomp

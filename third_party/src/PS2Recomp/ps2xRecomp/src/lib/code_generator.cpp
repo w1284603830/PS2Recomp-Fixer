@@ -161,6 +161,42 @@ namespace ps2recomp
         m_reporter = reporter;
     }
 
+    void CodeGenerator::setOverlayName(const std::string &name)
+    {
+        m_overlayName = name;
+    }
+
+    std::string CodeGenerator::functionsHeaderName() const
+    {
+        return isOverlay() ? m_overlayName + "_functions.h" : "ps2_recompiled_functions.h";
+    }
+
+    std::string CodeGenerator::stubsHeaderName() const
+    {
+        return isOverlay() ? m_overlayName + "_stubs.h" : "ps2_recompiled_stubs.h";
+    }
+
+    std::string CodeGenerator::includeGeneratedHeader(const std::string &header) const
+    {
+        // The main ELF's headers are found through the include path; an overlay's sit beside its sources.
+        return isOverlay() ? "#include \"" + header + "\"\n" : "#include <" + header + ">\n";
+    }
+
+    std::string CodeGenerator::overlayNamespace() const
+    {
+        return isOverlay() ? "ps2x_overlay_" + m_overlayName : std::string();
+    }
+
+    std::string CodeGenerator::namespaceOpen() const
+    {
+        return isOverlay() ? "namespace " + overlayNamespace() + " {\n\n" : std::string();
+    }
+
+    std::string CodeGenerator::namespaceClose() const
+    {
+        return isOverlay() ? "} // namespace " + overlayNamespace() + "\n" : std::string();
+    }
+
     std::string CodeGenerator::getFunctionName(uint32_t address) const
     {
         auto it = m_renamedFunctions.find(address);

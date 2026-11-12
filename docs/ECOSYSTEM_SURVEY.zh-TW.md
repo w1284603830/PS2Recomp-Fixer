@@ -102,7 +102,7 @@ VU1 在背景編譯後切換）、多遊戲自動測試（`scripts/autotests.py`
 | ps2-port-engine | 反編譯成 C++，逐函式和原機器碼比對驗證 |
 
 **動態載入的程式碼（overlay）** 各家都是遊戲專屬做法（BT3 `gen_overlay.py`、BT2 單獨編譯 overlay 檔）。本基底下游有一個移植
-以「載入位址處的標頭簽章判斷目前常駐哪個映像」派發，是可以通用化的機制，列為後續工作（第 9 節）。
+以「載入位址處的標頭簽章判斷目前常駐哪個映像」派發，是可以通用化的機制；已實作為選用的通用登錄（[IMPROVEMENTS.zh-TW.md](../IMPROVEMENTS.zh-TW.md) 第十四節）。
 
 ## 6. VU0／VU1 微程式
 
@@ -143,7 +143,7 @@ DMA／VIF／GIF：本次從上游移植 GIF FLG=3（IMAGE2）在所有 GIFtag �
 
 **後續候選（各自需要獨立的設計、測試與驗收）：**
 
-1. 通用 overlay 登錄：依「載入位址 + 標頭簽章」判斷常駐映像，重編譯器接受原始二進位映像與載入位址。
+1. ~~通用 overlay 登錄~~：已實作（[IMPROVEMENTS.zh-TW.md](../IMPROVEMENTS.zh-TW.md) 第十四節、[GAME_PORTING.md](GAME_PORTING.md) 第 6 節）。
 2. VU 微程式錄製後預先編譯（參考 ps2-native-recomp、gt4-staticrecomp），kzvu JIT 保留為後備。
 3. 選用的原生 IRX 加速：正確的 MIPS-I 延遲載入語義，與解譯結果逐模組比對後才啟用。
 4. 多遊戲自動化回歸（參考 ps2-native-recomp 的 autotests 與 BT2 對照 PCSX2 擷取的驗證閘）。

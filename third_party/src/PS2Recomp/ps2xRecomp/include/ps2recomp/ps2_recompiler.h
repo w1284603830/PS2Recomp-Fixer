@@ -77,8 +77,11 @@ namespace ps2recomp
         std::unordered_map<uint32_t, std::string> m_functionRenames;
         std::unordered_map<uint32_t, std::vector<uint32_t>> m_resumeEntryTargetsByOwner;
         CodeGenerator::BootstrapInfo m_bootstrapInfo;
+        uint32_t m_overlayImageSize = 0;           // [overlay]: bytes from the load address the image covers
+        std::vector<uint8_t> m_overlaySignature;   // [overlay]: bytes read from the input image
 
         bool decodeFunction(Function &function);
+        bool prepareOverlay();
         void discoverAdditionalEntryPoints();
         bool shouldSkipFunction(const Function &function) const;
         bool isStubFunction(const Function &function) const;

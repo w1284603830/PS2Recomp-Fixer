@@ -33,6 +33,7 @@
 - 重編譯器 `native = ["名稱@0x位址"]`：遊戲自己的函式與 runtime 要取代的 SDK 函式同名時，仍保留為重編譯碼；IOP `thmsgbx` 信箱；MCMAN 式記憶卡描述符；libpad 震動。
 - **選用功能，預設為屏蔽（關閉）狀態，如有需要可以使用**：F2 金手指面板（項目由各遊戲自己的 `cheats.ini` 提供）與 F3 修改器面板（各移植登錄自己的開關），見[下方](#選用金手指工具預設屏蔽)；本倉庫不附任何遊戲的金手指。
 - `tools/new_port.py`：從你的光碟映像建立移植資料夾，含開機 ELF、重編譯設定、`game.ini` 與接下來的確切指令。
+- 執行期載入的程式碼（overlay）：`ps2_recomp` 可直接吃原始映像與載入位址（`[overlay]`），runtime 依 RAM 裡目前的簽章派發到已登錄的映像；移植沒有登錄就完全不作用（[docs/GAME_PORTING.md](docs/GAME_PORTING.md) 第 6 節）。
 
 完整清單：[IMPROVEMENTS.zh-TW.md](IMPROVEMENTS.zh-TW.md)（英文 [IMPROVEMENTS.md](IMPROVEMENTS.md)）。PS2Recomp 的逐行差異以[有順序的補丁組](patches/README.md)提供：對上游 `eb8688b` 先套用保留的基礎補丁，再依清單套用維護增量補丁；庫內源碼已包含整組修改。
 

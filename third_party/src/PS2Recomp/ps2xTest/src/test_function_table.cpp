@@ -1,4 +1,5 @@
 #include "ps2_runtime.h"
+#include "ps2_overlays.h"
 #include "runtime/ps2_memory.h"
 
 #include <algorithm>
@@ -15,4 +16,5 @@ void reset_ps2_test_function_table()
     std::fill(g_ps2RecompiledFunctionTable,
               g_ps2RecompiledFunctionTable + g_ps2RecompiledFunctionTableSlotCount,
               nullptr);
+    ps2_overlays::clear(); // every test starts without registered overlays
 }

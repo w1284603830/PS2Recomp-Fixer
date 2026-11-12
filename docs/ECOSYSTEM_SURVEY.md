@@ -64,7 +64,7 @@ Recorded as a project to watch, not as an established technical asset.
 ## Taken now and next candidates
 
 Taken: see [IMPROVEMENTS.md](../IMPROVEMENTS.md) section 13. Candidates, each needing its own design, tests and
-acceptance: a generic overlay registry (load address + header signature, recompiler input for raw images); recorded
+acceptance: a generic overlay registry (now implemented, [IMPROVEMENTS.md](../IMPROVEMENTS.md) section 14); recorded
 ahead-of-time VU microprograms with the kzvu JIT as fallback; an opt-in recompiled-IRX accelerator with MIPS-I load-delay
 semantics validated against the interpreter; multi-game automated regression; a Vulkan GS backend for Linux.
 Decompilation/rewrite projects (rac1-native, OpenGOAL, GT3-revisited, ProjectCane, rac-rs, recvx, kh1, mh1j,

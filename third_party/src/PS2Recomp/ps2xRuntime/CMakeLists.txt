@@ -417,6 +417,7 @@ add_library(ps2_runtime STATIC
     src/lib/ipu/ps2_ipu.c
     src/lib/ipu/ps2_ipu_glue.c
     src/lib/ps2_memory.cpp
+    src/lib/ps2_overlays.cpp
     src/lib/ps2_pad.cpp
     src/lib/dod_gamepad.cpp
     ${PS2X_CHEAT_MENU_SOURCE}
