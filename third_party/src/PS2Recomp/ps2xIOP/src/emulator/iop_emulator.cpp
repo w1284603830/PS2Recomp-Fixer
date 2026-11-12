@@ -160,6 +160,7 @@ namespace ps2x::iop::detail
             lastError.clear();
             servicingDmaInterrupts = false;
             servicingGuestCallbacks = false;
+            servicingTimerCallbacks = false;
             callDepth = 0u;
             secrMcCommandHandler = {};
             secrMcDevIdHandler = {};
@@ -364,6 +365,32 @@ namespace ps2x::iop::detail
                            ? ImportDisposition::Handled
                            : ImportDisposition::Missing;
             }
+            if (iequals(call.library, "thmsgbx"))
+            {
+                const bool interrupt = mailboxInterruptContext();
+                const int id = static_cast<int>(cpu.gpr[5]); // ReceiveMbx(msgvar, id)
+                if (call.ordinal == 8u && !interrupt && !kernel.inThread() && kernel.mailboxMessageCount(id) == 0)
+                {
+                    // Module start / legacy outside-thread guest calls have no resumable kernel context. Pump real
+                    // IOP producers as for WaitSema; reserve their queued packet, never fake an empty receive.
+                    kernel.setOutsideMailboxWait(id);
+                    struct WaitGuard
+                    {
+                        IopKernel &kernel;
+                        ~WaitGuard() { kernel.setOutsideMailboxWait(0); }
+                    } guard{kernel};
+                    runOutsideThreadUntil([&]() { return kernel.mailboxMessageCount(id) != 0; }, totalCycles + 36'864'000ull);
+                    if (kernel.mailboxMessageCount(id) < 0)
+                    {
+                        cpu.gpr[2] = static_cast<uint32_t>(-425); // KE_WAIT_DELETE
+                        return ImportDisposition::Handled;
+                    }
+                    if (kernel.mailboxMessageCount(id) == 0)
+                        log(LogLevel::Warning, "[IOP] ReceiveMbx outside a thread could not complete; returning KE_CAN_NOT_WAIT");
+                }
+                return kernel.dispatchMailboxImport(call.ordinal, cpu, interrupt)
+                           ? ImportDisposition::Handled : ImportDisposition::Missing;
+            }
             if (iequals(call.library, "sifcmd"))
             {
                 // [DoD] sceSifRpcLoop serves requests on the calling thread (see IopRpcBridge::serviceRpcLoop).
@@ -372,6 +399,13 @@ namespace ps2x::iop::detail
                 return rpc.dispatchSifCmdImport(call.ordinal, cpu, totalCycles)
                            ? ImportDisposition::Handled
                            : ImportDisposition::Missing;
+            }
+            if (iequals(call.library, "intrman") && call.ordinal == 23u) // QueryIntrContext
+            {
+                // Mailbox clients select SendMbx/iSendMbx from this query. The former hard-coded 0 made callbacks
+                // choose a thread-only entry even when their own CPU context is an interrupt continuation.
+                setV0(mailboxInterruptContext() ? 1u : 0u);
+                return ImportDisposition::Handled;
             }
             if (iequals(call.library, "intrman") && intrman.dispatchImport(call.ordinal, cpu, *this))
                 return ImportDisposition::Handled;
@@ -682,6 +716,24 @@ namespace ps2x::iop::detail
         }
 
         // Not that good to use exception handling for control flow but will do for now
+        bool mailboxInterruptContext() const noexcept
+        {
+            return servicingDmaInterrupts || servicingGuestCallbacks || servicingTimerCallbacks;
+        }
+
+        void serviceTimerCallbacks()
+        {
+            const bool previous = servicingTimerCallbacks;
+            servicingTimerCallbacks = true;
+            struct ContextGuard
+            {
+                bool &flag;
+                bool previous;
+                ~ContextGuard() { flag = previous; }
+            } guard{servicingTimerCallbacks, previous};
+            timrman.serviceDue(totalCycles, *this);
+        }
+
         void servicePendingDmaInterrupts()
         {
             if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
@@ -836,7 +888,7 @@ namespace ps2x::iop::detail
                     {
                         servicePendingDmaInterrupts();
                         servicePendingGuestCallbacks();
-                        timrman.serviceDue(totalCycles, *this);
+                        serviceTimerCallbacks();
                         next = kernel.beginNextReady(totalCycles, dodIopSticky() ? stickyThreadId : 0);
                     }
                     if (!next)
@@ -914,7 +966,7 @@ namespace ps2x::iop::detail
             static const bool enabled = [] { const char *v = std::getenv("DOD_IOP_SEMA_OUTSIDE_WAIT"); return !v || *v != '0'; }();
             if (!enabled || kernel.semaphoreCount(id) != 0)
                 return; // available, or an unknown id (WaitSema reports it)
-            if (inOutsideSemaphoreWait || servicingDmaInterrupts || servicingGuestCallbacks)
+            if (inOutsideSemaphoreWait || mailboxInterruptContext())
                 return;
             kernel.setOutsideSemaphoreWait(id);
             try
@@ -951,7 +1003,7 @@ namespace ps2x::iop::detail
         template <typename Done>
         void runOutsideThreadUntil(Done done, uint64_t limit)
         {
-            if (inOutsideSemaphoreWait || servicingDmaInterrupts || servicingGuestCallbacks)
+            if (inOutsideSemaphoreWait || mailboxInterruptContext())
                 return;
             inOutsideSemaphoreWait = true;
             idleUntil = 0;
@@ -962,7 +1014,7 @@ namespace ps2x::iop::detail
                     advanceSpu();
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
-                    timrman.serviceDue(totalCycles, *this);
+                    serviceTimerCallbacks();
                     IopThread *next = kernel.beginNextReady(totalCycles, dodIopSticky() ? stickyThreadId : 0);
                     if (!next)
                     {
@@ -1188,6 +1240,7 @@ namespace ps2x::iop::detail
         std::string lastError;
         bool servicingDmaInterrupts = false;
         bool servicingGuestCallbacks = false;
+        bool servicingTimerCallbacks = false;
         uint32_t callDepth = 0u;
         GuestCallback secrMcCommandHandler;
         GuestCallback secrMcDevIdHandler;

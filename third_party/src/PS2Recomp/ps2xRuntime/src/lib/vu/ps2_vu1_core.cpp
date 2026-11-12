@@ -887,7 +887,7 @@ void VU1Interpreter::progressXgkick()
                 tagBytes += static_cast<uint64_t>(nloop) * nreg * 16u;
             else if (format == 1u)
                 tagBytes += ((static_cast<uint64_t>(nloop) * nreg + 1u) & ~1ull) * 8u;
-            else if (format == 2u)
+            else if (format == 2u || format == 3u) // FLG=3 behaves exactly like IMAGE (upstream #384)
                 tagBytes += static_cast<uint64_t>(nloop) * 16u;
             else
             {

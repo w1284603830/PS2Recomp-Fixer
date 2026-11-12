@@ -848,6 +848,7 @@ namespace ps2recomp
             m_skipFunctionStarts.clear();
             m_stubFunctions.clear();
             m_stubFunctionStarts.clear();
+            m_nativeFunctionStarts.clear();
             m_stubHandlerBindingsByStart.clear();
             m_entryPointHintStarts.clear();
             m_correctnessCriticalFunctionStarts.clear();
@@ -891,6 +892,17 @@ namespace ps2recomp
                     }
                 }
             }
+            for (const auto &raw : m_config.nativeFunctions)
+            {
+                const FunctionSelector selector = parseFunctionSelector(raw);
+                if (!selector.start.has_value() || *selector.start == 0u || (*selector.start & 3u) != 0u)
+                {
+                    throw std::invalid_argument("native requires an aligned nonzero address selector: " + raw);
+                }
+                // A retained symbol name can describe different code in another revision.
+                // Never expand an address-qualified native rule to every matching name.
+                m_nativeFunctionStarts.insert(*selector.start);
+            }
             for (const auto &hint : m_config.entryPointHints)
             {
                 const FunctionSelector selector = parseFunctionSelector(hint);
@@ -915,6 +927,13 @@ namespace ps2recomp
             }
 
             m_functions = m_elfParser->extractFunctions();
+            for (const uint32_t address : m_nativeFunctionStarts)
+            {
+                if (std::none_of(m_functions.begin(), m_functions.end(), [address](const Function &fn) { return fn.start == address; }))
+                {
+                    throw std::invalid_argument("native selector has no discovered guest function: " + std::to_string(address));
+                }
+            }
             m_symbols = m_elfParser->extractSymbols();
             m_sections = m_elfParser->getSections();
             m_relocations = m_elfParser->getRelocations();
@@ -1005,6 +1024,16 @@ namespace ps2recomp
             for (const auto &reloc : m_relocations)
             {
                 if (reloc.symbolName.empty())
+                {
+                    continue;
+                }
+
+                // Retained relocations may also name a replaced SDK function. A native
+                // address must remain a guest call, not be lowered back to HLE here.
+                const uint32_t word = m_elfParser->readWord(reloc.offset);
+                const uint32_t opcode = word >> 26u;
+                const uint32_t target = ((reloc.offset + 4u) & 0xF0000000u) | ((word & 0x03FFFFFFu) << 2u);
+                if ((opcode == OPCODE_J || opcode == OPCODE_JAL) && m_nativeFunctionStarts.contains(target))
                 {
                     continue;
                 }
@@ -2043,6 +2072,15 @@ namespace ps2recomp
 
             if (isEntryFunctionName(function.name) && nestedInRealFunction(function.start))
             {
+                // Imported entry_* blocks can end in the middle of their owning
+                // function. Dispatch their start through the complete owner so
+                // a scheduler resume cannot fall out of a truncated block into
+                // an unregistered instruction (including a branch fallthrough).
+                const Function *owner = findContainingFunction(function.start);
+                if (owner && owner->start != function.start)
+                {
+                    m_resumeEntryTargetsByOwner[owner->start].push_back(function.start);
+                }
                 continue;
             }
 
@@ -2217,6 +2255,7 @@ namespace ps2recomp
 
     bool PS2Recompiler::shouldSkipFunction(const Function &function) const
     {
+        if (m_nativeFunctionStarts.contains(function.start)) return false;
         if (m_skipFunctionStarts.contains(function.start))
         {
             return true;
@@ -2227,6 +2266,7 @@ namespace ps2recomp
 
     bool PS2Recompiler::isStubFunction(const Function &function) const
     {
+        if (m_nativeFunctionStarts.contains(function.start)) return false;
         if (m_stubFunctionStarts.contains(function.start))
         {
             return true;

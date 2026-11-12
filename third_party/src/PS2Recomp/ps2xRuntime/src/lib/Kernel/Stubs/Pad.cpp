@@ -1,5 +1,7 @@
 #include "Common.h"
 #include "Pad.h"
+#include "GuestAddress.h"
+#include "../../dod_gamepad.h"
 
 namespace ps2_stubs
 {
@@ -58,6 +60,9 @@ namespace ps2_stubs
             uint8_t lastData[32]{};
             uint32_t readCount = 0u;
             uint32_t lastReadDataAddr = 0u;
+            std::array<uint8_t, 6> motorMap{{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}};
+            uint8_t largeMotor = 0u;
+            uint8_t smallMotor = 0u;
         };
 
         std::mutex g_padOverrideMutex;
@@ -194,6 +199,9 @@ namespace ps2_stubs
 
         void resetPadStateLocked()
         {
+            // HLE bypasses SIO2: explicitly retire its outstanding motor command.
+            for (size_t port = 0; port < kPadPortCount; ++port)
+                dodRequestPadRumble(static_cast<int>(port), 0, 0);
             for (PadPortState &portState : g_padPorts)
             {
                 portState = PadPortState{};
@@ -328,6 +336,9 @@ namespace ps2_stubs
                     sharedPortState->lastReadOk = true;
                     sharedPortState->lastReadDataAddr = dataAddr;
                     ++sharedPortState->readCount;
+                    // Keep a held guest command alive while the guest keeps polling.
+                    // The host watchdog still stops output if the guest stalls.
+                    dodRequestPadRumble(port, sharedPortState->largeMotor, sharedPortState->smallMotor);
                 }
             }
 
@@ -485,12 +496,15 @@ namespace ps2_stubs
             return;
         }
 
-        if (act < 0)
+        if (act == -1)
         {
             setReturnS32(ctx, 2); // small + large motors
             return;
         }
-        setReturnS32(ctx, (act < 2) ? 1 : 0);
+        const uint32_t cmd = getRegU32(ctx, 7);
+        // DualShock actuator descriptors, as returned by its 0x46 command.
+        static constexpr uint8_t info[2][4] = {{1, 2, 0, 10}, {1, 1, 1, 20}};
+        setReturnS32(ctx, (act >= 0 && act < 2 && cmd < 4) ? info[act][cmd] : 0);
     }
 
     void scePadInfoComb(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -588,6 +602,9 @@ namespace ps2_stubs
             return;
         }
 
+        dodRequestPadRumble(static_cast<int>(getRegU32(ctx, 4)), 0, 0);
+        portState->motorMap.fill(0xFFu);
+        portState->largeMotor = portState->smallMotor = 0u;
         portState->open = false;
         portState->pressureEnabled = false;
         portState->reqState = 0u;
@@ -609,6 +626,9 @@ namespace ps2_stubs
             return;
         }
 
+        dodRequestPadRumble(static_cast<int>(getRegU32(ctx, 4)), 0, 0);
+        portState->motorMap.fill(0xFFu);
+        portState->largeMotor = portState->smallMotor = 0u;
         portState->open = true;
         portState->analogMode = false;     // real pads open DIGITAL
         portState->pressureEnabled = false;
@@ -687,15 +707,56 @@ namespace ps2_stubs
 
     void scePadSetActAlign(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
         (void)runtime;
+        const int port = static_cast<int>(getRegU32(ctx, 4));
+        const uint32_t addr = getRegU32(ctx, 6);
+        std::lock_guard<std::mutex> lock(g_padStateMutex);
+        PadPortState *state = lookupPadPortStateLocked(port, static_cast<int>(getRegU32(ctx, 5)));
+        if (!state || !state->open || !rdram || !addr || !validProfileRamRange(addr, 6, 1))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        const uint8_t *map = getMemPtr(rdram, addr);
+        if (!map || std::any_of(map, map + 6, [](uint8_t v) { return v != 0 && v != 1 && v != 0xFF; }))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        std::copy(map, map + 6, state->motorMap.begin());
+        state->largeMotor = state->smallMotor = 0;
+        dodRequestPadRumble(port, 0, 0);
+        state->reqState = 0u;
+        queueExecCmdStateLocked(*state);
+        if (std::getenv("PS2_RUMBLE_TRACE"))
+            std::fprintf(stderr, "[pad-rumble] align port=%d map=%02X,%02X,%02X,%02X,%02X,%02X\n", port, map[0], map[1], map[2], map[3], map[4], map[5]);
         setReturnS32(ctx, 1);
     }
 
     void scePadSetActDirect(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        (void)rdram;
         (void)runtime;
+        const int port = static_cast<int>(getRegU32(ctx, 4));
+        const uint32_t addr = getRegU32(ctx, 6);
+        std::lock_guard<std::mutex> lock(g_padStateMutex);
+        PadPortState *state = lookupPadPortStateLocked(port, static_cast<int>(getRegU32(ctx, 5)));
+        if (!state || !state->open || !rdram || !addr || !validProfileRamRange(addr, 6, 1))
+        {
+            setReturnS32(ctx, 0);
+            return;
+        }
+        const uint8_t *data = getMemPtr(rdram, addr);
+        if (!data) { setReturnS32(ctx, 0); return; }
+        uint8_t large = 0, small = 0;
+        for (size_t i = 0; i < state->motorMap.size(); ++i)
+        {
+            if (state->motorMap[i] == 0) small = data[i] & 1u;
+            if (state->motorMap[i] == 1) large = data[i];
+        }
+        if (std::getenv("PS2_RUMBLE_TRACE") && (state->largeMotor != large || state->smallMotor != small))
+            std::fprintf(stderr, "[pad-rumble] direct port=%d large=%u small=%u pc=%08X\n", port, large, small, ctx->pc);
+        state->largeMotor = large; state->smallMotor = small;
+        dodRequestPadRumble(port, large, small);
         setReturnS32(ctx, 1);
     }
 

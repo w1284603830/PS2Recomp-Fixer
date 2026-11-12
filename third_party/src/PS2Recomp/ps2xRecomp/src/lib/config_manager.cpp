@@ -73,6 +73,10 @@ namespace ps2recomp
             {
                 config.stubImplementations = toml::find<std::vector<std::string>>(data, "stubs");
             }
+            if (general.contains("native"))
+            {
+                config.nativeFunctions = toml::find<std::vector<std::string>>(general, "native");
+            }
 
             auto appendEntryPointHints = [&](const toml::value &table, const char *key)
             {
@@ -297,6 +301,7 @@ namespace ps2recomp
         general["patch_cache"] = config.patchCache;
         general["skip"] = config.skipFunctions;
         general["stubs"] = config.stubImplementations;
+        general["native"] = config.nativeFunctions;
         general["entry_points"] = config.entryPointHints;
         data["general"] = general;
 

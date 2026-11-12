@@ -187,6 +187,8 @@ namespace ps2recomp
         std::vector<std::string> skipFunctions;
         std::unordered_map<uint32_t, std::string> patches;
         std::vector<std::string> stubImplementations;
+        // Explicit address selectors override automatic SDK-name substitution and skip rules.
+        std::vector<std::string> nativeFunctions;
         std::vector<std::string> entryPointHints;
         std::unordered_map<uint32_t, uint32_t> mmioByInstructionAddress;
         std::vector<JumpTable> jumpTables;

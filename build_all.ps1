@@ -1,7 +1,9 @@
 param(
     [string]$BuildDir = '',          # default: <this folder>\build
     [ValidateSet('all', 'kzvu', 'gs', 'ps2recomp')][string]$Part = 'all',
-    [switch]$NoTests                 # skip running ps2x_tests.exe at the end
+    [switch]$NoTests,                # skip running ps2x_tests.exe at the end
+    [switch]$CheatMenu,              # optional F2 cheat menu (cheats), default OFF: docs/CHEATS.md
+    [switch]$Trainer                 # optional F3 trainer panel, default OFF: docs/TRAINER.md
 )
 # Builds everything from third_party\ in this folder (fetch_deps.ps1 first in a fresh clone; FFmpeg's pinned
 # prebuilt package is downloaded by CMake unless third_party\_downloads has it). Order: kzvu.lib (PCSX2 microVU,
@@ -78,6 +80,9 @@ if ($Part -in 'all', 'ps2recomp') {
               '-DPS2X_ENABLE_AGRESSIVE_LOGS=OFF', '-DFETCHCONTENT_FULLY_DISCONNECTED=ON',
               '-DPS2X_IOP_BUILD_TESTS=ON', '-DBUILD_TESTING=ON',
               "-DDOD_KZVU_LIB=$kzvuLib",
+              # F2 / F3 cheat tools stay compiled out unless asked for (both default OFF)
+              "-DPS2X_ENABLE_CHEAT_MENU=$(if ($CheatMenu) { 'ON' } else { 'OFF' })",
+              "-DPS2X_ENABLE_TRAINER=$(if ($Trainer) { 'ON' } else { 'OFF' })",
               '-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /MP /bigobj /utf-8', '-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /MP /utf-8')
     Step 'ps2recomp' (@('-S', (Join-Path $src 'PS2Recomp'), '-B', (Join-Path $BuildDir 'ps2recomp')) + $gen + $opts + $fc) @('ALL_BUILD')
     if (-not $NoTests) {

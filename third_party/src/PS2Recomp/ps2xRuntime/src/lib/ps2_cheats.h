@@ -2,6 +2,12 @@
 
 #include <cstdint>
 
+// =====================================================================================================================
+// F2 cheat menu (金手指) - OPTIONAL, OFF BY DEFAULT.
+// 選用功能，預設為屏蔽（關閉）狀態；如有需要可以使用：CMake 設定 -DPS2X_ENABLE_CHEAT_MENU=ON 後，遊戲中按 F2 開啟。
+// The default build compiles ps2_cheats_disabled.cpp instead of ps2_cheats.cpp: F2 does nothing, no cheats.ini is read
+// and no guest RAM is written. The F3 trainer (ps2_trainer.h) is the companion for cheats that need code hooks.
+// =====================================================================================================================
 // Generic in-game cheat menu (F2). The runtime ships no cheats of any game: the entries come from a text file the user
 // (or the port's author) writes for their own game, `cheats.ini`, looked up in this order:
 //   1. the path in the PS2_CHEATS_FILE environment variable

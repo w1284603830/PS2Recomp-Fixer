@@ -23,6 +23,8 @@ namespace ps2x::iop::detail
         EventFlag,
         Suspended,
         Dead,
+        Mailbox,
+        MailboxSuspended,
     };
 
     struct IopThread
@@ -43,6 +45,7 @@ namespace ps2x::iop::detail
         uint32_t waitMode = 0;
         uint32_t waitResultAddress = 0;
         int wakeupCount = 0;
+        uint64_t mailboxWaitSequence = 0;
     };
 
     class IopKernel
@@ -55,6 +58,9 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
+        [[nodiscard]] bool dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu, bool interruptContext = false);
+        [[nodiscard]] int mailboxMessageCount(int id) const;
+        void setOutsideMailboxWait(int id) noexcept { m_outsideMailboxWait = id; }
 
         [[nodiscard]] int createInternalEventFlag(uint32_t attr, uint32_t option, uint32_t bits);
         [[nodiscard]] bool setInternalEventFlag(int id, uint32_t bits);
@@ -109,6 +115,16 @@ namespace ps2x::iop::detail
             uint32_t option = 0;
         };
 
+        struct Mailbox
+        {
+            uint32_t attr = 0;
+            uint32_t option = 0;
+            std::vector<uint32_t> messages; // guest packet pointers, oldest/highest-priority first
+        };
+
+        void linkMailboxMessages(const Mailbox &mailbox);
+        void completeMailboxWait(IopThread &thread, int32_t result, uint32_t message = 0u);
+
         [[nodiscard]] bool referThreadStatus(int id, uint32_t outputAddress);
         void wakeOneSemaphore(int id);
         [[nodiscard]] static bool eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode);
@@ -118,11 +134,15 @@ namespace ps2x::iop::detail
         std::map<int, IopThread> m_threads;
         std::map<int, Semaphore> m_semaphores;
         std::map<int, EventFlag> m_eventFlags;
+        std::map<int, Mailbox> m_mailboxes;
         uint32_t m_nextThreadId = 1;
         uint32_t m_nextSemaphoreId = 1;
         uint32_t m_nextEventFlagId = 1;
+        uint32_t m_nextMailboxId = 1;
+        uint64_t m_mailboxWaitSequence = 0;
         IopThread *m_currentThread = nullptr;
         std::map<uint32_t, int> m_resumeByPriority; // [DoD] a thread preempted by a higher priority, per priority
         int m_outsideSemaphoreWait = 0; // [DoD] see setOutsideSemaphoreWait
+        int m_outsideMailboxWait = 0; // reserve a queued packet for an outside-thread ReceiveMbx caller
     };
 }

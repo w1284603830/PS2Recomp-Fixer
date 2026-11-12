@@ -767,7 +767,8 @@ static bool writeRecompilerTestConfig(const std::filesystem::path &configPath,
                                       const std::filesystem::path &outputPath,
                                       const std::vector<std::string> &skip,
                                       const std::vector<std::string> &stubs = {},
-                                      const std::vector<std::string> &entryPoints = {})
+                                      const std::vector<std::string> &entryPoints = {},
+                                      const std::vector<std::string> &native = {})
 {
     std::ofstream config(configPath);
     if (!config)
@@ -798,6 +799,13 @@ static bool writeRecompilerTestConfig(const std::filesystem::path &configPath,
         if (i != 0u)
             config << ", ";
         config << '"' << entryPoints[i] << '"';
+    }
+    config << "]\n";
+    config << "native = [";
+    for (size_t i = 0; i < native.size(); ++i)
+    {
+        if (i != 0u) config << ", ";
+        config << '"' << native[i] << '"';
     }
     config << "]\n";
     return static_cast<bool>(config);
@@ -1804,6 +1812,35 @@ void register_ps2_recompiler_tests()
                      "__sprint_r should be left for recompilation");
             t.Equals(ps2_runtime_calls::resolveStubName("__sbprintf"), std::string_view{},
                      "__sbprintf should be left for recompilation");
+        });
+
+        tc.Run("native addresses override automatic and explicit SDK stubs", [](TestCase &t) {
+            const auto tempRoot = std::filesystem::temp_directory_path() /
+                ("ps2recomp-native-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            std::filesystem::create_directories(tempRoot);
+            const auto elfPath = tempRoot / "fixture.elf";
+            const auto configPath = tempRoot / "fixture.toml";
+            const auto outputPath = tempRoot / "output";
+            t.IsTrue(writeMinimalMipsElfWithInitializer(elfPath, "_printf", 0x00100000u), "fixture should be written");
+            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath, {}), "default config should be written");
+            PS2Recompiler automatic(configPath.string());
+            t.IsTrue(automatic.initialize() && automatic.recompile(), "default SDK binding should compile");
+            t.Equals(automatic.reportCounters().functionsStubbed, size_t{1}, "known symbol should bind by default");
+            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath,
+                {"_printf"}, {"_printf@0x00100000"}, {}, {"_printf@0x00100000"}), "native config should be written");
+            ConfigManager manager(configPath.string());
+            const auto config = manager.loadConfig();
+            manager.saveConfig(config);
+            t.Equals(manager.loadConfig().nativeFunctions.size(), size_t{1}, "native override should round-trip");
+            PS2Recompiler native(configPath.string());
+            t.IsTrue(native.initialize() && native.recompile(), "explicit native entry should compile guest code");
+            t.Equals(native.reportCounters().functionsStubbed, size_t{0}, "native entry must not be stubbed");
+            t.Equals(native.reportCounters().functionsRecompiled, size_t{1}, "original body must be generated");
+            t.IsTrue(writeRecompilerTestConfig(configPath, elfPath, outputPath, {}, {}, {}, {"_printf"}), "invalid config should be written");
+            PS2Recompiler invalid(configPath.string());
+            t.IsFalse(invalid.initialize(), "native rules require an address, preventing name-wide changes");
+            std::error_code removeError;
+            std::filesystem::remove_all(tempRoot, removeError);
         });
 
         tc.Run("initializer skips fall back to guest recompilation", [](TestCase &t) {

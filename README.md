@@ -33,7 +33,12 @@ current boundaries and source audit: [docs/REUSABLE_BASE.md](docs/REUSABLE_BASE.
 - CD/DVD: real ISO9660 LBNs, dual-layer DVD9, disc swapping
 - Host: one deadline frame pacer, UTF-8 process code page (runs from any folder name)
 - Many opt-in diagnostics (`PS2_*` environment variables; the original `DOD_*` names still work) and offline analysis tools
-- A generic F2 cheat panel driven by your game's own `cheats.ini` (no game's cheats are shipped)
+- `native = ["name@0xADDR"]` recompiler selectors keep a game's own function recompiled when its name matches an
+  SDK call the runtime would replace; IOP `thmsgbx` message boxes; MCMAN-style memory card descriptors; libpad rumble
+- **Optional, off by default:** an F2 cheat menu driven by your game's own `cheats.ini` and an F3 trainer panel for
+  switches your port registers ([below](#optional-cheat-tools-off-by-default)); no game's cheats are shipped
+- `tools/new_port.py`: from your disc image to a port folder with the boot ELF, recompiler config, `game.ini` and the
+  exact next commands
 
 Full list with references: [IMPROVEMENTS.md](IMPROVEMENTS.md). Line-by-line PS2Recomp changes are distributed as
 [an ordered patch series](patches/README.md) for upstream `eb8688b`: apply the retained base patch, then the shared
@@ -52,7 +57,8 @@ maintenance deltas listed there. The checked-in vendored source already contains
 | `examples/generic_runner/main.cpp` | A game-agnostic host entry driven by `game.ini`: copy it as your `main.cpp` |
 | `examples/dod_runner/main.cpp` | The game entry of the port this came from (two discs, HD movies, test hooks), as a reference (not built) |
 | `patches/` | Diff against upstream `eb8688b` |
-| `docs/GAME_PORTING.md`, `docs/CHEATS.md` | Where each game-specific value goes; the `cheats.ini` format |
+| `docs/GAME_PORTING.md`, `docs/CHEATS.md`, `docs/TRAINER.md` | Where each game-specific value goes; the optional F2 `cheats.ini` menu and F3 trainer |
+| `docs/ECOSYSTEM_SURVEY.md` | Survey of related recompilation / native-port projects: lineage, IOP routes, VU, GS |
 | `docs/` | Development notes from the original port (Chinese): every patch's cause and verification, build notes, upstream test review |
 
 The sources reference each other through relative paths, so keep the `third_party/src/<module>` layout.
@@ -81,6 +87,27 @@ reports and new failures fail the build. Python 3.9+ is required for this check.
 
 The `ps2EntryRunner.exe` built here uses upstream's generic `src/main.cpp` and an empty function table: it only proves
 that the runtime links. A game needs its own generated code and entry point (below).
+
+## Quick start for a new port
+
+```
+python -I tools/new_port.py --iso D:\games\MyGame.iso --out D:\ports\mygame --title "My Game"
+```
+
+It reads SYSTEM.CNF, copies and checks the boot ELF, writes `recomp.toml` (with `ps2_analyzer` when it has been
+built), `game.ini` for the generic runner and `PORT_STEPS.md` with the remaining commands. The port folder must be
+outside this repository; game files are never committed. The manual route is below.
+
+## Optional cheat tools (off by default)
+
+Both are compiled out unless a build asks for them: no F2/F3 handling, no cheat file read, no guest RAM written.
+
+| Tool | Enable | Docs |
+|---|---|---|
+| F2 cheat menu: RAM cheats from the game's own `cheats.ini` | `-DPS2X_ENABLE_CHEAT_MENU=ON` or `build_all.ps1 -CheatMenu` | [docs/CHEATS.md](docs/CHEATS.md) |
+| F3 trainer: a panel for the switches/choices a port registers for its own code hooks (`ps2_trainer.h`) | `-DPS2X_ENABLE_TRAINER=ON` or `build_all.ps1 -Trainer` | [docs/TRAINER.md](docs/TRAINER.md) |
+
+With the trainer off, a port's `ps2trainer::on()` / `choice()` hooks compile to constants that keep the original code.
 
 ## Porting a game
 

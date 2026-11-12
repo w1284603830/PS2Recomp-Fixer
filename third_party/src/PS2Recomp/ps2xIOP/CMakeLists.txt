@@ -69,6 +69,11 @@ if(PS2X_IOP_BUILD_TESTS)
     target_include_directories(ps2_iop_spu2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME ps2_iop_spu2_tests COMMAND ps2_iop_spu2_tests)
 
+    add_executable(ps2_iop_mailbox_tests tests/iop_mailbox_tests.cpp)
+    target_link_libraries(ps2_iop_mailbox_tests PRIVATE ps2_iop)
+    target_include_directories(ps2_iop_mailbox_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME ps2_iop_mailbox_tests COMMAND ps2_iop_mailbox_tests)
+
 endif()
 
 install(TARGETS ps2_iop

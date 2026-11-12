@@ -100,6 +100,24 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRuntime/src/lib/gs/dod_widescreen.h`＋pcsx2gs `GS/DoDWidescreen.h`、`GSState.cpp` 寬螢幕區塊 | 新鬼的 16:9（世界投影常數在新鬼產生碼裡） | runner 只在 `aspect=16:9` 時送 `widescreen=1`；新遊戲不要開 |
 | pcsx2gs `GS/DoDHdStatic.h`、`DoDHdCg.h` | 新鬼高清靜態頁、CG 的 GS 端 | 依新鬼紋理／影片資料；新遊戲沒有對應資源 |
 | `ps2xRuntime/CMakeLists.txt` | `dod_branding.rc.in`（圖示資源，現在沒有就略過）、`dod_utf8.manifest`（通用，建議保留） | 自己的圖示放 `src/runner/dod_branding.rc.in` |
-| `ps2xRuntime/src/lib/ps2_cheats.[h,cpp]`（`ps2_runtime.cpp`、`ps2_pad.cpp` 呼叫；滑鼠輸入在 `gs/dod_pcsx2_gs.cpp`） | 通用的 F2 遊戲內金手指選單：項目是從該遊戲自己的 `cheats.ini` 讀入的 RAM 寫入（格式見 `docs/CHEATS.md`）；本倉庫不附任何遊戲的金手指。每次啟動全部關閉 | 靠左面板、滑鼠／鍵盤／手把、跟著畫面大小縮放。改遊戲指令的金手指檔案不支援（重編譯函式不從記憶體讀指令）；需要的話在自己產生碼裡加開關 |
+| `ps2xRuntime/src/lib/ps2_cheats.[h,cpp]`（`ps2_runtime.cpp`、`ps2_pad.cpp` 呼叫；滑鼠輸入在 `gs/dod_pcsx2_gs.cpp`） | 通用的 F2 遊戲內金手指選單，**選用功能，預設屏蔽（CMake `PS2X_ENABLE_CHEAT_MENU` 預設 OFF，改編入空殼 `ps2_cheats_disabled.cpp`），如有需要可以使用**：項目是從該遊戲自己的 `cheats.ini` 讀入的 RAM 寫入（格式見 `docs/CHEATS.md`）；本倉庫不附任何遊戲的金手指。每次啟動全部關閉 | 靠左面板、滑鼠／鍵盤／手把、跟著畫面大小縮放。改遊戲指令的金手指檔案不支援（重編譯函式不從記憶體讀指令）；需要的話用選用的 F3 修改器（`ps2_trainer.h`，`PS2X_ENABLE_TRAINER` 預設 OFF，見 `docs/TRAINER.md`）在自己產生碼裡加開關 |
 
 另外 `[DoD]` 修正裡有一些是「新鬼先踩到、但依 PCSX2／實機行為修」的（例如 SPU2、IOP 臨界區、VIF1），對其他遊戲同樣有效；若新遊戲出現行為差異，先查 `docs/DoD_RUNTIME_PATCHES.md` 對應列的說明與環境變數開關。
+
+## 十三、2026-11-12 維護：後續移植的通用修正、選用金手指工具、新移植腳手架
+
+做法：把以本基底延伸的三個本地移植樹，各自對照它起步的公開 commit，與公開 `main`（`5e907ef`）逐檔比對內容，只收共用機制；遊戲資料、產生碼、移植專屬掛鉤與診斷都留在各自的移植裡。增量補丁：`patches/PS2Recomp_maint_20261112.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xRecomp` `types.h`、`config_manager.cpp`、`ps2_recompiler.cpp` | `[general]` 新增 `native = ["名稱@0x位址", ...]`：指定位址的函式即使名稱和 runtime 取代的 SDK 函式相同，也保留為重編譯的原始碼（不受自動名稱綁定、`stubs`、`skip`、J/JAL 重定位降級影響）。只寫名稱會被拒絕；位址找不到函式時 `initialize()` 失敗 | 某遊戲自己的單參數 `SetEventFlag`／`ClearEventFlag`（遊戲記憶體裡的位元陣列）被名稱綁定到 kernel 事件旗標 HLE，遊戲自己的事件狀態因此默默遺失。測試：`native addresses override automatic and explicit SDK stubs` |
+| `ps2xRecomp` `control_flow_emitter.cpp` | 在延遲槽位址恢復時，只有確實停在「這個」分支延遲槽的 context（`in_delay_slot && branch_pc == 該分支`）才走該分支的控制流；剛好是別的分支延遲槽的跳轉目標不再被誤導 | 沿用上游 issue #260 的恢復規則，去掉它的誤判 |
+| `ps2xRecomp` `ps2_recompiler.cpp`、`function_table_emitter.cpp` | 巢狀在真實函式裡的匯入 `entry_*` 區塊改由完整的擁有者函式派發（取最內層、結果固定），排程器恢復時不會從截斷的區塊掉出去 | 只有合成的 `entry_*` 名稱會讓位；具名函式與 HLE 綁定維持原登錄 |
+| `ps2xIOP` `iop_kernel.[h,cpp]`、`iop_emulator.cpp` | `thmsgbx` 信箱：CreateMbx、DeleteMbx、SendMbx/iSendMbx、ReceiveMbx/PollMbx、ReferMbxStatus/iReferMbxStatus，含 FIFO／優先序佇列與等待者、封包環狀連結、KE_* 錯誤碼、刪除／ReleaseWait 喚醒、暫停狀態；`QueryIntrContext` 正確回報中斷／回呼上下文（DMA、guest 回呼、計時器回呼）；執行緒外的 `ReceiveMbx` 會推動真正的 IOP 生產者，不回傳假的空結果 | ps2sdk `iop/system/threadman` 的 `thmsgbx.h`／`thmsgbx.c`、`kerr.h`（`f1ca58a468ea`）。新測試組 `ps2_iop_mailbox_tests`（6 項） |
+| `ps2xRuntime` `Kernel/Stubs/MemoryCard.cpp` | 記憶卡檔案描述符依 MCMAN 分配：從 0 起找最低空位、關閉後重用、各自獨立的讀取位置 | 期待第一個檔案拿到描述符 0 的遊戲。擴充 `ps2_runtime_io_tests` |
+| `ps2xRuntime` `Kernel/Stubs/Pad.cpp` | libpad HLE 支援震動：`scePadSetActAlign` 檢查並保存致動器對應、`scePadSetActDirect` 驅動小馬達（開關）與大馬達（0–255）、`scePadInfoAct` 回傳 DualShock 2 致動器描述；開關埠與重設時停止馬達 | 走 libpad EE HLE 路徑的遊戲原本沒有震動 |
+| `ps2xRuntime` `vu/dod_kzvu.cpp` | `PS2_VU1_CLAMP`／`PS2_VU0_CLAMP`（0..3，預設 1）分別設定 microVU 夾制模式；無效值會報告並維持預設 | PCSX2 GameIndex 對部分遊戲用較強的夾制；VU0 不能沿用 VU1 的遊戲專屬值 |
+| `ps2xRuntime` `Kernel/Stubs/GS.cpp`（sceGifPk 關閉封包）、`gs/ps2_gif_arbiter.cpp`、`vu/ps2_vu1_core.cpp`（XGKICK 長度） | GIFtag 的 FLG=3（IMAGE2）在所有解析處都等同 IMAGE：NLOOP 以 qword 計，不是 NREG 組數。GS 前端與 VIF1 解譯器原本就已如此 | 上游 PS2Recomp `e5636981a1`（#384）、PCSX2 `Gif_Unit.h` 的 `GIF_FLG_IMAGE2`；移植上游測試 `GIF FLG=3 (IMAGE2) packet writes host-to-local data like IMAGE` |
+| `ps2xRuntime` `ps2_cheats_disabled.cpp`、`ps2_trainer.[h,cpp]`、`ps2_trainer_disabled.cpp`、`CMakeLists.txt`、`build_all.ps1` | **選用金手指工具，兩者預設皆為屏蔽（關閉）狀態，如有需要可以使用：** `PS2X_ENABLE_CHEAT_MENU`（F2，`cheats.ini`）與 `PS2X_ENABLE_TRAINER`（F3，各移植為自己的程式碼掛鉤登錄開關／選項的面板；關閉時查詢是編譯期常數）。`build_all.ps1 -CheatMenu`／`-Trainer` | `docs/CHEATS.md`、`docs/TRAINER.md`；測試 `test_ps2_trainer.py`、`input_readers` 的 `trainer-capture` |
+| `tools/new_port.py` | 從光碟映像或開機 ELF 在倉庫外建立移植資料夾：依 SYSTEM.CNF 取出並檢查開機 ELF、`recomp.toml`（已建置 ps2_analyzer 時用它，否則寫含 `native` 的最小範本）、`game.ini`、`port.json`、附確切指令的 `PORT_STEPS.md` | `tests/test_new_port.py`（合成的 ISO9660 映像） |
+| `docs/ECOSYSTEM_SURVEY.zh-TW.md` | 30 個相關專案的調查：以內容判定的程式碼繼承關係、三種 IOP 路線（HLE 服務／解譯 IRX／重編譯 IRX）、VU、GS，以及本基底從中採用的部分 | |

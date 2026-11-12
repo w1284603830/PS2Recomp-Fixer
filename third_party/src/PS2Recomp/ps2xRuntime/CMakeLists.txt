@@ -17,6 +17,28 @@ option(PS2X_STRICT_RETURN_DIAGNOSTICS "Route generated JR $ra returns through ru
 option(PS2X_SHOW_WINDOWS_CONSOLE "Show a console window for ps2EntryRunner on Windows release builds" ON)
 option(PS2X_ENABLE_DEBUG_UI "Build the desktop runtime debug UI" ON)
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Optional cheat tools: both are OFF by default (預設為屏蔽狀態). A default build has no F2/F3 handling, reads no cheat
+# file, registers no GS menu and never writes guest RAM for a cheat. Turn one on only for a build that wants it
+# (如有需要可以使用): -DPS2X_ENABLE_CHEAT_MENU=ON / -DPS2X_ENABLE_TRAINER=ON, or build_all.ps1 -CheatMenu / -Trainer.
+#   F2 cheat menu (金手指): RAM cheats from the game's own cheats.ini, docs/CHEATS.md.
+#   F3 trainer (修改器): a panel for the switches a port registers for its own code hooks, docs/TRAINER.md.
+# PS2X_CHEAT_MENU / PS2X_TRAINER (0 or 1) are PUBLIC definitions, so a port's runner and generated code can test them.
+# ---------------------------------------------------------------------------------------------------------------------
+option(PS2X_ENABLE_CHEAT_MENU "F2 cheat menu (cheats.ini RAM cheats); default OFF = not compiled in" OFF)
+option(PS2X_ENABLE_TRAINER "F3 trainer panel for a port's registered switches; default OFF = switches are constant off" OFF)
+if(PS2X_ENABLE_CHEAT_MENU)
+    set(PS2X_CHEAT_MENU_SOURCE src/lib/ps2_cheats.cpp)
+else()
+    set(PS2X_CHEAT_MENU_SOURCE src/lib/ps2_cheats_disabled.cpp)
+endif()
+if(PS2X_ENABLE_TRAINER)
+    set(PS2X_TRAINER_SOURCE src/lib/ps2_trainer.cpp)
+else()
+    set(PS2X_TRAINER_SOURCE src/lib/ps2_trainer_disabled.cpp)
+endif()
+message(STATUS "PS2X F2 cheat menu: ${PS2X_ENABLE_CHEAT_MENU}, F3 trainer: ${PS2X_ENABLE_TRAINER} (both default OFF)")
+
 if(PS2X_ENABLE_SCCACHE)
     find_program(PS2X_SCCACHE_PROGRAM sccache)
 
@@ -397,7 +419,8 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_memory.cpp
     src/lib/ps2_pad.cpp
     src/lib/dod_gamepad.cpp
-    src/lib/ps2_cheats.cpp
+    ${PS2X_CHEAT_MENU_SOURCE}
+    ${PS2X_TRAINER_SOURCE}
     src/lib/ps2_env.cpp
     src/lib/ps2_rom_device.cpp
     src/lib/ps2_vfs.cpp
@@ -438,6 +461,12 @@ if(PS2X_STRICT_RETURN_DIAGNOSTICS)
         PS2X_STRICT_RETURN_DIAGNOSTICS=1
     )
 endif()
+
+# Optional F2 / F3 cheat tools (default OFF, see the options at the top of this file).
+target_compile_definitions(ps2_runtime PUBLIC
+    PS2X_CHEAT_MENU=$<BOOL:${PS2X_ENABLE_CHEAT_MENU}>
+    PS2X_TRAINER=$<BOOL:${PS2X_ENABLE_TRAINER}>
+)
 
 target_compile_definitions(ps2_runtime PRIVATE
     PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>

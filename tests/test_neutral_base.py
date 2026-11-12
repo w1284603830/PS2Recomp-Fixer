@@ -50,6 +50,7 @@ class NeutralBaseTests(unittest.TestCase):
     def test_cg_trace_never_mutates_registers(self):self.run_case('neutral_policy','trace')
     def test_readers_acknowledge_independently_of_sio2(self):self.run_case('input_readers','readers')
     def test_menu_and_source_changes_discard_stale_events(self):self.run_case('input_readers','capture')
+    def test_trainer_panel_captures_input_like_the_menu(self):self.run_case('input_readers','trainer-capture')
     def test_reader_reset_and_invalid_buffers(self):self.run_case('input_readers','reset')
     def test_reader_capacity_and_unregister(self):self.run_case('input_readers','capacity')
     def test_host_and_reader_concurrency(self):self.run_case('input_readers','threads')

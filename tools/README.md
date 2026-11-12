@@ -1,5 +1,9 @@
 # Tool boundaries
 
+`new_port.py` starts a port: from a disc image or boot ELF it lays out a port folder outside this repository (boot ELF
+from SYSTEM.CNF, `recomp.toml`, `game.ini`, `port.json`, `PORT_STEPS.md`). It reads the image only and refuses an
+output folder inside the repository. Tests: `tests/test_new_port.py`.
+
 General tools in this directory operate on caller-supplied source, maps, captures or archives. Hardware address
 labels in GIF/IO census tools describe PS2 registers. They are not a game's RAM layout. Run tools on copies and
 review generated function-map changes before rebuilding a port.
