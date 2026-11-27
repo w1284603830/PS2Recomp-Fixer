@@ -16,6 +16,7 @@ git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_storage_bounds_20261106.d
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_path_utf8_20261106.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_maint_20261112.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_overlays_20261112.diff
+git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_iop_lead_vif_memo_20261127.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_vif_hostsvc_20261127.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_iop_arena_waiteventflag_20261127.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_fixer_compat_perf_20261127.diff

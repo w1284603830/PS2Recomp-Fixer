@@ -17,7 +17,7 @@ void dodVif1ResetCommand()
     g_dodDirectLeftQw = 0u;
     g_dodDirectLeftHl = false;
 }
-void dodVif1Ensure(const uint8_t *data, uint32_t endOffset); // [DoD] ps2_memory.cpp: lazy DMA chain data
+uint32_t dodVif1Ensure(const uint8_t *data, uint32_t endOffset); // [DoD] ps2_memory.cpp: lazy DMA chain data
 uint32_t dodVif1SourceOf(const uint8_t *data, uint32_t offset); // [DoD] ps2_memory.cpp: diagnostics
 void dodVif1ChainNotesAround(uint32_t offset);                    // [DoD] ps2_memory.cpp: diagnostics
 
@@ -578,9 +578,19 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         }
     };
 
+    // Offset of the first lazy-chain segment that is not copied yet. Bytes below it were already requested, so asking
+    // again is a no-op; the copy itself is never moved earlier (a GS interrupt may change the source RAM before the next
+    // segment is reached, so nothing reads ahead).
+    uint32_t readyThrough = 0u;
+    auto ensureBytes = [&](uint32_t end)
+    {
+        if (end > readyThrough)
+            readyThrough = dodVif1Ensure(data, end);
+    };
+
     while (pos + 4 <= sizeBytes)
     {
-        dodVif1Ensure(data, pos + 4u);
+        ensureBytes(pos + 4u);
         if (g_dodDirectLeftQw != 0u)
         {
             // the rest of a DIRECT whose payload was cut off at the end of the previous buffer
@@ -588,7 +598,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             if (availableQw == 0u)
                 break;
             const uint32_t chunkQw = std::min<uint32_t>(g_dodDirectLeftQw, availableQw);
-            dodVif1Ensure(data, pos + chunkQw * 16u);
+            ensureBytes(pos + chunkQw * 16u);
             submitDirectPayload(data + pos, chunkQw, g_dodDirectLeftHl);
             pos += chunkQw * 16u;
             g_dodDirectLeftQw -= chunkQw;
@@ -709,7 +719,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         {
             if (pos + 4 > sizeBytes)
                 break;
-            dodVif1Ensure(data, pos + 4u);
+            ensureBytes(pos + 4u);
             uint32_t maskValue = 0;
             std::memcpy(&maskValue, data + pos, sizeof(maskValue));
             vif1_regs.mask = maskValue;
@@ -720,7 +730,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         {
             if (pos + 16 > sizeBytes)
                 break;
-            dodVif1Ensure(data, pos + 16u);
+            ensureBytes(pos + 16u);
             std::memcpy(vif1_regs.row, data + pos, 16);
             pos += 16;
             continue;
@@ -729,7 +739,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
         {
             if (pos + 16 > sizeBytes)
                 break;
-            dodVif1Ensure(data, pos + 16u);
+            ensureBytes(pos + 16u);
             std::memcpy(vif1_regs.col, data + pos, 16);
             pos += 16;
             continue;
@@ -739,7 +749,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
             uint32_t destAddr = (uint32_t)imm * 8u;
             const uint32_t instructionCount = (num == 0u) ? 256u : static_cast<uint32_t>(num);
             const uint32_t mpgBytes = instructionCount * 8u;
-            dodVif1Ensure(data, pos + mpgBytes);
+            ensureBytes(pos + mpgBytes);
             if (m_vu1Code && destAddr < PS2_VU1_CODE_SIZE && mpgBytes > 0)
             {
                 uint32_t copyBytes = mpgBytes;
@@ -771,7 +781,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 static int s_logged = 0; // [DoD] diagnostics: very large DIRECT and the VIF bytes around it
                 if (s_logged++ < 3)
                 {
-                    dodVif1Ensure(data, std::min<uint32_t>(sizeBytes, pos + 32u));
+                    ensureBytes(std::min<uint32_t>(sizeBytes, pos + 32u));
                     std::string before, after;
                     char hex[4];
                     for (uint32_t i = pos >= 68u ? pos - 68u : 0u; i < pos; ++i)
@@ -804,7 +814,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
             if (qwCount > 0)
             {
-                dodVif1Ensure(data, pos + qwCount * 16u);
+                ensureBytes(pos + qwCount * 16u);
                 submitDirectPayload(data + pos, qwCount, directHl);
             }
 
@@ -865,7 +875,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
 
             uint32_t totalBytes = sourceVectorCount * bytesPerVector;
             totalBytes = (totalBytes + 3) & ~3u;
-            dodVif1Ensure(data, pos + totalBytes);
+            ensureBytes(pos + totalBytes);
 
             uint32_t vuAddr = (uint32_t)imm & 0x3FFu;
             if ((imm & 0x8000u) != 0u)
@@ -881,7 +891,7 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                 const uint32_t srcVectors = (pcl < pwl) ? pcl * (writeVectorCount / pwl) + std::min(writeVectorCount % pwl, pcl)
                                                         : writeVectorCount;
                 const uint32_t srcBytes = (srcVectors * kVifGsize[opcode & 0xFu] + 3u) & ~3u;
-                dodVif1Ensure(data, pos + srcBytes);
+                ensureBytes(pos + srcBytes);
                 if (m_vu1Data && pos + srcBytes <= sizeBytes)
                     vif1UnpackPcsx2(m_vu1Data, PS2_VU1_DATA_SIZE, vif1_regs, cmd, data + pos, srcBytes);
                 else

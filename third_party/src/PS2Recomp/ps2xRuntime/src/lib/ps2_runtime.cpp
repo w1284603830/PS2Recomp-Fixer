@@ -13,6 +13,7 @@
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
 #include "ps2_host_os.h"
+#include "ps2_iop_lead.h"
 #include "ps2_host_report.h"
 #include "Kernel/Stubs/Audio.h"
 #include "Kernel/Stubs/Font.h"
@@ -530,7 +531,8 @@ namespace
     // itself is left alone. (The first version added the stall time to the EE clock: an EE that only waited for its
     // next field counted as stalled, its clock was pushed past real time, it then waited longer for its fields and
     // was "stalled" again - the boot and some rooms ran 15-25 s slow and dipped to 14 fps, sweep247.)
-    // DOD_EE_STALL_WATCHDOG=0 disables it.
+    // DOD_EE_STALL_WATCHDOG=0 disables it. =capped bounds the IOP's lead over the EE to one field (ps2_iop_lead.h): a
+    // longer EE pause then pauses the sound too; for ports whose speech or music must not run ahead of the picture.
     class EeStallWatchdog
     {
     public:
@@ -556,6 +558,8 @@ namespace
             using Clock = std::chrono::steady_clock;
             constexpr double kEeCyclesPerNs = 0.294912; // 294.912 MHz
             constexpr auto kStall = std::chrono::milliseconds(25); // over a field (16.7 ms): the EE moves at least once a field
+            const char *policy = std::getenv("DOD_EE_STALL_WATCHDOG");
+            const bool capped = policy && std::strcmp(policy, "capped") == 0;
             uint64_t lastTotal = g_dodIopEeCyclesTotal.load(std::memory_order_acquire);
             Clock::time_point lastMove = Clock::now();
             bool stalled = false;
@@ -574,8 +578,9 @@ namespace
                     if (stalled)
                     {
                         char text[128];
-                        std::snprintf(text, sizeof(text), "EE thread blocked %.0f ms; the IOP and the sound ran on",
-                                      std::chrono::duration<double, std::milli>(now - lastMove).count());
+                        std::snprintf(text, sizeof(text), "EE thread blocked %.0f ms; the IOP and the sound ran on%s",
+                                      std::chrono::duration<double, std::milli>(now - lastMove).count(),
+                                      capped ? " (lead limited to one field)" : "");
                         dodAudioTraceNote(text);
                     }
                     lastTotal = total;
@@ -592,7 +597,8 @@ namespace
                     anchorTime = now;
                     continue;
                 }
-                iop->publishEeCycles(line); // the EE is behind real time: the IOP follows the line
+                // The EE is behind real time: the IOP follows the line (capped: at most one field ahead of the EE).
+                iop->publishEeCycles(capped ? ps2host::iopBudget(total, line) : line);
             }
         }
 

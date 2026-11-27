@@ -252,3 +252,13 @@ Reviewed and not taken (reasons in the classification): the two-player input and
 must be re-merged into this base's input model), the in-game menu (depends on a newer GS menu table and on the
 two-player work), the bounded IOP lead in the EE-stall watchdog (reverses this base's design; at most an opt-in policy),
 the lazy VIF1 chain memo (performance only; its differential test lives in the port), and port-specific diagnostics.
+
+## 19. 2026-11-27: capped IOP lead (opt-in) and the lazy VIF1 chain memo
+
+The two items of section 18's "not taken" list that were taken afterwards. Patch delta:
+`patches/PS2Recomp_iop_lead_vif_memo_20261127.diff`.
+
+| Where | What | Why / reference |
+|---|---|---|
+| `ps2xRuntime` `ps2_iop_lead.h`, `ps2_runtime.cpp` (EE stall watchdog) | `DOD_EE_STALL_WATCHDOG=capped`: while the EE thread is blocked, the IOP may run at most one NTSC field (4,920,115 EE cycles) ahead of the EE instead of following the real-time line without limit. **Off by default**; `0` still disables the watchdog and the default is unchanged | By default a blocked EE (a disc read, shader compilation) does not starve the sound queue, but the IOP then runs far ahead of the EE for the length of the stall, and a game that ties speech or music to what the EE shows can drift (one port saw speech run ahead of the event animation after a long load). Capping trades that drift for a possible audio gap on stalls longer than the sound queue. Which trade-off is right is a per-game finding, so it is a switch. `host_timing_tests` case `iop-lead` covers the bound, the no-wrap arithmetic near `UINT64_MAX` and a custom bound |
+| `ps2xRuntime` `ps2_memory.cpp`, `ps2_vif1_interpreter.cpp` | `dodVif1Ensure` returns the chain offset of the first segment not yet copied (or `UINT32_MAX`); `processVIF1Data` remembers it and does not ask again for bytes below it | The interpreter asked for every command; the port measured 1,200,719 queries fall to 164,538 in a gameplay capture. A segment is still copied only when its data is first needed, so the invariant that a GS interrupt between tags is seen is unchanged. New test `VIF1 chain data is read when its tag is reached, not when the chain starts` (a callback rewrites the second DIRECT payload's source RAM after the first packet): it passes before and after this change and fails with `DOD_NOLAZY=1`, so it does guard the lazy copy. The count of queries was not re-measured here |

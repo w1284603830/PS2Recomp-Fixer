@@ -34,6 +34,7 @@ class HostTimingTests(unittest.TestCase):
     def test_only_blocked_producer_time_is_consumed_once(self): self.run_case("wait")
     def test_host_shifts_preserve_guest_cycles_and_event_order(self): self.run_case("deadlines")
     def test_extreme_durations_saturate(self): self.run_case("overflow")
+    def test_capped_iop_lead_is_bounded_and_never_wraps(self): self.run_case("iop-lead")
     def test_drain_and_present_options_are_bounded(self): self.run_case("options")
     def test_async_idle_wait_and_absolute_host_schedule(self): self.run_case("pacer")
     def test_dxgi_options_leave_invalid_input_unselected(self): self.run_case("latency")
