@@ -98,6 +98,7 @@ namespace ps2x::iop::detail
             uint32_t entry = 0;
             uint32_t gp = 0;
             bool resident = false;
+            bool ownsAllocation = false;
         };
 
         struct GuestCallback
@@ -157,6 +158,10 @@ namespace ps2x::iop::detail
             rpcAheadCycles = 0;
             drivingRpc = false;
             activeCpu = nullptr;
+            moduleEntryCpu = nullptr;
+            moduleEntryWaitCredit = 0u;
+            moduleEntryEventWaits = 0u;
+            moduleEntryEventTimeouts = 0u;
             lastError.clear();
             servicingDmaInterrupts = false;
             servicingGuestCallbacks = false;
@@ -361,9 +366,52 @@ namespace ps2x::iop::detail
             }
             if (iequals(call.library, "thevent"))
             {
-                return kernel.dispatchEventImport(call.ordinal, cpu)
-                           ? ImportDisposition::Handled
-                           : ImportDisposition::Missing;
+                if (!kernel.dispatchEventImport(call.ordinal, cpu))
+                    return ImportDisposition::Missing;
+                if (call.ordinal == 10 && &cpu == moduleEntryCpu && cpu.gpr[2] == IopKernel::EventNotReady)
+                {
+                    // A synchronous IRX entry has no IOP thread to suspend. Let worker threads
+                    // and transfer IRQs complete the wait instead of returning -418 immediately.
+                    ++moduleEntryEventWaits;
+                    const uint64_t waitStart = totalCycles;
+                    const uint64_t waitStartInstructions = totalInstructions;
+                    const int waitEfId = static_cast<int>(cpu.gpr[4]);
+                    const uint32_t waitBits = cpu.gpr[5];
+                    const uint32_t waitMode = cpu.gpr[6];
+                    kernel.setOutsideEventWait(&cpu);
+                    struct ClearWait
+                    {
+                        IopKernel &kernel;
+                        ~ClearWait() { kernel.setOutsideEventWait(nullptr); }
+                    } clearWait{kernel};
+                    runOutsideThreadUntil([&] { return cpu.gpr[2] != IopKernel::EventNotReady; },
+                                          totalCycles + kIopClockHz);
+                    // runCpu measures the entry's budget on the global instruction counter, so
+                    // instructions other IOP threads ran during this wait would count against the start routine's
+                    // kMaxCallInstructions and abandon it right after the wait. callFunction gives them back.
+                    moduleEntryWaitCredit += totalInstructions - waitStartInstructions;
+                    if (cpu.gpr[2] == IopKernel::EventNotReady)
+                    {
+                        ++moduleEntryEventTimeouts;
+                        std::ostringstream out;
+                        out << "[IOP] module entry WaitEventFlag timed out ef=" << waitEfId
+                            << " bits=0x" << std::hex << waitBits << " mode=0x" << waitMode
+                            << std::dec << " count=" << moduleEntryEventWaits;
+                        log(LogLevel::Warning, out.str());
+                    }
+                    else
+                    {
+                        std::ostringstream out;
+                        out << "[IOP] module entry WaitEventFlag waited ef=" << waitEfId
+                            << " bits=0x" << std::hex << waitBits << " mode=0x" << waitMode
+                            << " rc=" << std::dec << static_cast<int32_t>(cpu.gpr[2])
+                            << " cycles=" << (totalCycles - waitStart)
+                            << " instructions=" << (totalInstructions - waitStartInstructions)
+                            << " count=" << moduleEntryEventWaits;
+                        log(LogLevel::Info, out.str());
+                    }
+                }
+                return ImportDisposition::Handled;
             }
             if (iequals(call.library, "thmsgbx"))
             {
@@ -640,17 +688,33 @@ namespace ps2x::iop::detail
                               uint32_t a2,
                               uint32_t a3,
                               uint32_t gp,
-                              uint32_t budget = kMaxCallInstructions)
+                              uint32_t budget = kMaxCallInstructions,
+                              bool isModuleEntry = false)
         {
             struct CallDepthGuard
             {
                 uint32_t &depth;
-                ~CallDepthGuard() { --depth; }
+                CpuState *&moduleEntry;
+                CpuState *previousEntry;
+                uint64_t &waitCredit;
+                uint64_t previousCredit;
+                ~CallDepthGuard()
+                {
+                    --depth;
+                    moduleEntry = previousEntry;
+                    waitCredit = previousCredit;
+                }
             };
 
             const uint32_t depth = callDepth++;
-            const CallDepthGuard depthGuard{callDepth};
+            const CallDepthGuard depthGuard{callDepth, moduleEntryCpu, moduleEntryCpu, moduleEntryWaitCredit,
+                                            moduleEntryWaitCredit};
             CpuState cpu{};
+            if (isModuleEntry)
+            {
+                moduleEntryCpu = &cpu;
+                moduleEntryWaitCredit = 0u;
+            }
             cpu.pc = address;
             cpu.gpr[4] = a0;
             cpu.gpr[5] = a1;
@@ -684,11 +748,28 @@ namespace ps2x::iop::detail
             if (budget == kMaxCallInstructions && budgetOverride != 0u)
                 budget = budgetOverride;
             runCpu(cpu, budget);
+            // A module entry that waited in WaitEventFlag (thevent import) resumes with the
+            // instructions other IOP threads ran meanwhile credited back, so only its own work counts.
+            while (isModuleEntry && !cpu.stopped && !cpu.yielded && moduleEntryWaitCredit != 0u)
+            {
+                const uint64_t credit = std::exchange(moduleEntryWaitCredit, 0u);
+                runCpu(cpu, static_cast<uint32_t>(std::min<uint64_t>(credit, UINT32_MAX)));
+            }
             if (!cpu.stopped && !cpu.yielded)
             {
                 std::ostringstream out;
                 out << "[IOP:call-abandoned] fn=0x" << std::hex << address << " stoppedAt=0x" << cpu.pc << " v0=0x"
                     << cpu.gpr[2] << std::dec << " budget=" << budget;
+                // Exception context of the abandoned call (a guest exception sends the CPU to the
+                // 0x80000080 vector, which has no handler under the HLE kernel): Cause/EPC/BadVAddr/Status, key
+                // registers, and the words at the entry and at EPC (to tell overwritten code from a bad argument).
+                const uint32_t epc = cpu.cop0[14];
+                out << std::hex << " cause=0x" << cpu.cop0[13] << " exc=" << std::dec << ((cpu.cop0[13] >> 2) & 0x1Fu)
+                    << std::hex << " epc=0x" << epc << " badv=0x" << cpu.cop0[8] << " sr=0x" << cpu.cop0[12]
+                    << " a0=0x" << cpu.gpr[4] << " s0=0x" << cpu.gpr[16] << " ra=0x" << cpu.gpr[31]
+                    << " sp=0x" << cpu.gpr[29]
+                    << " entry_word=0x" << ((address & 0x1FFFFFFFu) < kRamSize ? read32(address) : 0u)
+                    << " epc_word=0x" << ((epc & 0x1FFFFFFFu) < kRamSize ? read32(epc) : 0u) << std::dec;
                 log(LogLevel::Warning, out.str());
             }
             return cpu.gpr[2];
@@ -1015,6 +1096,8 @@ namespace ps2x::iop::detail
                     servicePendingDmaInterrupts();
                     servicePendingGuestCallbacks();
                     serviceTimerCallbacks();
+                    if (done())
+                        break;
                     IopThread *next = kernel.beginNextReady(totalCycles, dodIopSticky() ? stickyThreadId : 0);
                     if (!next)
                     {
@@ -1111,6 +1194,7 @@ namespace ps2x::iop::detail
             module.size = loaded.size;
             module.entry = loaded.entry;
             module.gp = loaded.gp;
+            module.ownsAllocation = loaded.ownsAllocation;
 
             // [DoD] Like the IOP's loadcore, start the module as start(argc, argv): argv[0] is the module path and the
             // NUL-separated argument block supplies argv[1..]. (Capcom's SNDDRV.IRX checks argc == 11 and reads argv[1..10].)
@@ -1151,7 +1235,8 @@ namespace ps2x::iop::detail
                 const uint32_t terminator = 0u;
                 writeRam(args + argc * 4u, &terminator, 4u);
             }
-            const uint32_t startResult = callFunction(module.entry, args ? argc : 0u, args, 0u, 0u, module.gp);
+            const uint32_t startResult = callFunction(module.entry, args ? argc : 0u, args, 0u, 0u, module.gp,
+                                                      kMaxCallInstructions, true);
             if (args)
                 freeAllocation(args);
             module.resident = startResult == 0u || startResult == 2u;
@@ -1198,10 +1283,15 @@ namespace ps2x::iop::detail
             if (it == modules.end())
                 return false;
             // A removable IRX normally exposes a stop entry through module metadata. We do not guess it; terminate owned execution and release the image cleanly.
-            kernel.terminateThreadsInRange(it->second.base, it->second.size);
-            rpc.removeServersInRange(it->second.base, it->second.size);
-            imports.eraseRange(it->second.base, it->second.size);
+            const uint32_t base = it->second.base;
+            const uint32_t size = it->second.size;
+            const bool ownsAllocation = it->second.ownsAllocation;
+            kernel.terminateThreadsInRange(base, size);
+            rpc.removeServersInRange(base, size);
+            imports.eraseRange(base, size);
             modules.erase(it);
+            if (ownsAllocation)
+                (void)memory.freeAllocation(base);
             kernel.cleanupDeadThreads();
             if (result)
                 *result = 0;
@@ -1237,6 +1327,10 @@ namespace ps2x::iop::detail
         uint64_t rpcAheadCycles = 0; // [DoD] IOP cycles already run while an EE RPC waited
         bool drivingRpc = false;
         CpuState *activeCpu = nullptr;
+        CpuState *moduleEntryCpu = nullptr;
+        uint64_t moduleEntryWaitCredit = 0u; // instructions other threads ran while moduleEntryCpu waited
+        uint64_t moduleEntryEventWaits = 0u;
+        uint64_t moduleEntryEventTimeouts = 0u;
         std::string lastError;
         bool servicingDmaInterrupts = false;
         bool servicingGuestCallbacks = false;

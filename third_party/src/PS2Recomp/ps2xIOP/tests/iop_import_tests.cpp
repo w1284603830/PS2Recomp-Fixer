@@ -4,6 +4,7 @@
 #include "emulator/imports/iop_cdvd.h"
 #include "emulator/imports/iop_imports.h"
 #include "emulator/imports/iop_loadcore.h"
+#include "emulator/imports/iop_sysmem.h"
 #include "emulator/imports/iop_timrman.h"
 #include "emulator/services/iop_rpc.h"
 #include "ps2x/iop/iop_host.h"
@@ -326,12 +327,78 @@ namespace
                expect(executor.lastGp == 0x89AB0u, "timer callback lost the registering module GP") &&
                expect(timrman.nextEventCycle(1000u) == 300u, "timer callback return did not rearm compare");
     }
+
+    bool testSysmemUnifiedPool()
+    {
+        NullHost host;
+        IopMemory memory;
+        IopSysmem sysmem(host, memory);
+        const auto call = [&](uint16_t ordinal, uint32_t a0 = 0u, uint32_t a1 = 0u, uint32_t a2 = 0u) -> uint32_t
+        {
+            IopCpuState cpu{};
+            cpu.gpr[4] = a0;
+            cpu.gpr[5] = a1;
+            cpu.gpr[6] = a2;
+            if (!sysmem.dispatchImport(ordinal, cpu))
+                return 0xDEAD0000u;
+            return cpu.gpr[2];
+        };
+
+        constexpr uint32_t kArenaSize = IopMemory::HeapLimit - IopMemory::HeapBase;
+        if (!expect(IopMemory::HeapBase == 0x00010000u && kArenaSize == 0x001E0000u,
+                    "Unified IOP arena must span 0x00010000..0x001F0000 (1,920 KB)") ||
+            !expect(call(7u) == kArenaSize && call(8u) == kArenaSize,
+                    "Empty IOP sysmem reported wrong free memory"))
+            return false;
+
+        // ALLOC_FIRST starts at HeapBase (0x10000); ALLOC_LAST allocates from HeapLimit downward.
+        const uint32_t low = call(4u, 0u, 0x10000u, 0u);
+        const uint32_t high = call(4u, 1u, 0x20000u, 0u);
+        if (!expect(low == IopMemory::HeapBase, "ALLOC_FIRST did not start at unified HeapBase") ||
+            !expect(high == IopMemory::HeapLimit - 0x20000u, "ALLOC_LAST did not allocate from HeapLimit downward"))
+            return false;
+
+        // ALLOC_ADDR accepts KSEG0 addresses and rejects overlapping reservations.
+        const uint32_t mid = call(4u, 2u, 0x10000u, 0x80080000u);
+        const uint32_t overlap = call(4u, 2u, 0x1000u, 0x00084000u);
+        if (!expect(mid == 0x00080000u && overlap == 0u, "ALLOC_ADDR KSEG0 normalization or overlap check failed"))
+            return false;
+
+        // QueryBlockTopAddress / QueryBlockSize normalize KSEG0 pointers.
+        if (!expect(call(9u, 0x80081234u) == 0x00080000u && call(10u, 0x80081234u) == 0x10000u,
+                    "QueryBlockTopAddress/Size did not normalize KSEG0 address"))
+            return false;
+
+        // Fragmented arena: total free exceeds max contiguous free (gap below 0x80000 is 0x60000; gap above is 0x140000).
+        const uint32_t maxFree = call(7u);
+        const uint32_t totalFree = call(8u);
+        if (!expect(maxFree == 0x140000u && totalFree == 0x1A0000u,
+                    "QueryMaxFreeMemSize vs QueryTotalFreeMemSize mismatch on fragmented pool"))
+            return false;
+
+        // Oversized and invalid-mode allocations must fail cleanly without uint32 wraparound.
+        if (!expect(call(4u, 0u, 0xFFFFFFF0u, 0u) == 0u && call(4u, 3u, 0x100u, 0u) == 0u,
+                    "Oversized or invalid-mode AllocSysMemory succeeded"))
+            return false;
+
+        // FreeSysMemory accepts KSEG0 addresses and restores full contiguous capacity.
+        if (!expect(call(5u, mid | 0x80000000u) == 0u && call(5u, high) == 0u && call(5u, low) == 0u,
+                    "FreeSysMemory failed on valid/KSEG0 allocations") ||
+            !expect(call(7u) == kArenaSize && call(8u) == kArenaSize,
+                    "FreeSysMemory did not restore full unified arena"))
+            return false;
+
+        // Large allocation > old 832 KB (0xD0000) wall must succeed cleanly.
+        const uint32_t large = call(4u, 0u, 0x160000u, 0u);
+        return expect(large == IopMemory::HeapBase, "Unified IOP pool could not satisfy >1.3 MB allocation") &&
+               expect(call(5u, large) == 0u, "Could not free large unified IOP allocation");
+    }
 }
 
 int main()
 {
     if (!testLoadcoreRebootLibraryMode() || !testCdvdSpecialControl() || !testCdvdSearchFile() ||
-        !testTimrmanPeriodicCallback())
+        !testTimrmanPeriodicCallback() || !testSysmemUnifiedPool())
         return 1;
     std::cout << "ps2xIOP import tests passed\n";
     return 0;

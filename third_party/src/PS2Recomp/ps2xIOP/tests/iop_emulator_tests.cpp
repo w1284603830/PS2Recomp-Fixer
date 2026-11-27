@@ -883,6 +883,122 @@ namespace
         std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
     }
 
+    enum class EntryWaitWorker
+    {
+        SignalThenClear, // SetEventFlag(2) then ClearEventFlag(0) in the same slice
+        Delete,          // DeleteEventFlag while the module entry waits
+        BusyThenSignal,  // ~3.7M IOP instructions (> kMaxCallInstructions) before SetEventFlag(2)
+    };
+
+    void writeModuleEntryWaitEventFlagIrx(TestHost &host, uint32_t address, EntryWaitWorker workerKind)
+    {
+        constexpr uint32_t codeOffset = 0x100u;
+        constexpr uint32_t loadAddress = 0x00010000u;
+        constexpr uint32_t workerAddress = loadAddress + 0x100u;
+        constexpr uint32_t thbaseTableAddress = loadAddress + 0x180u;
+        constexpr uint32_t createThreadStub = thbaseTableAddress + 20u;
+        constexpr uint32_t startThreadStub = createThreadStub + 8u;
+        constexpr uint32_t theventTableAddress = loadAddress + 0x1C0u;
+        constexpr uint32_t createEventStub = theventTableAddress + 20u;
+        constexpr uint32_t deleteEventStub = createEventStub + 8u;
+        constexpr uint32_t setEventStub = deleteEventStub + 8u;
+        constexpr uint32_t clearEventStub = setEventStub + 8u;
+        constexpr uint32_t waitEventStub = clearEventStub + 8u;
+
+        ElfHeader header{};
+        header.ident[0] = 0x7Fu; header.ident[1] = 'E'; header.ident[2] = 'L'; header.ident[3] = 'F';
+        header.ident[4] = 1u; header.ident[5] = 1u; header.ident[6] = 1u;
+        header.type = 2u; header.machine = 8u; header.version = 1u;
+        header.entry = loadAddress; header.phoff = sizeof(ElfHeader);
+        header.ehsize = sizeof(ElfHeader); header.phentsize = sizeof(ProgramHeader); header.phnum = 1u;
+
+        ProgramHeader program{};
+        program.type = 1u; program.offset = codeOffset; program.vaddr = loadAddress; program.paddr = loadAddress;
+        program.filesz = 0x500u; program.memsz = 0x500u; program.flags = 7u; program.align = 4u;
+
+        const auto jal = [](uint32_t target) { return 0x0C000000u | ((target >> 2u) & 0x03FFFFFFu); };
+        const uint32_t entry[] = {
+            0x27BDFFE0u, 0xAFBF001Cu, 0xAFB00018u, 0xAFB10014u,
+            0x3C040001u, 0x34840320u, jal(createEventStub), 0x00000000u,
+            0x00408021u, // move s0, v0 (ef)
+            0x3C040001u, 0x34840300u, jal(createThreadStub), 0x00000000u,
+            0x00408821u, // move s1, v0 (thid)
+            0x02202021u, 0x02002821u, jal(startThreadStub), 0x00000000u,
+            0x02002021u, 0x24050002u, 0x24060011u, 0x3C070001u, 0x34E70400u,
+            jal(waitEventStub), 0x00000000u,
+            // After the wait: store marker 0x5A5A at 0x00010410 (proves the rest of the start routine ran).
+            0x3C080001u, 0x24095A5Au, 0xAD090410u, // lui t0,1; addiu t1,zero,0x5A5A; sw t1,0x410(t0)
+            0x8FB10014u, 0x8FB00018u, 0x8FBF001Cu, 0x27BD0020u,
+            0x03E00008u, 0x00000000u,
+        };
+        const uint32_t workerSignal[] = {
+            0x27BDFFE0u, 0xAFBF001Cu, 0xAFB00018u,
+            0x00808021u, // move s0, a0
+            0x02002021u, 0x24050002u, jal(setEventStub), 0x00000000u,
+            0x02002021u, 0x00002821u, jal(clearEventStub), 0x00000000u,
+            0x8FB00018u, 0x8FBF001Cu, 0x27BD0020u,
+            0x03E00008u, 0x00000000u,
+        };
+        const uint32_t workerDelete[] = {
+            0x27BDFFF0u, 0xAFBF000Cu,
+            jal(deleteEventStub), 0x00000000u,
+            0x8FBF000Cu, 0x27BD0010u,
+            0x03E00008u, 0x00000000u,
+        };
+        const uint32_t workerBusySignal[] = {
+            0x27BDFFE0u, 0xAFBF001Cu, 0xAFB00018u,
+            0x00808021u, // move s0, a0
+            0x3C080013u, // lui t0, 0x13 (0x130000 iterations x 3 instructions)
+            0x2508FFFFu, // loop: addiu t0, t0, -1
+            0x1500FFFEu, // bnez t0, loop
+            0x00000000u,
+            0x02002021u, 0x24050002u, jal(setEventStub), 0x00000000u,
+            0x8FB00018u, 0x8FBF001Cu, 0x27BD0020u,
+            0x03E00008u, 0x00000000u,
+        };
+        const uint32_t thbaseImports[] = {
+            0x41E00000u, 0u, 0x00000101u,
+            0x61626874u, 0x00006573u, // "thbase"
+            0x03E00008u, 0x24000004u, // CreateThread
+            0x03E00008u, 0x24000006u, // StartThread
+            0u, 0u,
+        };
+        const uint32_t theventImports[] = {
+            0x41E00000u, 0u, 0x00000101u,
+            0x76656874u, 0x00746E65u, // "thevent"
+            0x03E00008u, 0x24000004u, // CreateEventFlag
+            0x03E00008u, 0x24000005u, // DeleteEventFlag
+            0x03E00008u, 0x24000006u, // SetEventFlag
+            0x03E00008u, 0x24000008u, // ClearEventFlag
+            0x03E00008u, 0x2400000Au, // WaitEventFlag
+            0u, 0u,
+        };
+        const uint32_t threadDescriptor[] = {0u, 0u, workerAddress, 0x400u, 20u};
+        const uint32_t eventDescriptor[] = {0u, 0u, 0u};
+
+        std::vector<uint8_t> segment(program.filesz, 0u);
+        const auto put = [&](uint32_t offset, const void *data, size_t size)
+        {
+            std::memcpy(segment.data() + offset, data, size);
+        };
+        put(0u, entry, sizeof(entry));
+        if (workerKind == EntryWaitWorker::Delete)
+            put(0x100u, workerDelete, sizeof(workerDelete));
+        else if (workerKind == EntryWaitWorker::BusyThenSignal)
+            put(0x100u, workerBusySignal, sizeof(workerBusySignal));
+        else
+            put(0x100u, workerSignal, sizeof(workerSignal));
+        put(0x180u, thbaseImports, sizeof(thbaseImports));
+        put(0x1C0u, theventImports, sizeof(theventImports));
+        put(0x300u, threadDescriptor, sizeof(threadDescriptor));
+        put(0x320u, eventDescriptor, sizeof(eventDescriptor));
+
+        std::memset(host.guest.data() + address, 0, codeOffset + program.filesz);
+        std::memcpy(host.guest.data() + address, &header, sizeof(header));
+        std::memcpy(host.guest.data() + address + sizeof(header), &program, sizeof(program));
+        std::memcpy(host.guest.data() + address + codeOffset, segment.data(), segment.size());
+    }
+
     bool expect(bool value, const char *message)
     {
         if (!value)
@@ -1141,6 +1257,99 @@ int main()
         { return message.find("unhandled import cdvdman:7") != std::string::npos; });
     if (!expect(!emittedUnhandledSeek,
                 "sceCdSeek still emitted an unhandled IOP import")) return 1;
+
+    iop.reset();
+    host.logs.clear();
+    const auto readEntryWaitMarker = [&iop]()
+    {
+        uint32_t marker = 0u;
+        return iop.readMemory(0x00010410u, &marker, sizeof(marker)) ? marker : 0u;
+    };
+    const auto loggedText = [&host](const char *text)
+    {
+        return std::any_of(host.logs.begin(), host.logs.end(),
+                           [text](const std::string &message) { return message.find(text) != std::string::npos; });
+    };
+    writeModuleEntryWaitEventFlagIrx(host, 0x100u, EntryWaitWorker::SignalThenClear);
+    const ModuleLoadResult entryWaitSignal = iop.loadModuleBuffer(0x100u);
+    uint32_t capturedBits = 0u;
+    if (!expect(iop.readMemory(0x00010400u, &capturedBits, sizeof(capturedBits)),
+                "Could not read WaitEventFlag result bits")) return 1;
+    if (!expect(readEntryWaitMarker() == 0x5A5Au,
+                "Module entry did not finish its start routine after WaitEventFlag")) return 1;
+    if (!expect(entryWaitSignal.handled && entryWaitSignal.startResult == 0,
+                "Module entry WaitEventFlag did not wait for worker SetEventFlag")) return 1;
+    if (!expect(capturedBits == 0x0002u,
+                "Module entry WaitEventFlag did not capture bits before worker cleared them")) return 1;
+    const bool loggedEntryWait = std::any_of(
+        host.logs.begin(), host.logs.end(),
+        [](const std::string &message)
+        { return message.find("module entry WaitEventFlag waited") != std::string::npos; });
+    if (!expect(loggedEntryWait,
+                "Module entry WaitEventFlag did not log the outside-wait trigger")) return 1;
+
+    iop.reset();
+    host.logs.clear();
+    writeModuleEntryWaitEventFlagIrx(host, 0x100u, EntryWaitWorker::Delete);
+    const ModuleLoadResult entryWaitDelete = iop.loadModuleBuffer(0x100u);
+    if (!expect(entryWaitDelete.handled && entryWaitDelete.startResult == -1,
+                "Module entry WaitEventFlag did not wake with error on DeleteEventFlag")) return 1;
+    const bool timedOut = std::any_of(
+        host.logs.begin(), host.logs.end(),
+        [](const std::string &message)
+        { return message.find("WaitEventFlag timed out") != std::string::npos; });
+    if (!expect(!timedOut,
+                "Module entry WaitEventFlag timed out instead of waking on DeleteEventFlag")) return 1;
+    if (!expect(readEntryWaitMarker() == 0x5A5Au,
+                "Module entry did not finish its start routine after DeleteEventFlag woke it")) return 1;
+
+    // Instructions run by other IOP threads during the wait must not exhaust the entry call's own
+    // kMaxCallInstructions budget (the start routine would be abandoned right after the wait).
+    iop.reset();
+    host.logs.clear();
+    writeModuleEntryWaitEventFlagIrx(host, 0x100u, EntryWaitWorker::BusyThenSignal);
+    const ModuleLoadResult entryWaitBusy = iop.loadModuleBuffer(0x100u);
+    capturedBits = 0u;
+    if (!expect(iop.readMemory(0x00010400u, &capturedBits, sizeof(capturedBits)),
+                "Could not read busy-worker WaitEventFlag result bits")) return 1;
+    if (!expect(entryWaitBusy.handled && entryWaitBusy.startResult == 0 && capturedBits == 0x0002u,
+                "Module entry WaitEventFlag did not wait for a busy worker")) return 1;
+    if (!expect(!loggedText("WaitEventFlag timed out"),
+                "Module entry WaitEventFlag timed out waiting for a busy worker")) return 1;
+    if (!expect(!loggedText("[IOP:call-abandoned]"),
+                "Busy worker instructions exhausted the module entry's call budget")) return 1;
+    if (!expect(readEntryWaitMarker() == 0x5A5Au,
+                "Module entry start routine was abandoned after a long WaitEventFlag")) return 1;
+
+    // Unified IOP sysmem/loadcore arena: IRX modules and AllocSysMemory share 0x00010000..0x001F0000
+    // without colliding, allocations > old 832 KB (0xD0000) wall succeed after loading IRXs, and stopModule frees
+    // the module's memory span back to the unified pool.
+    iop.reset();
+    host.logs.clear();
+    writeRelocatableRpcServerIrx(host, 0x100u);
+    const ModuleLoadResult unifiedMod = iop.loadModuleBuffer(0x100u);
+    if (!expect(unifiedMod.handled && unifiedMod.startResult == 0,
+                "Unified-pool relocatable IRX failed to start")) return 1;
+    const uint32_t bigHeap = iop.allocateMemory(0x160000u, 16u);
+    if (!expect(bigHeap != 0u && bigHeap >= 0x00010500u,
+                "Unified IOP pool failed >1.3 MB allocation or collided with loaded IRX")) return 1;
+    // Verify the loaded IRX still executes its RPC handler cleanly (not overwritten by bigHeap).
+    RpcRequest unifiedReq{};
+    unifiedReq.sid = 0xA11CE001u;
+    unifiedReq.receive = {0x800u, sizeof(uint32_t)};
+    std::memset(host.guest.data() + 0x800u, 0, sizeof(uint32_t));
+    const RpcResult unifiedRpc = iop.handleRpc(unifiedReq);
+    uint32_t unifiedGp = 0u;
+    std::memcpy(&unifiedGp, host.guest.data() + 0x800u, sizeof(unifiedGp));
+    if (!expect(unifiedRpc.handled && unifiedGp == 0x47505250u,
+                "Loaded IRX was corrupted after large unified-pool allocation")) return 1;
+    if (!expect(iop.freeMemory(bigHeap), "Failed to free large unified-pool block")) return 1;
+    if (!expect(iop.stopModule(unifiedMod.moduleId, &stopResult) && stopResult == 0,
+                "Failed to stop unified-pool relocatable IRX")) return 1;
+    const uint32_t reclaimed = iop.allocateMemory(0x1DF000u, 16u);
+    if (!expect(reclaimed == 0x00010000u,
+                "stopModule did not release the IRX span back to the unified IOP pool")) return 1;
+    if (!expect(iop.freeMemory(reclaimed), "Failed to free reclaimed full-arena block")) return 1;
 
     std::cout << "ps2xIOP emulator smoke tests passed\n";
     return 0;

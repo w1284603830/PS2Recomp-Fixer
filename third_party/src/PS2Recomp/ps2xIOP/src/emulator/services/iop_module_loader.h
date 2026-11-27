@@ -31,6 +31,7 @@ namespace ps2x::iop::detail
         uint32_t gp = 0;
         uint32_t nextModuleCursor = 0;
         bool relocationsComplete = true;
+        bool ownsAllocation = false;
 
         [[nodiscard]] explicit operator bool() const noexcept
         {

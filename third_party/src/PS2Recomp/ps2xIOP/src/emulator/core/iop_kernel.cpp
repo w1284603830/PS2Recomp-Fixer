@@ -32,6 +32,7 @@ namespace ps2x::iop::detail
         m_eventFlags.clear();
         m_mailboxes.clear();
         m_outsideSemaphoreWait = 0;
+        m_outsideEventWait = nullptr;
         m_outsideMailboxWait = 0;
         m_nextThreadId = 1;
         m_nextSemaphoreId = 1;
@@ -547,7 +548,19 @@ namespace ps2x::iop::detail
             return false;
         event->second.bits |= bits;
         wakeEventWaiters(event->second);
+        pollOutsideEventWait(id);
         return true;
+    }
+
+    void IopKernel::pollOutsideEventWait(int id)
+    {
+        if (!m_outsideEventWait || static_cast<int>(m_outsideEventWait->gpr[4]) != id)
+            return;
+        // Capture the bits at notification time. The signalling thread can clear
+        // them again before its slice ends. PollEventFlag also handles WAIT_CLEAR.
+        (void)dispatchEventImport(11, *m_outsideEventWait);
+        if (m_outsideEventWait->gpr[2] != EventNotReady)
+            m_outsideEventWait = nullptr;
     }
 
     bool IopKernel::dispatchEventImport(uint16_t ordinal, IopCpuState &cpu)
@@ -575,6 +588,7 @@ namespace ps2x::iop::detail
                 setV0(-1);
                 return true;
             }
+            pollOutsideEventWait(id); // wake the synchronous caller with the deletion error
             for (auto &[threadId, thread] : m_threads)
             {
                 if (thread.state == IopThreadState::EventFlag && thread.waitId == id)

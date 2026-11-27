@@ -429,21 +429,47 @@ namespace ps2x::iop::detail
                               (minVaddr < kModuleLoadBase && minVaddr != 0u);
         uint32_t base = 0u;
         int64_t delta = 0;
+        bool ownsAllocation = false;
         if (relocate)
         {
-            base = alignUp(moduleCursor, 0x100u);
-            if (base + span >= IopMemory::HeapBase)
+            // Allocate module storage from the unified IOP sysmem pool (like real PS2 loadcore), so IRX
+            // images and AllocSysMemory share the full 0x00010000..0x001F0000 arena without colliding.
+            base = memory.allocate(span, 0x100u);
+            if (base == 0u)
             {
                 result.error = IopImageLoadError::ArenaExhausted;
                 return result;
             }
+            ownsAllocation = true;
             delta = static_cast<int64_t>(base) - minVaddr;
-            result.nextModuleCursor = base + span;
+            result.nextModuleCursor = std::max(moduleCursor, base + span);
         }
         else
         {
             base = minVaddr;
+            const uint32_t physBase = IopMemory::physicalAddress(base);
+            if (physBase >= IopMemory::HeapBase && physBase <= IopMemory::HeapLimit &&
+                span <= IopMemory::HeapLimit - physBase)
+            {
+                if (memory.allocate(span, 0x100u, physBase) == 0u)
+                {
+                    result.error = IopImageLoadError::ArenaExhausted;
+                    return result;
+                }
+                ownsAllocation = true;
+            }
         }
+        struct AllocationGuard
+        {
+            IopMemory &memory;
+            uint32_t address;
+            bool active;
+            ~AllocationGuard()
+            {
+                if (active)
+                    (void)memory.freeAllocation(address);
+            }
+        } allocationGuard{memory, base, ownsAllocation};
 
         if (hasLoad)
         {
@@ -555,6 +581,8 @@ namespace ps2x::iop::detail
             }
         }
 
+        allocationGuard.active = false;
+        result.ownsAllocation = ownsAllocation;
         result.error = IopImageLoadError::None;
         return result;
     }
