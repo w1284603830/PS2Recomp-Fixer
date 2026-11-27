@@ -134,3 +134,14 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRecomp` `elf_parser.[h,cpp]` | 原始映像：沒有 ELF 魔術字的檔案在記憶體裡呈現為 ELF（資料／`.text`／資料／`.bss`，位於載入位址），既有的函式探索、Ghidra 函式表與 `entry_points` 都照常運作 | |
 | `ps2xRecomp` `ps2_recompiler.cpp`、`code_generator.[h,cpp]`、`function_emitter.cpp`、`function_table_emitter.[h,cpp]` | overlay 輸出：命名空間 `ps2x_overlay_<名稱>`、檔名 `<名稱>_*` 並以相對路徑 include，不產生 ELF 啟動碼與密集函式表；`<名稱>_overlay.cpp/.h` 含入口表（與主表相同的入口、恢復點與 stub）、從映像讀出的簽章、`ps2x_register_overlay_<名稱>()` 與目錄項目。簽章必須是映像內已初始化的資料，每個函式都必須在映像範圍內 | 多個 guest 位址與函式名稱都相同的映像能連結進同一個執行檔 |
 | `ps2xTest/src/ps2_overlay_tests.cpp`、`tests/overlay_registry_tests.cpp`、`tests/test_overlay_registry.py` | `ps2x_tests` 16 項（登錄、`PS2Runtime` 派發與 `loadELF` 清空、`[overlay]` 解析、原始映像與 ELF 輸入、單檔與逐函式輸出、拒絕的輸入），以及獨立的登錄測試：CTest（MSVC）與 g++ ASan/UBSan 各跑一次，含讓常駐快取不斷換手的多執行緒查詢 | 只用合成的映像與位址 |
+
+## 十六、2026-11-27：VCALLMSR 與 VU 記憶體視窗（硬體語意）
+
+移植某個遊戲時發現的兩個 EE 端缺陷，已對照 EE 手冊與 PCSX2 檢查。兩者都是硬體行為，與任何遊戲無關。增量補丁：`patches/PS2Recomp_vu_window_vcallmsr_20261127.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xRecomp` `vu_translation_helpers.cpp` | `VCALLMSR` 從 CMSAR0 啟動 VU0 微程式（`(ctx->vu0_cmsar0 & 0x1FF) << 3`）。產生碼以前讀的是 `ctx->vi[27]` | VCALLMSR 唯一的編碼指名 VI27，在 CTC2/CFC2 編號裡就是 CMSAR0（EE Core Instruction Set Manual；PCSX2 讀 `VU0.VI[REG_CMSAR0]`）。`ctx->vi[]` 只有 VI0..VI15，舊寫法讀到陣列之外，從不相干的位址啟動 VU0。測試 `VCALLMSR starts VU0 at CMSAR0` |
+| `ps2xRuntime` `runtime/ps2_address.h` | 特殊位址範圍涵蓋四塊 VU 記憶體，從 VU0 微記憶體 `0x11000000` 到 VU1 資料 `0x1100FFFF`。舊範圍從 VU0 資料開始、到 VU1 微記憶體結尾為止 | 產生碼對 VU1 資料記憶體（與 VU0 微記憶體）的寫入走了 RAM 快速路徑，被遮罩寫進 RDRAM，永遠到不了 VU1。測試 `generated stores treat the whole VU window as special and reach VU1 data`（邊界、KSEG1 別名、128 位元寫入落在 VU1 資料而不是 RDRAM） |
+
+同一個移植的 VIF1 飛行記錄器與其他診斷工具沒有收進來。
