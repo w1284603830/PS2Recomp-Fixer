@@ -41,6 +41,43 @@ namespace dod_vif1_unpack
             const uint32_t skipBytes = isFill ? 0u : (cl - wl) * 16u;
             const uint32_t memMask = vuMemSize - 16u;
 
+            // V3-32 vertex streams frequently supply XYZ and select the W lane from a row, column or existing VU
+            // memory. When XYZ is unmasked in every active mask row (skipping mode, STMOD off), copy the 12-byte
+            // input as one unit; the W source may change on each write cycle. Same bytes, address and write-cycle
+            // stepping as the general loop below; the differential harness (tools/diag/vif1_unpack_diff) compares them.
+            if constexpr (VNVL == 8u && MASK && MODE == 0u)
+            {
+                if (!isFill && (regs.mask & 0x3f3f3f3fu) == 0u && static_cast<uint64_t>(num) * 12u <= dataBytes)
+                {
+                    uint32_t cycle = 0u;
+                    for (uint32_t n = 0; n < num; ++n)
+                    {
+                        const uint32_t lane = cycle < 3u ? cycle : 3u;
+                        const uint32_t offset = n * 12u;
+                        uint8_t *dest = vuMem + (addr & memMask);
+                        const uint32_t selector = (regs.mask >> (lane * 8u + 6u)) & 3u;
+                        uint32_t w = 0u;
+                        if (selector == 0u && offset + 16u <= dataBytes)
+                            std::memcpy(&w, data + offset + 12u, 4u);
+                        else if (selector == 1u)
+                            w = regs.row[3];
+                        else if (selector == 2u)
+                            w = regs.col[lane];
+                        std::memmove(dest, data + offset, 12u);
+                        if (selector != 3u)
+                            std::memcpy(dest + 12u, &w, 4u);
+                        addr += 16u;
+                        if (++cycle == wl)
+                        {
+                            cycle = 0u;
+                            addr += skipBytes;
+                        }
+                    }
+                    regs.num = 0u;
+                    return;
+                }
+            }
+
             // [Fixer] V4-32 without mask or STMOD (the bulk of VU1 vertex uploads; 1 % of the battle EE thread): when
             // every source vector is present, each one is a straight 16-byte copy. Same bytes, same address and
             // write-cycle stepping as the general loop below (skipping mode; filling mode keeps the general loop).

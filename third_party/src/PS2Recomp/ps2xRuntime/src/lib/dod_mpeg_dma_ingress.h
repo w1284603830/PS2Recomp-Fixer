@@ -3,12 +3,17 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <vector>
 
 namespace dod_mpeg_dma
 {
+    // Staging bound of one CH4 transaction and of this queue. A port whose movie library starts every picture's CH4
+    // with its whole video ring can need a smaller bound (a refused oversized chain makes the library send only what the
+    // next picture needs, as on hardware); that is a per-game finding, so the default stays 2 MB and DOD_MPEG_INGRESS_KB
+    // (64..8192) overrides it for tests and ports.
     inline constexpr size_t kCapacityBytes = 2u * 1024u * 1024u;
     struct Session
     {
@@ -45,6 +50,7 @@ namespace dod_mpeg_dma
             if (session_.mpegAddr == mpegAddr && mpegAddr != 0)
             { clearLocked(); ++session_.generation; }
         }
+        size_t capacity() const { return capacity_; }
         Session activeSession() const
         { std::lock_guard<std::mutex> lock(mutex_); return session_; }
         size_t queuedBytes(uint32_t mpegAddr) const
@@ -99,7 +105,17 @@ namespace dod_mpeg_dma
         size_t frontOffset_ = 0, queued_ = 0;
     };
 
-    inline Ingress &ingress() { static Ingress value; return value; }
+    inline size_t configuredCapacity()
+    {
+        if (const char *v = std::getenv("DOD_MPEG_INGRESS_KB"))
+        {
+            const long kb = std::strtol(v, nullptr, 10);
+            if (kb >= 64 && kb <= 8192)
+                return static_cast<size_t>(kb) * 1024u;
+        }
+        return kCapacityBytes;
+    }
+    inline Ingress &ingress() { static Ingress value(configuredCapacity()); return value; }
     inline Session begin(uint32_t mpegAddr) { return ingress().begin(mpegAddr); }
     inline void reset(uint32_t mpegAddr) { ingress().reset(mpegAddr); }
     inline void end(uint32_t mpegAddr) { ingress().end(mpegAddr); }

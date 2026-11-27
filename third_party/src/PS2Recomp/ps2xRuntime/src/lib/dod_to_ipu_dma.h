@@ -130,7 +130,7 @@ namespace dod_mpeg_dma
         {
             if (active_) return; // retries cannot recapture or duplicate a packet
             active_ = true; session_ = session;
-            try { transfer_ = gather(registers, chcr, resolve, advance, kCapacityBytes, true); }
+            try { transfer_ = gather(registers, chcr, resolve, advance, ingress().capacity(), true); } // same bound as the queue
             catch (const std::length_error &) { oversized_ = true; transfer_ = {}; }
         }
         // Exactly the acceptance point commits MADR/QWC/tag registers. The

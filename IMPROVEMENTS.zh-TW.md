@@ -174,3 +174,16 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xIOP` `iop_memory.[h,cpp]`、`iop_sysmem.cpp`、`iop_module_loader.[h,cpp]`、`iop_emulator.cpp` | 載入的 IRX 映像與 `AllocSysMemory` 共用同一個 IOP 記憶體池：`0x00010000..0x001F0000`（1,920 KB；以前堆從 `0x00120000` 開始，模組區用不到、配置上限只有 832 KB）。可重定位模組從池中取得空間，`stopModule` 會釋放；固定位址的模組預留自己的空間。`AllocSysMemory` 模式 1（ALLOC_LAST）從頂端配置，配置／釋放／查詢都會正規化 KSEG0 位址，`QueryTotalFreeMemSize` 回傳總量（不是最大連續塊），大小運算不會繞回 | 真實 IOP 上載入的模組與 sysmem 配置共用同一個池。**這會改變所有遊戲得到的 `AllocSysMemory` 位址**；依賴舊配置的移植要自己檢查。測試：ALLOC_FIRST/LAST/ADDR、KSEG0、碎片化、超大與無效模式、可重定位 IRX 之後配置超過 1.3 MB、`stopModule` 歸還空間 |
 
 沒有收進來：同一份來源補丁的 VBlank handler 保護。本基底的 `iop_vblank` 沒有遞送 handler（只實作 Wait 系列），在把遞送機制另外移植進來之前沒有東西可保護。
+
+## 十八、2026-11-27：VIF1 V3-32 上傳路徑、位址檢查、執行結果、MPEG ingress 上限
+
+從 DoD 與 Onimusha 3 兩個移植樹對照本基底的分類結果裡挑選（它們多數差異是本基底已經往前走了，或是遊戲內容；下表之外較大的項目是刻意留下的）。增量補丁：`patches/PS2Recomp_vif_hostsvc_20261127.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xRuntime` `dod_vif1_unpack.h` | 帶遮罩位元的 UNPACK V3-32，當每個 MASK 列的 XYZ 都沒遮罩（略過模式、STMOD 關）：每個向量複製 12 位元組，W 來自資料，或依選擇取 ROW、COL | 與一般迴圈相同的位元組、位址與寫入週期步進；VU1 頂點資料流會用到。`tools/diag/vif1_unpack_diff` 新增 `v3` 模式專打這條路徑（隨機遮罩幾乎不會讓 XYZ 全未遮罩）：3,000,000 次聚焦測試全部相同，刻意改錯 W 來源在第 110 次就被抓到 |
+| `ps2xRuntime` `runtime/ps2_address.h` | `Ps2IsSpecialAddress` 先判斷是否低於 32 MB | 所有特殊區域（BIOS、暫存記憶體、I/O、GS 暫存器、VU 視窗、kseg2/3）都在 RAM 之上，結果不變。測試 `special-address RAM early-out keeps the full classification` 在整個 4 GB 空間與各區域邊界上和完整分類比對。不強制內聯（見 `ps2_runtime_macros.h` 的說明） |
+| `ps2xRuntime` `PS2Runtime::executionFailed()`、`generic_runner` | 一次執行遇到 guest 例外或執行了映像裡沒有的函式（即使缺函式政策是繼續）就為真；通用 runner 此時以 1 結束 | 被捕捉的 guest 例外以前會被當成成功結束回報給 shell。把「執行到缺失目標」視為失敗是一種政策選擇；想要舊行為的移植忽略這個存取函式即可。沒有自動化測試涵蓋 |
+| `ps2xRuntime` `dod_mpeg_dma_ingress.h`、`dod_to_ipu_dma.h` | MPEG DMA ingress 上限的 `capacity()` 與 `DOD_MPEG_INGRESS_KB`（64..8192）；CH4 蒐集使用與佇列相同的上限。預設仍是 2 MB | 有個移植需要 384 KB 上限，讓影片函式庫停掉整個環的 CH4 並只送下一張圖需要的資料；那是個別遊戲的發現，所以只取機制 |
+
+看過但沒收：雙人輸入與逐玩家震動（約 600 行，必須重新併入本基底的輸入模型）、遊戲內選單（依賴較新的 GS 選單表與雙人輸入）、EE 停滯監看的 IOP 領先上限（與本基底的設計相反，頂多做成選用政策）、延遲 VIF1 鏈的記憶化（只有效能，它的差異測試在該移植裡）、各移植專屬的診斷。

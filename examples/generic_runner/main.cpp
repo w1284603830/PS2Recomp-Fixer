@@ -269,9 +269,10 @@ int main(int argc, char *argv[])
             ps2_stubs::dodConfigureIpuInit(iq, vq, helper);
         // MPEG HLE needs an independently verified MpegGameProfile configured here; see GAME_PORTING.md.
         runtime.run();
+        const bool executionFailed = runtime.executionFailed();
         std::cout.flush();
         std::cerr.flush();
-        std::_Exit(0);
+        std::_Exit(executionFailed ? 1 : 0); // a guest exception or an executed missing function is not a success
     }
     catch (const std::exception &e)
     {

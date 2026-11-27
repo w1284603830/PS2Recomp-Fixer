@@ -155,12 +155,15 @@ static uint32_t rnd()
 int main(int argc, char **argv)
 {
     const long trials = argc > 1 ? std::atol(argv[1]) : 2000000L;
+    // "v3": aim at the masked V3-32 fast path (UNPACK V3-32 with the mask bit, XYZ unmasked in the MASK register);
+    // random masks almost never leave XYZ unmasked, so the default mix does not reach it.
+    const bool focusV3 = argc > 2 && std::strcmp(argv[2], "v3") == 0;
     constexpr uint32_t kVuSize = 0x4000u;
     std::vector<uint8_t> memA(kVuSize), memB(kVuSize), data(4096 + 64);
     long perFormat[32] = {};
     for (long t = 0; t < trials; ++t)
     {
-        const uint32_t upk = rnd() & 0x1Fu;
+        const uint32_t upk = focusV3 && (rnd() & 7u) != 0u ? 0x18u : (rnd() & 0x1Fu);
         uint32_t numField = (rnd() & 3u) == 0u ? (rnd() & 0xFFu) : (rnd() % 33u);
         uint32_t cmd = (upk << 24) | (numField << 16) | (rnd() & 0x3FFu) | (rnd() & 0x4000u) | (rnd() & 0x8000u);
         Regs regs;
@@ -173,6 +176,8 @@ int main(int argc, char **argv)
         regs.cycle = (wl << 8) | cl | (rnd() & 0xFFFF0000u);
         regs.mode = rnd();
         regs.mask = rnd() | (rnd() << 16);
+        if (focusV3 && (rnd() & 3u) != 0u)
+            regs.mask &= ~0x3f3f3f3fu; // XYZ unmasked in every mask row; W selector stays random
         regs.tops = rnd() & 0x3FFu;
         for (int i = 0; i < 4; ++i)
             regs.row[i] = rnd() | (rnd() << 16), regs.col[i] = rnd() | (rnd() << 16);

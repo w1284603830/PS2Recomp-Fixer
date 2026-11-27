@@ -444,6 +444,28 @@ void register_ps2_memory_tests()
             t.Equals(ram[2], 0u, "VU1 data write must not reach RDRAM 0x0100C250");
         });
 
+        tc.Run("special-address RAM early-out keeps the full classification", [](TestCase &t)
+        {
+            // Ps2IsSpecialAddress answers "ordinary RAM" first; the answer must equal the unshortcut classification.
+            const auto full = [](uint32_t addr)
+            {
+                return Ps2IsKseg23Address(addr) || Ps2IsPhysicalSpecialAddress(Ps2PhysicalAddress(addr));
+            };
+            uint32_t mismatches = 0u;
+            for (uint64_t a = 0u; a <= 0xFFFFFFFFull; a += 0x1003Fu)
+                mismatches += Ps2IsSpecialAddress(static_cast<uint32_t>(a)) != full(static_cast<uint32_t>(a));
+            const uint32_t edges[] = {0u, PS2_RAM_SIZE - 1u, PS2_RAM_SIZE, PS2_RAM_SIZE + 1u, 0x0FFFFFFFu, 0x10000000u,
+                                      PS2_VU0_CODE_BASE, PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE - 1u,
+                                      PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE, 0x1FBFFFFFu, 0x1FC00000u,
+                                      0x70000000u, 0x70003FFFu, 0x80000000u, 0x81FFFFFFu, 0xA0000000u, 0xBFC00000u};
+            for (const uint32_t addr : edges)
+                mismatches += Ps2IsSpecialAddress(addr) != full(addr);
+            t.Equals(mismatches, 0u, "the early-out must never change the classification");
+            t.IsFalse(Ps2IsSpecialAddress(0u), "RAM start is ordinary memory");
+            t.IsFalse(Ps2IsSpecialAddress(PS2_RAM_SIZE - 1u), "last RAM byte is ordinary memory");
+            t.IsTrue(Ps2IsSpecialAddress(0x70000000u), "scratchpad stays special");
+        });
+
         tc.Run("fast memory helpers wrap safely at RAM boundary", [](TestCase &t)
         {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);

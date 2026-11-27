@@ -1,0 +1,139 @@
+diff --git a/ps2xRuntime/include/ps2_runtime.h b/ps2xRuntime/include/ps2_runtime.h
+index d650300..f1e0ce6 100644
+--- a/ps2xRuntime/include/ps2_runtime.h
++++ b/ps2xRuntime/include/ps2_runtime.h
+@@ -396,0 +397,4 @@ public:
++    // True once a run hit a guest exception or executed a function the recompiled image does not contain (even when
++    // the missing-function policy continues for diagnostics). A runner reads it after run() returns so that such a run
++    // is not reported to the shell as a successful exit.
++    bool executionFailed() const noexcept { return m_executionFailed.load(std::memory_order_acquire); }
+@@ -526,0 +531 @@ private:
++    std::atomic<bool> m_executionFailed{false};
+diff --git a/ps2xRuntime/include/runtime/ps2_address.h b/ps2xRuntime/include/runtime/ps2_address.h
+index ebe1640..3b58ded 100644
+--- a/ps2xRuntime/include/runtime/ps2_address.h
++++ b/ps2xRuntime/include/runtime/ps2_address.h
+@@ -57,0 +58,4 @@ static inline constexpr bool Ps2IsPhysicalSpecialAddress(uint32_t physAddr)
++// Every READ*/WRITE* of the generated code asks this. Ordinary RAM (below 32 MB) is answered first: every special
++// region (BIOS, scratchpad, I/O, GS privileged registers, the VU window, kseg2/3) lies above it, so the answer is the
++// same and the common case is one compare. Not forced inline: see the note on the fast RAM helpers in
++// ps2_runtime_macros.h (forcing inline doubled the largest generated function's frame).
+@@ -59,0 +64,2 @@ static inline constexpr bool Ps2IsSpecialAddress(uint32_t addr)
++    if (addr < PS2_RAM_SIZE)
++        return false;
+diff --git a/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h b/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h
+index 4966223..f692f29 100644
+--- a/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h
++++ b/ps2xRuntime/src/lib/dod_mpeg_dma_ingress.h
+@@ -5,0 +6 @@
++#include <cstdlib>
+@@ -11,0 +13,4 @@ namespace dod_mpeg_dma
++    // Staging bound of one CH4 transaction and of this queue. A port whose movie library starts every picture's CH4
++    // with its whole video ring can need a smaller bound (a refused oversized chain makes the library send only what the
++    // next picture needs, as on hardware); that is a per-game finding, so the default stays 2 MB and DOD_MPEG_INGRESS_KB
++    // (64..8192) overrides it for tests and ports.
+@@ -47,0 +53 @@ namespace dod_mpeg_dma
++        size_t capacity() const { return capacity_; }
+@@ -102 +108,11 @@ namespace dod_mpeg_dma
+-    inline Ingress &ingress() { static Ingress value; return value; }
++    inline size_t configuredCapacity()
++    {
++        if (const char *v = std::getenv("DOD_MPEG_INGRESS_KB"))
++        {
++            const long kb = std::strtol(v, nullptr, 10);
++            if (kb >= 64 && kb <= 8192)
++                return static_cast<size_t>(kb) * 1024u;
++        }
++        return kCapacityBytes;
++    }
++    inline Ingress &ingress() { static Ingress value(configuredCapacity()); return value; }
+diff --git a/ps2xRuntime/src/lib/dod_to_ipu_dma.h b/ps2xRuntime/src/lib/dod_to_ipu_dma.h
+index abc374f..a982ca2 100644
+--- a/ps2xRuntime/src/lib/dod_to_ipu_dma.h
++++ b/ps2xRuntime/src/lib/dod_to_ipu_dma.h
+@@ -133 +133 @@ namespace dod_mpeg_dma
+-            try { transfer_ = gather(registers, chcr, resolve, advance, kCapacityBytes, true); }
++            try { transfer_ = gather(registers, chcr, resolve, advance, ingress().capacity(), true); } // same bound as the queue
+diff --git a/ps2xRuntime/src/lib/dod_vif1_unpack.h b/ps2xRuntime/src/lib/dod_vif1_unpack.h
+index 3d7ea92..050eb03 100644
+--- a/ps2xRuntime/src/lib/dod_vif1_unpack.h
++++ b/ps2xRuntime/src/lib/dod_vif1_unpack.h
+@@ -43,0 +44,37 @@ namespace dod_vif1_unpack
++            // V3-32 vertex streams frequently supply XYZ and select the W lane from a row, column or existing VU
++            // memory. When XYZ is unmasked in every active mask row (skipping mode, STMOD off), copy the 12-byte
++            // input as one unit; the W source may change on each write cycle. Same bytes, address and write-cycle
++            // stepping as the general loop below; the differential harness (tools/diag/vif1_unpack_diff) compares them.
++            if constexpr (VNVL == 8u && MASK && MODE == 0u)
++            {
++                if (!isFill && (regs.mask & 0x3f3f3f3fu) == 0u && static_cast<uint64_t>(num) * 12u <= dataBytes)
++                {
++                    uint32_t cycle = 0u;
++                    for (uint32_t n = 0; n < num; ++n)
++                    {
++                        const uint32_t lane = cycle < 3u ? cycle : 3u;
++                        const uint32_t offset = n * 12u;
++                        uint8_t *dest = vuMem + (addr & memMask);
++                        const uint32_t selector = (regs.mask >> (lane * 8u + 6u)) & 3u;
++                        uint32_t w = 0u;
++                        if (selector == 0u && offset + 16u <= dataBytes)
++                            std::memcpy(&w, data + offset + 12u, 4u);
++                        else if (selector == 1u)
++                            w = regs.row[3];
++                        else if (selector == 2u)
++                            w = regs.col[lane];
++                        std::memmove(dest, data + offset, 12u);
++                        if (selector != 3u)
++                            std::memcpy(dest + 12u, &w, 4u);
++                        addr += 16u;
++                        if (++cycle == wl)
++                        {
++                            cycle = 0u;
++                            addr += skipBytes;
++                        }
++                    }
++                    regs.num = 0u;
++                    return;
++                }
++            }
++
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 58e5c53..86fe667 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -1511,0 +1512,3 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
++    // A missing target that was actually executed is a failed run, even if the configured policy continues for
++    // diagnostics and the player later quits.
++    m_executionFailed.store(true, std::memory_order_release);
+@@ -2926,0 +2930 @@ void PS2Runtime::run()
++    m_executionFailed.store(false, std::memory_order_relaxed);
+@@ -2972,0 +2977 @@ void PS2Runtime::run()
++            m_executionFailed.store(true, std::memory_order_release);
+@@ -2976,0 +2982 @@ void PS2Runtime::run()
++            m_executionFailed.store(true, std::memory_order_release);
+diff --git a/ps2xTest/src/ps2_memory_tests.cpp b/ps2xTest/src/ps2_memory_tests.cpp
+index 0a2d04f..570b396 100644
+--- a/ps2xTest/src/ps2_memory_tests.cpp
++++ b/ps2xTest/src/ps2_memory_tests.cpp
+@@ -446,0 +447,22 @@ void register_ps2_memory_tests()
++        tc.Run("special-address RAM early-out keeps the full classification", [](TestCase &t)
++        {
++            // Ps2IsSpecialAddress answers "ordinary RAM" first; the answer must equal the unshortcut classification.
++            const auto full = [](uint32_t addr)
++            {
++                return Ps2IsKseg23Address(addr) || Ps2IsPhysicalSpecialAddress(Ps2PhysicalAddress(addr));
++            };
++            uint32_t mismatches = 0u;
++            for (uint64_t a = 0u; a <= 0xFFFFFFFFull; a += 0x1003Fu)
++                mismatches += Ps2IsSpecialAddress(static_cast<uint32_t>(a)) != full(static_cast<uint32_t>(a));
++            const uint32_t edges[] = {0u, PS2_RAM_SIZE - 1u, PS2_RAM_SIZE, PS2_RAM_SIZE + 1u, 0x0FFFFFFFu, 0x10000000u,
++                                      PS2_VU0_CODE_BASE, PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE - 1u,
++                                      PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE, 0x1FBFFFFFu, 0x1FC00000u,
++                                      0x70000000u, 0x70003FFFu, 0x80000000u, 0x81FFFFFFu, 0xA0000000u, 0xBFC00000u};
++            for (const uint32_t addr : edges)
++                mismatches += Ps2IsSpecialAddress(addr) != full(addr);
++            t.Equals(mismatches, 0u, "the early-out must never change the classification");
++            t.IsFalse(Ps2IsSpecialAddress(0u), "RAM start is ordinary memory");
++            t.IsFalse(Ps2IsSpecialAddress(PS2_RAM_SIZE - 1u), "last RAM byte is ordinary memory");
++            t.IsTrue(Ps2IsSpecialAddress(0x70000000u), "scratchpad stays special");
++        });
++
