@@ -633,3 +633,10 @@ index 3035618..ffaa487 100644
 @@ -334 +401 @@ int main()
 -        !testTimrmanPeriodicCallback())
 +        !testTimrmanPeriodicCallback() || !testSysmemUnifiedPool())
+diff --git a/ps2xTest/src/ps2_sif_dma_tests.cpp b/ps2xTest/src/ps2_sif_dma_tests.cpp
+index aace83c..9c4259a 100644
+--- a/ps2xTest/src/ps2_sif_dma_tests.cpp
++++ b/ps2xTest/src/ps2_sif_dma_tests.cpp
+@@ -203 +203 @@ void register_ps2_sif_dma_tests()
+-            t.IsTrue(iopAddress >= 0x00120000u && iopAddress < 0x00200000u,
++            t.IsTrue(iopAddress >= 0x00010000u && iopAddress < 0x00200000u, // the unified IOP arena (0x10000..0x1F0000)
