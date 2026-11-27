@@ -209,3 +209,14 @@ SDE, not on a real old CPU. Patch delta: `patches/PS2Recomp_fixer_compat_perf_20
 
 Not included: a real pre-AVX or integrated-GPU run, MPEG-HLE playback, and any other game's behaviour. The guide lists the
 switches and a checklist for a new port.
+## 16. 2026-11-27: VCALLMSR and the VU memory window (hardware semantics)
+
+Two EE-side defects found while porting one game and checked against the EE manuals and PCSX2. Both are hardware
+behaviour, independent of any game. Patch delta: `patches/PS2Recomp_vu_window_vcallmsr_20261127.diff`.
+
+| Where | What | Why / reference |
+|---|---|---|
+| `ps2xRecomp` `vu_translation_helpers.cpp` | `VCALLMSR` starts the VU0 microprogram at CMSAR0 (`(ctx->vu0_cmsar0 & 0x1FF) << 3`). The generated code used to read `ctx->vi[27]` | VCALLMSR's only encoding names VI27, which is CMSAR0 in the CTC2/CFC2 numbering (EE Core Instruction Set Manual; PCSX2 reads `VU0.VI[REG_CMSAR0]`). `ctx->vi[]` holds VI0..VI15, so the old code read past the array and started VU0 at an unrelated address. Test `VCALLMSR starts VU0 at CMSAR0` |
+| `ps2xRuntime` `runtime/ps2_address.h` | The special-address window covers all four VU memories, VU0 micro `0x11000000` through VU1 data `0x1100FFFF`. It used to start at VU0 data and stop at the end of VU1 micro | Generated stores to VU1 data memory (and VU0 micro memory) took the RAM fast path, were masked into RDRAM and never reached VU1. Test `generated stores treat the whole VU window as special and reach VU1 data` (bounds, KSEG1 alias, a 128-bit store landing in VU1 data and not in RDRAM) |
+
+Not included from the same port: its VIF1 flight recorder and other diagnostics.

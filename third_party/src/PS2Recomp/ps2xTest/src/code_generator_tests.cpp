@@ -1056,6 +1056,28 @@ void register_code_generator_tests()
                 t.IsTrue(ctc2Code.find("Unimplemented") == std::string::npos, "CTC2 VI4 should be implemented");
         });
 
+        tc.Run("VCALLMSR starts VU0 at CMSAR0", [](TestCase& t)
+            {
+                CodeGenerator gen({}, {});
+
+                Instruction ctc2{};
+                ctc2.opcode = OPCODE_COP2;
+                ctc2.rs = COP2_CTC2;
+                ctc2.rt = 4;
+                ctc2.rd = VU0_CR_CMSAR0;
+                const std::string ctc2Code = gen.translateInstruction(ctc2);
+                t.IsTrue(ctc2Code.find("ctx->vu0_cmsar0 = GPR_U32(ctx, 4)") != std::string::npos, "CTC2 $vi27 should write CMSAR0");
+
+                Instruction call{};
+                call.raw = 0x4A00D839u; // vcallmsr $vi27 (the only encoding)
+                call.rd = VU0_CR_CMSAR0;
+                const std::string callCode = gen.translateVU_VCALLMSR(call);
+                printGeneratedCode("VCALLMSR starts VU0 at CMSAR0", callCode);
+                t.IsTrue(callCode.find("ctx->vu0_cmsar0 & 0x1FFu") != std::string::npos, "VCALLMSR should read CMSAR0");
+                t.IsTrue(callCode.find("ctx->vi[") == std::string::npos, "VCALLMSR must not index the 16-entry VI array");
+                t.IsTrue(callCode.find("vu0StartMicroProgram") != std::string::npos, "VCALLMSR should start the microprogram");
+        });
+
         tc.Run("VU special control registers use hardware indices", [](TestCase& t)
             {
                 CodeGenerator gen({}, {});

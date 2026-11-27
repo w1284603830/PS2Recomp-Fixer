@@ -11,6 +11,12 @@ global `core.autocrlf=true` run it with `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=cor
 the g++ suites run in CI only. No game was run for this entry: the IPU, MPEG, GS-open fallback, scheduling and crash
 paths compile and link but are not exercised here, and the pre-AVX behaviour rests on the source port's Intel SDE runs
 (one host: i5-12400F, discrete GPU, Windows 10), not on a real old CPU or an integrated GPU.
+**2026-11-27, VCALLMSR and the VU memory window (`maint/20261127-vu-window-fixes`, on `main` `c5a7148`):** two
+hardware-semantics fixes ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 16). Windows/MSVC (VS 2022 Build Tools),
+`build_all.ps1` from an empty build folder with the pinned dependencies linked from another checkout: kzvu, pcsx2gs and
+PS2Recomp (including `ps2EntryRunner`) built; `ps2x_tests` 466 cases, 442 passed, 24 named known differences (the same
+list as the entries below; the two new cases are the added passes); IOP suites 6/6; GS cache 45/45. The patch-series
+parity check passes with the new delta (see the autocrlf note in the maintenance entry below). No game was run.
 
 **2026-11-12, run-time code overlays (`feature/overlay-registry`, on `main` `eff29a5`):** opt-in overlay registry and
 `[overlay]` recompiler input ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 14). Fresh clone of `ccdde21` with an LF

@@ -416,6 +416,34 @@ void register_ps2_memory_tests()
             t.Equals(words[3], 0x44556677u, "VU0 data lane 3 should match");
         });
 
+        tc.Run("generated stores treat the whole VU window as special and reach VU1 data", [](TestCase &t)
+        {
+            // Generated WRITE*/READ* macros take the RAM fast path (address & PS2_RAM_MASK) unless Ps2IsSpecialAddress.
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU0_CODE_BASE), "VU0 micro memory must be special");
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU0_DATA_BASE + 0x10u), "VU0 data memory must be special");
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_CODE_BASE + 0x3FF8u), "VU1 micro memory must be special");
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE), "VU1 data memory start must be special");
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + 0x250u), "VU1 data qword 0x25 must be special");
+            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE - 16u), "VU1 data memory end must be special");
+            t.IsTrue(Ps2IsSpecialAddress(0xB100C250u), "KSEG1 alias of VU1 data memory must be special");
+            t.IsFalse(Ps2IsSpecialAddress(0x0100C250u), "RDRAM below the VU window stays on the fast path");
+            t.IsFalse(Ps2IsSpecialAddress(0x10FFFFF0u), "addresses below the VU window keep their previous classification");
+            t.IsFalse(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE), "the window ends after VU1 data memory");
+
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            std::memset(mem.getVU1Data(), 0, PS2_VU1_DATA_SIZE);
+            const __m128i value = _mm_set_epi32(0x00000060, 0x0000002D, 0x00000000, 0x00000001);
+            mem.write128(PS2_VU1_DATA_BASE + 0x250u, value);
+            uint32_t words[4]{};
+            std::memcpy(words, mem.getVU1Data() + 0x250u, sizeof(words));
+            t.Equals(words[2], 0x2Du, "VU1 data write should land in VU1 data memory (kick address)");
+            t.Equals(words[3], 0x60u, "VU1 data write should land in VU1 data memory (w lane)");
+            uint32_t ram[4]{};
+            std::memcpy(ram, mem.getRDRAM() + 0x0100C250u, sizeof(ram));
+            t.Equals(ram[2], 0u, "VU1 data write must not reach RDRAM 0x0100C250");
+        });
+
         tc.Run("fast memory helpers wrap safely at RAM boundary", [](TestCase &t)
         {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
