@@ -16,6 +16,7 @@ git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_storage_bounds_20261106.d
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_path_utf8_20261106.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_maint_20261112.diff
 git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_overlays_20261112.diff
+git apply -p1 --unidiff-zero <Fixer>/patches/PS2Recomp_vu_window_vcallmsr_20261127.diff
 ```
 
 The incremental patch uses zero context to carry only the shared changes, so `--unidiff-zero` is required. Apply it

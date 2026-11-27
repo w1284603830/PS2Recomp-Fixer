@@ -185,3 +185,15 @@ Patch delta: `patches/PS2Recomp_overlays_20261112.diff`.
 | `ps2xRecomp` `elf_parser.[h,cpp]` | Raw images: a file without the ELF magic is presented as an in-memory ELF (data / `.text` / data / `.bss` at the load address), so the existing function discovery, Ghidra maps and `entry_points` work unchanged | |
 | `ps2xRecomp` `ps2_recompiler.cpp`, `code_generator.[h,cpp]`, `function_emitter.cpp`, `function_table_emitter.[h,cpp]` | Overlay output: namespace `ps2x_overlay_<name>`, files `<name>_*` with relative includes, no ELF bootstrap and no dense table; `<name>_overlay.cpp/.h` hold the entry table (same entries, resume targets and stubs as the main table), the signature read from the image, `ps2x_register_overlay_<name>()` and the catalog entry. The signature must be initialized image data and every function must lie inside the image | Several images with identical guest addresses and function names link into one executable |
 | `ps2xTest/src/ps2_overlay_tests.cpp`, `tests/overlay_registry_tests.cpp`, `tests/test_overlay_registry.py` | 16 `ps2x_tests` cases (registry, `PS2Runtime` dispatch and `loadELF` clearing, `[overlay]` parsing, raw and ELF input, single-file and per-function output, rejected inputs) and a standalone registry test run by CTest (MSVC) and by g++ with ASan/UBSan, including concurrent lookups that keep moving the resident cache | Synthetic images and addresses only |
+
+## 16. 2026-11-27: VCALLMSR and the VU memory window (hardware semantics)
+
+Two EE-side defects found while porting one game and checked against the EE manuals and PCSX2. Both are hardware
+behaviour, independent of any game. Patch delta: `patches/PS2Recomp_vu_window_vcallmsr_20261127.diff`.
+
+| Where | What | Why / reference |
+|---|---|---|
+| `ps2xRecomp` `vu_translation_helpers.cpp` | `VCALLMSR` starts the VU0 microprogram at CMSAR0 (`(ctx->vu0_cmsar0 & 0x1FF) << 3`). The generated code used to read `ctx->vi[27]` | VCALLMSR's only encoding names VI27, which is CMSAR0 in the CTC2/CFC2 numbering (EE Core Instruction Set Manual; PCSX2 reads `VU0.VI[REG_CMSAR0]`). `ctx->vi[]` holds VI0..VI15, so the old code read past the array and started VU0 at an unrelated address. Test `VCALLMSR starts VU0 at CMSAR0` |
+| `ps2xRuntime` `runtime/ps2_address.h` | The special-address window covers all four VU memories, VU0 micro `0x11000000` through VU1 data `0x1100FFFF`. It used to start at VU0 data and stop at the end of VU1 micro | Generated stores to VU1 data memory (and VU0 micro memory) took the RAM fast path, were masked into RDRAM and never reached VU1. Test `generated stores treat the whole VU window as special and reach VU1 data` (bounds, KSEG1 alias, a 128-bit store landing in VU1 data and not in RDRAM) |
+
+Not included from the same port: its VIF1 flight recorder and other diagnostics.

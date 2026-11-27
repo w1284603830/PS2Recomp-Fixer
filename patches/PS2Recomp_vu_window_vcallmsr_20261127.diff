@@ -1,0 +1,99 @@
+diff --git a/ps2xRecomp/src/lib/vu_translation_helpers.cpp b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+index e2f66fe..85d2484 100644
+--- a/ps2xRecomp/src/lib/vu_translation_helpers.cpp
++++ b/ps2xRecomp/src/lib/vu_translation_helpers.cpp
+@@ -170,11 +170,11 @@ namespace ps2recomp
+-        // VCALLMSR calls a VU0 microprogram at address stored in integer register
+-        uint8_t vis_reg_idx = inst.rd; // Source integer register (vis)
+-
+-        return fmt::format(
+-            "{{ "
+-            "    uint16_t instr_index = ctx->vi[{}] & 0x1FF; "             // Get instruction index from VI[IS], mask to 9 bits
+-            "    uint32_t target_byte_addr = (uint32_t)instr_index << 3; " // Convert to byte address
+-            "    ctx->vu0_pc = target_byte_addr; "
+-            "    runtime->vu0StartMicroProgram(rdram, ctx, target_byte_addr); "
+-            "}}",
+-            vis_reg_idx);
++        // VCALLMSR starts the VU0 microprogram at CMSAR0. Its only encoding names VI27, which is CMSAR0 in the
++        // CTC2/CFC2 numbering (EE Core Instruction Set Manual; PCSX2 VCALLMSR reads VU0.VI[REG_CMSAR0]). CTC2 $vi27 writes
++        // ctx->vu0_cmsar0, the start in 8-byte units; VU0 micro memory holds 512 instructions. ctx->vi[] holds only
++        // VI0..VI15, so reading ctx->vi[27] read past the array (the bytes of the R register) and started VU0 at an
++        // unrelated address.
++        (void)inst;
++        return "{ "
++               "    uint32_t target_byte_addr = (ctx->vu0_cmsar0 & 0x1FFu) << 3; "
++               "    ctx->vu0_pc = target_byte_addr; "
++               "    runtime->vu0StartMicroProgram(rdram, ctx, target_byte_addr); "
++               "}";
+diff --git a/ps2xRuntime/include/runtime/ps2_address.h b/ps2xRuntime/include/runtime/ps2_address.h
+index f7689e0..ebe1640 100644
+--- a/ps2xRuntime/include/runtime/ps2_address.h
++++ b/ps2xRuntime/include/runtime/ps2_address.h
+@@ -50 +50,6 @@ static inline constexpr bool Ps2IsPhysicalSpecialAddress(uint32_t physAddr)
+-           (physAddr >= PS2_VU0_DATA_BASE && physAddr < (PS2_VU1_CODE_BASE + PS2_VU1_CODE_SIZE));
++           // The whole VU window: VU0 micro 0x11000000, VU0 data 0x11004000, VU1 micro 0x11008000 and VU1 data
++           // 0x1100C000-0x1100FFFF (EE User's Manual memory map; PS2Memory::mapVuMemory maps all four). The range used to
++           // start at VU0 data and stop at the end of VU1 micro memory, so generated stores to VU1 data memory (and VU0
++           // micro memory) took the RAM fast path: masked to RDRAM 0x0100C000+, they overwrote main RAM and never reached
++           // VU1. A game that writes its VU1 kick addresses and projection constants to VU1 data memory hit this.
++           (physAddr >= PS2_VU0_CODE_BASE && physAddr < (PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE));
+diff --git a/ps2xTest/src/code_generator_tests.cpp b/ps2xTest/src/code_generator_tests.cpp
+index 463b6cf..e331d3b 100644
+--- a/ps2xTest/src/code_generator_tests.cpp
++++ b/ps2xTest/src/code_generator_tests.cpp
+@@ -1058,0 +1059,22 @@ void register_code_generator_tests()
++        tc.Run("VCALLMSR starts VU0 at CMSAR0", [](TestCase& t)
++            {
++                CodeGenerator gen({}, {});
++
++                Instruction ctc2{};
++                ctc2.opcode = OPCODE_COP2;
++                ctc2.rs = COP2_CTC2;
++                ctc2.rt = 4;
++                ctc2.rd = VU0_CR_CMSAR0;
++                const std::string ctc2Code = gen.translateInstruction(ctc2);
++                t.IsTrue(ctc2Code.find("ctx->vu0_cmsar0 = GPR_U32(ctx, 4)") != std::string::npos, "CTC2 $vi27 should write CMSAR0");
++
++                Instruction call{};
++                call.raw = 0x4A00D839u; // vcallmsr $vi27 (the only encoding)
++                call.rd = VU0_CR_CMSAR0;
++                const std::string callCode = gen.translateVU_VCALLMSR(call);
++                printGeneratedCode("VCALLMSR starts VU0 at CMSAR0", callCode);
++                t.IsTrue(callCode.find("ctx->vu0_cmsar0 & 0x1FFu") != std::string::npos, "VCALLMSR should read CMSAR0");
++                t.IsTrue(callCode.find("ctx->vi[") == std::string::npos, "VCALLMSR must not index the 16-entry VI array");
++                t.IsTrue(callCode.find("vu0StartMicroProgram") != std::string::npos, "VCALLMSR should start the microprogram");
++        });
++
+diff --git a/ps2xTest/src/ps2_memory_tests.cpp b/ps2xTest/src/ps2_memory_tests.cpp
+index 8a76c36..0a2d04f 100644
+--- a/ps2xTest/src/ps2_memory_tests.cpp
++++ b/ps2xTest/src/ps2_memory_tests.cpp
+@@ -418,0 +419,28 @@ void register_ps2_memory_tests()
++        tc.Run("generated stores treat the whole VU window as special and reach VU1 data", [](TestCase &t)
++        {
++            // Generated WRITE*/READ* macros take the RAM fast path (address & PS2_RAM_MASK) unless Ps2IsSpecialAddress.
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU0_CODE_BASE), "VU0 micro memory must be special");
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU0_DATA_BASE + 0x10u), "VU0 data memory must be special");
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_CODE_BASE + 0x3FF8u), "VU1 micro memory must be special");
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE), "VU1 data memory start must be special");
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + 0x250u), "VU1 data qword 0x25 must be special");
++            t.IsTrue(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE - 16u), "VU1 data memory end must be special");
++            t.IsTrue(Ps2IsSpecialAddress(0xB100C250u), "KSEG1 alias of VU1 data memory must be special");
++            t.IsFalse(Ps2IsSpecialAddress(0x0100C250u), "RDRAM below the VU window stays on the fast path");
++            t.IsFalse(Ps2IsSpecialAddress(0x10FFFFF0u), "addresses below the VU window keep their previous classification");
++            t.IsFalse(Ps2IsSpecialAddress(PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE), "the window ends after VU1 data memory");
++
++            PS2Memory mem;
++            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
++            std::memset(mem.getVU1Data(), 0, PS2_VU1_DATA_SIZE);
++            const __m128i value = _mm_set_epi32(0x00000060, 0x0000002D, 0x00000000, 0x00000001);
++            mem.write128(PS2_VU1_DATA_BASE + 0x250u, value);
++            uint32_t words[4]{};
++            std::memcpy(words, mem.getVU1Data() + 0x250u, sizeof(words));
++            t.Equals(words[2], 0x2Du, "VU1 data write should land in VU1 data memory (kick address)");
++            t.Equals(words[3], 0x60u, "VU1 data write should land in VU1 data memory (w lane)");
++            uint32_t ram[4]{};
++            std::memcpy(ram, mem.getRDRAM() + 0x0100C250u, sizeof(ram));
++            t.Equals(ram[2], 0u, "VU1 data write must not reach RDRAM 0x0100C250");
++        });
++

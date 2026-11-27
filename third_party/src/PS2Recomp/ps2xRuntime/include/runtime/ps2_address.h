@@ -47,7 +47,12 @@ static inline constexpr bool Ps2IsPhysicalSpecialAddress(uint32_t physAddr)
            Ps2AddressInRange(physAddr, PS2_SCRATCHPAD_BASE, PS2_SCRATCHPAD_SIZE) ||
            Ps2AddressInRange(physAddr, PS2_IO_BASE, PS2_IO_SIZE) ||
            Ps2AddressInRange(physAddr, PS2_GS_PRIV_REG_BASE, PS2_GS_PRIV_REG_SIZE) ||
-           (physAddr >= PS2_VU0_DATA_BASE && physAddr < (PS2_VU1_CODE_BASE + PS2_VU1_CODE_SIZE));
+           // The whole VU window: VU0 micro 0x11000000, VU0 data 0x11004000, VU1 micro 0x11008000 and VU1 data
+           // 0x1100C000-0x1100FFFF (EE User's Manual memory map; PS2Memory::mapVuMemory maps all four). The range used to
+           // start at VU0 data and stop at the end of VU1 micro memory, so generated stores to VU1 data memory (and VU0
+           // micro memory) took the RAM fast path: masked to RDRAM 0x0100C000+, they overwrote main RAM and never reached
+           // VU1. A game that writes its VU1 kick addresses and projection constants to VU1 data memory hit this.
+           (physAddr >= PS2_VU0_CODE_BASE && physAddr < (PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE));
 }
 
 static inline constexpr bool Ps2IsSpecialAddress(uint32_t addr)

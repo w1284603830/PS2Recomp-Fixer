@@ -167,17 +167,17 @@ namespace ps2recomp
 
     std::string CodeGenerator::translateVU_VCALLMSR(const Instruction &inst)
     {
-        // VCALLMSR calls a VU0 microprogram at address stored in integer register
-        uint8_t vis_reg_idx = inst.rd; // Source integer register (vis)
-
-        return fmt::format(
-            "{{ "
-            "    uint16_t instr_index = ctx->vi[{}] & 0x1FF; "             // Get instruction index from VI[IS], mask to 9 bits
-            "    uint32_t target_byte_addr = (uint32_t)instr_index << 3; " // Convert to byte address
-            "    ctx->vu0_pc = target_byte_addr; "
-            "    runtime->vu0StartMicroProgram(rdram, ctx, target_byte_addr); "
-            "}}",
-            vis_reg_idx);
+        // VCALLMSR starts the VU0 microprogram at CMSAR0. Its only encoding names VI27, which is CMSAR0 in the
+        // CTC2/CFC2 numbering (EE Core Instruction Set Manual; PCSX2 VCALLMSR reads VU0.VI[REG_CMSAR0]). CTC2 $vi27 writes
+        // ctx->vu0_cmsar0, the start in 8-byte units; VU0 micro memory holds 512 instructions. ctx->vi[] holds only
+        // VI0..VI15, so reading ctx->vi[27] read past the array (the bytes of the R register) and started VU0 at an
+        // unrelated address.
+        (void)inst;
+        return "{ "
+               "    uint32_t target_byte_addr = (ctx->vu0_cmsar0 & 0x1FFu) << 3; "
+               "    ctx->vu0_pc = target_byte_addr; "
+               "    runtime->vu0StartMicroProgram(rdram, ctx, target_byte_addr); "
+               "}";
     }
 
     // [DoD] R is one 32-bit register, 0x3F800000 | 23-bit mantissa (a float in [1, 2)), kept in every lane of vu0_r.
