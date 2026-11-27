@@ -546,17 +546,20 @@ void dodVif1ChainNotesAround(uint32_t offset)
 }
 void dodVif1Event(const char *what, uint32_t value, uint32_t extra); // [DoD] ps2_vif1_interpreter.cpp: DOD_VIF_EVENTS
 
-// Called by the VIF1 interpreter before it uses chain bytes [0, endOffset).
-void dodVif1Ensure(const uint8_t *data, uint32_t endOffset)
+// Called by the VIF1 interpreter before it uses chain bytes [0, endOffset). Returns the chain offset of the first
+// segment that is still not copied (every byte below it is ready), or UINT32_MAX when nothing is left to copy or the
+// buffer is not the active lazy chain. The caller remembers it and does not ask again for bytes below it: a segment
+// is copied only when its data is first needed, so the copy still happens as late as before.
+uint32_t dodVif1Ensure(const uint8_t *data, uint32_t endOffset)
 {
     DodLazyChain *chain = g_dodActiveVif1Chain;
     if (!chain || chain->buffer != data)
-        return;
+        return UINT32_MAX;
     while (chain->materialized < chain->segments.size())
     {
         const DodChainSegment &seg = chain->segments[chain->materialized];
         if (seg.offset >= endOffset)
-            break;
+            return seg.offset;
         if (!seg.literal)
         {
             const uint8_t *base = seg.scratchpad ? chain->scratchpad : chain->rdram;
@@ -575,6 +578,7 @@ void dodVif1Ensure(const uint8_t *data, uint32_t endOffset)
         }
         ++chain->materialized;
     }
+    return UINT32_MAX;
 }
 
 namespace

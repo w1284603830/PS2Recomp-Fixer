@@ -11,3 +11,4 @@ PS2Recomp_fixer_compat_perf_20261127.diff
 PS2Recomp_vu_window_vcallmsr_20261127.diff
 PS2Recomp_iop_arena_waiteventflag_20261127.diff
 PS2Recomp_vif_hostsvc_20261127.diff
+PS2Recomp_iop_lead_vif_memo_20261127.diff

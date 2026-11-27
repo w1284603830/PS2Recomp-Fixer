@@ -1,5 +1,14 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-27, capped IOP lead and the lazy VIF1 chain memo (`maint/20261127-iop-lead-vif-memo`, on `main` `10a8b76`):**
+two items from the DoD and Onimusha 3 trees ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 19). Windows/MSVC (VS 2022 Build
+Tools), `build_all.ps1` with the pinned dependencies linked from another checkout, run on the tree with only the new test
+and again with the memo: kzvu, pcsx2gs and PS2Recomp (including `ps2EntryRunner`) built; `ps2x_tests` 468 cases, 444
+passed, 24 named known differences (the same list as the entries below) both times; IOP suites 6/6; GS cache 45/45. The
+new lazy-chain test passes before and after the memo and fails with `DOD_NOLAZY=1`. `host_timing_tests` (compiled with
+MSVC, all `iop-lead` assertions plus the existing modes) pass; the g++ run is CI only. The VIF1 query count was not
+re-measured and no game was run; `DOD_EE_STALL_WATCHDOG=capped` has no automated test beyond the arithmetic.
+
 **2026-11-27, VIF1 V3-32 path, address check, run result and MPEG ingress bound (`maint/20261127-vif-hostsvc`, on `main`
 `296e57b`):** four small items selected from the DoD and Onimusha 3 trees ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 18).
 Windows/MSVC (VS 2022 Build Tools), `build_all.ps1` from an empty build folder with the pinned dependencies linked from

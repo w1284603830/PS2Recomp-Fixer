@@ -1,8 +1,10 @@
 #include "ps2_gs_pacing.h"
 #include "dod_host_pacer.h"
+#include "ps2_iop_lead.h"
 #include "GS/HostTuning.h"
 
 #include <cassert>
+#include <cstdint>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -48,6 +50,26 @@ int main(int argc, char** argv)
         assert(events[0].hostDeadline == now + microseconds(12500));
         ps2host::shiftHostDeadlines(events, 0, 0);
         assert(events[1].hostDeadline == now + microseconds(29500));
+    }
+    else if (mode == "iop-lead")
+    {
+        constexpr uint64_t lead = ps2host::kMaxIopLeadCycles;
+        static_assert(lead == 4920115ull, "one NTSC field of EE cycles");
+        // The EE keeps up (or is ahead of the line): the budget is the EE count, never below it.
+        assert(ps2host::iopBudget(1000u, 1000u) == 1000u);
+        assert(ps2host::iopBudget(1000u, 10u) == 1000u);
+        assert(ps2host::iopBudget(0u, 0u) == 0u);
+        // A short stall: the IOP follows the line.
+        assert(ps2host::iopBudget(1000u, 1000u + lead - 1u) == 1000u + lead - 1u);
+        assert(ps2host::iopBudget(1000u, 1000u + lead) == 1000u + lead);
+        // A long stall: at most one field ahead of the EE.
+        assert(ps2host::iopBudget(1000u, 1000u + lead + 1u) == 1000u + lead);
+        assert(ps2host::iopBudget(0u, UINT64_MAX) == lead);
+        assert(ps2host::iopBudget(1000u, 5000000000ull, 50u) == 1050u);
+        // Near the top of the range the sum must not wrap.
+        assert(ps2host::iopBudget(UINT64_MAX - 10u, UINT64_MAX) == UINT64_MAX);
+        assert(ps2host::iopBudget(UINT64_MAX, UINT64_MAX) == UINT64_MAX);
+        assert(ps2host::iopBudget(UINT64_MAX - 10u, 5u) == UINT64_MAX - 10u);
     }
     else if (mode == "overflow")
     {

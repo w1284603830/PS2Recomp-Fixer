@@ -38,6 +38,15 @@ fails or the CPU copy was evicted, lookup retains its synchronous fallback. Comp
 cache bytes once. Existing `texture_threads` and `texture_cache_mb` settings apply; preloading does not pin textures
 or create an unlimited separate cache. Choose the list and memory budget from each port's measurements.
 
+## EE stall watchdog and the IOP lead
+
+While the EE thread is blocked (a disc read, shader compilation) the watchdog lets the IOP follow a real-time line so the
+sound queue does not run dry; the EE clock itself is never changed. `DOD_EE_STALL_WATCHDOG=0` disables it and
+`DOD_EE_STALL_WATCHDOG=capped` bounds the IOP's lead over the EE to one field (`ps2_iop_lead.h`): a longer pause then
+pauses the sound too. Use `capped` only for a port whose speech or music was observed running ahead of the picture
+after a stall, and check that the audio queue does not underrun on that port's heaviest loads; the default is the
+unbounded line.
+
 ## Verification and audio boundary
 
 Compare compensation/legacy, drain off/selected, and DXGI default/selected separately, with and without the diagnostic

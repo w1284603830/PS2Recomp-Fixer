@@ -187,3 +187,12 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRuntime` `dod_mpeg_dma_ingress.h`、`dod_to_ipu_dma.h` | MPEG DMA ingress 上限的 `capacity()` 與 `DOD_MPEG_INGRESS_KB`（64..8192）；CH4 蒐集使用與佇列相同的上限。預設仍是 2 MB | 有個移植需要 384 KB 上限，讓影片函式庫停掉整個環的 CH4 並只送下一張圖需要的資料；那是個別遊戲的發現，所以只取機制 |
 
 看過但沒收：雙人輸入與逐玩家震動（約 600 行，必須重新併入本基底的輸入模型）、遊戲內選單（依賴較新的 GS 選單表與雙人輸入）、EE 停滯監看的 IOP 領先上限（與本基底的設計相反，頂多做成選用政策）、延遲 VIF1 鏈的記憶化（只有效能，它的差異測試在該移植裡）、各移植專屬的診斷。
+
+## 十九、2026-11-27：IOP 領先上限（選用）與延遲 VIF1 鏈記憶化
+
+第十八節「沒收」清單裡後來又收進來的兩項。增量補丁：`patches/PS2Recomp_iop_lead_vif_memo_20261127.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xRuntime` `ps2_iop_lead.h`、`ps2_runtime.cpp`（EE 停滯監看） | `DOD_EE_STALL_WATCHDOG=capped`：EE 執行緒被卡住時，IOP 最多只能比 EE 領先一個 NTSC 場（4,920,115 個 EE 週期），不再無上限跟著真實時間線跑。**預設關閉**；`0` 仍是停用監看，預設行為不變 | 預設情況下被卡住的 EE（讀碟、編譯著色器）不會讓聲音佇列斷糧，但停滯期間 IOP 會遠遠跑在 EE 前面，把語音或音樂綁在 EE 畫面上的遊戲可能漂移（有個移植看到長時間載入之後語音比事件動畫早）。上限是用「停滯超過聲音佇列時可能出現的聲音空檔」換掉這個漂移。哪種取捨正確是個別遊戲的發現，所以做成開關。`host_timing_tests` 的 `iop-lead` 案例涵蓋上限、接近 `UINT64_MAX` 時不繞回的運算，以及自訂上限 |
+| `ps2xRuntime` `ps2_memory.cpp`、`ps2_vif1_interpreter.cpp` | `dodVif1Ensure` 回傳尚未複製的第一個區段在鏈中的偏移（或 `UINT32_MAX`）；`processVIF1Data` 記住它，低於它的位元組不再重複詢問 | 直譯器每個指令都會詢問；那個移植在一段遊玩擷取中量到詢問次數從 1,200,719 降到 164,538。區段仍然只在第一次需要資料時才複製，所以「標籤之間的 GS 中斷看得到新資料」這個不變量不變。新測試 `VIF1 chain data is read when its tag is reached, not when the chain starts`（第一個封包之後由回呼改寫第二個 DIRECT 封包的來源 RAM）：這次改動前後都通過，用 `DOD_NOLAZY=1` 則失敗，所以確實守住延遲複製。詢問次數沒有在這裡重新量測 |

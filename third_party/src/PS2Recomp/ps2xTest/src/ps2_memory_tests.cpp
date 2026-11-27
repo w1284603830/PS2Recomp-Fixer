@@ -466,6 +466,59 @@ void register_ps2_memory_tests()
             t.IsTrue(Ps2IsSpecialAddress(0x70000000u), "scratchpad stays special");
         });
 
+        tc.Run("VIF1 chain data is read when its tag is reached, not when the chain starts", [](TestCase &t)
+        {
+            // Two DIRECT packets in one chain. The host callback for the first packet rewrites the second packet's source
+            // RAM, as a GS interrupt handler that prepares the next rows would; the second packet must carry the new data.
+            PS2Memory mem;
+            t.IsTrue(mem.initialize(), "PS2Memory initialize should succeed");
+            constexpr uint32_t kVif1Ch = 0x10009000u;
+            constexpr uint32_t kChain = 0x00028000u;
+            constexpr uint32_t kSecondPayload = kChain + 0x30u + 0x10u + 0x10u;
+            uint8_t *rdram = mem.getRDRAM();
+            std::memset(rdram + kChain, 0, 0x80u);
+            const auto putTag = [&](uint32_t at, uint32_t qwc, uint32_t id)
+            {
+                const uint64_t tag = static_cast<uint64_t>(qwc) | (static_cast<uint64_t>(id) << 28);
+                std::memcpy(rdram + at, &tag, sizeof(tag));
+            };
+            const auto putDirect = [&](uint32_t at, uint8_t first)
+            {
+                const uint32_t code = 0x50000001u; // DIRECT, one qword, in the last word so the payload is aligned
+                std::memcpy(rdram + at + 12u, &code, sizeof(code));
+                for (uint32_t i = 0; i < 16u; ++i)
+                    rdram[at + 16u + i] = static_cast<uint8_t>(first + i);
+            };
+            putTag(kChain, 2u, 1u);        // cnt: the VIF code and the first payload follow
+            putDirect(kChain + 0x10u, 0x10u);
+            putTag(kChain + 0x30u, 2u, 7u); // end
+            putDirect(kChain + 0x40u, 0x40u);
+
+            std::vector<std::vector<uint8_t>> captured;
+            mem.setGifPacketCallback([&](const uint8_t *data, uint32_t sizeBytes)
+            {
+                captured.emplace_back(data, data + sizeBytes);
+                if (captured.size() == 1u)
+                    for (uint32_t i = 0; i < 16u; ++i)
+                        rdram[kSecondPayload + i] = static_cast<uint8_t>(0xA0u + i);
+            });
+            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x30u, kChain), "write VIF1 TADR should succeed");
+            t.IsTrue(mem.writeIORegister(kVif1Ch + 0x00u, 0x104u), "write VIF1 CHCR STR|CHAIN should succeed");
+            mem.processPendingTransfers();
+
+            t.Equals(captured.size(), static_cast<size_t>(2u), "both DIRECT payloads should reach the GIF");
+            if (captured.size() == 2u)
+            {
+                bool first = captured[0].size() == 16u, second = captured[1].size() == 16u;
+                for (uint32_t i = 0; first && i < 16u; ++i)
+                    first = captured[0][i] == static_cast<uint8_t>(0x10u + i);
+                for (uint32_t i = 0; second && i < 16u; ++i)
+                    second = captured[1][i] == static_cast<uint8_t>(0xA0u + i);
+                t.IsTrue(first, "the first payload is the data present at the start");
+                t.IsTrue(second, "the second payload is the data present when its tag was reached");
+            }
+        });
+
         tc.Run("fast memory helpers wrap safely at RAM boundary", [](TestCase &t)
         {
             std::vector<uint8_t> rdram(PS2_RAM_SIZE, 0u);
