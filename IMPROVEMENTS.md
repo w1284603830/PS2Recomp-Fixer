@@ -220,3 +220,17 @@ behaviour, independent of any game. Patch delta: `patches/PS2Recomp_vu_window_vc
 | `ps2xRuntime` `runtime/ps2_address.h` | The special-address window covers all four VU memories, VU0 micro `0x11000000` through VU1 data `0x1100FFFF`. It used to start at VU0 data and stop at the end of VU1 micro | Generated stores to VU1 data memory (and VU0 micro memory) took the RAM fast path, were masked into RDRAM and never reached VU1. Test `generated stores treat the whole VU window as special and reach VU1 data` (bounds, KSEG1 alias, a 128-bit store landing in VU1 data and not in RDRAM) |
 
 Not included from the same port: its VIF1 flight recorder and other diagnostics.
+
+## 17. 2026-11-27: IOP module-entry WaitEventFlag and one sysmem/loadcore arena
+
+Two IOP fixes from later ports (the first had been carried from one port to another). Patch delta:
+`patches/PS2Recomp_iop_arena_waiteventflag_20261127.diff`. Both are covered by synthetic IRX images in the IOP suites;
+neither has been run against a game on this base.
+
+| Where | What | Why / reference |
+|---|---|---|
+| `ps2xIOP` `iop_kernel.[h,cpp]`, `iop_emulator.cpp` | `WaitEventFlag` called from a module's entry routine (a synchronous call with no IOP thread to suspend) waits for worker threads and transfer interrupts instead of returning `-418` at once: `SetEventFlag` and `DeleteEventFlag` wake the caller, the bits are captured at notification time, the wait times out after one IOP second with a log line, and instructions other threads ran meanwhile are credited back to the entry's instruction budget | A start routine that waits for its worker thread was abandoned (or saw `EVF_NOT_READY`). Tests: signal-then-clear in one slice, delete while waiting, a busy worker (~3.7 M instructions) |
+| `ps2xIOP` `iop_memory.[h,cpp]`, `iop_sysmem.cpp`, `iop_module_loader.[h,cpp]`, `iop_emulator.cpp` | One IOP arena for loaded IRX images and `AllocSysMemory`: `0x00010000..0x001F0000` (1,920 KB; the heap used to start at `0x00120000`, leaving the module area unused and capping allocations at 832 KB). Relocatable modules take their span from the arena and `stopModule` frees it; fixed-address modules reserve theirs. `AllocSysMemory` mode 1 (ALLOC_LAST) allocates from the top, KSEG0 addresses are normalised for alloc/free/query, `QueryTotalFreeMemSize` is the total (not the largest block), and size arithmetic cannot wrap | On the real IOP loaded modules and sysmem allocations share one pool. **This changes the addresses `AllocSysMemory` returns for every game**; a port that depends on the old layout needs its own check. Tests: ALLOC_FIRST/LAST/ADDR, KSEG0, fragmentation, oversize and invalid mode, a >1.3 MB allocation after a relocatable IRX, and `stopModule` returning the span |
+
+Not included: the same source patch's VBlank-handler guard. This base's `iop_vblank` does not deliver handlers (it only
+implements the Wait calls), so there is nothing to guard until that delivery is brought over separately.

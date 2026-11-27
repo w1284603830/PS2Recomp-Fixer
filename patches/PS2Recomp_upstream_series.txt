@@ -9,3 +9,4 @@ PS2Recomp_maint_20261112.diff
 PS2Recomp_overlays_20261112.diff
 PS2Recomp_fixer_compat_perf_20261127.diff
 PS2Recomp_vu_window_vcallmsr_20261127.diff
+PS2Recomp_iop_arena_waiteventflag_20261127.diff

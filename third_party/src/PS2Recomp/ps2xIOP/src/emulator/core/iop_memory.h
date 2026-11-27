@@ -26,7 +26,11 @@ namespace ps2x::iop::detail
         static constexpr uint32_t Spu2End = 0x1FA00000u;
         static constexpr uint32_t SifBase = 0x1D000000u;
         static constexpr uint32_t SifEnd = 0x1D001000u;
-        static constexpr uint32_t HeapBase = 0x00120000u;
+        // Unified IOP sysmem/loadcore arena (0x00010000..0x001F0000 = 1,920 KB), matching real PS2 IOP
+        // where loaded IRX images and AllocSysMemory share the same pool. Previously HeapBase=0x00120000 stranded
+        // >500 KB of unused module space and capped AllocSysMemory at 832 KB, so a large allocation after
+        // several IRX loads could return NULL.
+        static constexpr uint32_t HeapBase = 0x00010000u;
         static constexpr uint32_t HeapLimit = 0x001F0000u;
 
         struct Allocation
@@ -59,9 +63,13 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool isHardwareAddress(uint32_t address) const;
         [[nodiscard]] std::string readString(uint32_t address, size_t limit = 1024u) const;
 
-        [[nodiscard]] uint32_t allocate(uint32_t size, uint32_t alignment = 16u, std::optional<uint32_t> fixed = std::nullopt);
+        [[nodiscard]] uint32_t allocate(uint32_t size,
+                                        uint32_t alignment = 16u,
+                                        std::optional<uint32_t> fixed = std::nullopt,
+                                        bool fromTop = false);
         [[nodiscard]] bool freeAllocation(uint32_t address);
         [[nodiscard]] uint32_t maxFreeMemory() const;
+        [[nodiscard]] uint32_t totalFreeMemory() const;
         [[nodiscard]] std::optional<Allocation> allocationContaining(uint32_t address) const;
 
         [[nodiscard]] uint32_t interruptStatus() const noexcept { return m_interruptStatus; }

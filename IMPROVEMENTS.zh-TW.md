@@ -163,3 +163,14 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRuntime` `runtime/ps2_address.h` | 特殊位址範圍涵蓋四塊 VU 記憶體，從 VU0 微記憶體 `0x11000000` 到 VU1 資料 `0x1100FFFF`。舊範圍從 VU0 資料開始、到 VU1 微記憶體結尾為止 | 產生碼對 VU1 資料記憶體（與 VU0 微記憶體）的寫入走了 RAM 快速路徑，被遮罩寫進 RDRAM，永遠到不了 VU1。測試 `generated stores treat the whole VU window as special and reach VU1 data`（邊界、KSEG1 別名、128 位元寫入落在 VU1 資料而不是 RDRAM） |
 
 同一個移植的 VIF1 飛行記錄器與其他診斷工具沒有收進來。
+
+## 十七、2026-11-27：IOP 模組入口的 WaitEventFlag 與單一 sysmem/loadcore 記憶體池
+
+後來的移植裡的兩個 IOP 修正（第一個已在不同移植間移植過）。增量補丁：`patches/PS2Recomp_iop_arena_waiteventflag_20261127.diff`。兩者都有合成 IRX 映像的 IOP 測試涵蓋；都還沒有在本基底上跑過任何遊戲。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `ps2xIOP` `iop_kernel.[h,cpp]`、`iop_emulator.cpp` | 從模組入口常式（同步呼叫、沒有 IOP 執行緒可暫停）呼叫的 `WaitEventFlag` 會等工作執行緒與傳輸中斷，不再立刻回傳 `-418`：`SetEventFlag`、`DeleteEventFlag` 會喚醒呼叫端，旗標位元在通知當下就擷取，等待超過一個 IOP 秒就逾時並記錄，其他執行緒這段時間執行的指令數會還給入口的指令額度 | 等待工作執行緒的啟動常式會被放棄（或看到 `EVF_NOT_READY`）。測試：同一個時間片內先設後清、等待時刪除、忙碌的工作執行緒（約 370 萬條指令） |
+| `ps2xIOP` `iop_memory.[h,cpp]`、`iop_sysmem.cpp`、`iop_module_loader.[h,cpp]`、`iop_emulator.cpp` | 載入的 IRX 映像與 `AllocSysMemory` 共用同一個 IOP 記憶體池：`0x00010000..0x001F0000`（1,920 KB；以前堆從 `0x00120000` 開始，模組區用不到、配置上限只有 832 KB）。可重定位模組從池中取得空間，`stopModule` 會釋放；固定位址的模組預留自己的空間。`AllocSysMemory` 模式 1（ALLOC_LAST）從頂端配置，配置／釋放／查詢都會正規化 KSEG0 位址，`QueryTotalFreeMemSize` 回傳總量（不是最大連續塊），大小運算不會繞回 | 真實 IOP 上載入的模組與 sysmem 配置共用同一個池。**這會改變所有遊戲得到的 `AllocSysMemory` 位址**；依賴舊配置的移植要自己檢查。測試：ALLOC_FIRST/LAST/ADDR、KSEG0、碎片化、超大與無效模式、可重定位 IRX 之後配置超過 1.3 MB、`stopModule` 歸還空間 |
+
+沒有收進來：同一份來源補丁的 VBlank handler 保護。本基底的 `iop_vblank` 沒有遞送 handler（只實作 Wait 系列），在把遞送機制另外移植進來之前沒有東西可保護。

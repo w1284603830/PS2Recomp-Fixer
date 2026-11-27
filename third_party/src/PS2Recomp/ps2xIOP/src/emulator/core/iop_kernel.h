@@ -58,6 +58,9 @@ namespace ps2x::iop::detail
         [[nodiscard]] bool dispatchThreadImport(uint16_t ordinal, IopCpuState &cpu, uint64_t currentCycle);
         [[nodiscard]] bool dispatchSemaphoreImport(uint16_t ordinal, IopCpuState &cpu);
         [[nodiscard]] bool dispatchEventImport(uint16_t ordinal, IopCpuState &cpu);
+        // WaitEventFlag result of a synchronous caller that has no IOP thread to suspend (a module entry routine).
+        static constexpr uint32_t EventNotReady = static_cast<uint32_t>(-418);
+        void setOutsideEventWait(IopCpuState *cpu) noexcept { m_outsideEventWait = cpu; }
         [[nodiscard]] bool dispatchMailboxImport(uint16_t ordinal, IopCpuState &cpu, bool interruptContext = false);
         [[nodiscard]] int mailboxMessageCount(int id) const;
         void setOutsideMailboxWait(int id) noexcept { m_outsideMailboxWait = id; }
@@ -129,6 +132,7 @@ namespace ps2x::iop::detail
         void wakeOneSemaphore(int id);
         [[nodiscard]] static bool eventSatisfied(const EventFlag &event, uint32_t bits, uint32_t mode);
         void wakeEventWaiters(EventFlag &event);
+        void pollOutsideEventWait(int id);
 
         IopMemory &m_memory;
         std::map<int, IopThread> m_threads;
@@ -143,6 +147,7 @@ namespace ps2x::iop::detail
         IopThread *m_currentThread = nullptr;
         std::map<uint32_t, int> m_resumeByPriority; // [DoD] a thread preempted by a higher priority, per priority
         int m_outsideSemaphoreWait = 0; // [DoD] see setOutsideSemaphoreWait
+        IopCpuState *m_outsideEventWait = nullptr;
         int m_outsideMailboxWait = 0; // reserve a queued packet for an outside-thread ReceiveMbx caller
     };
 }
