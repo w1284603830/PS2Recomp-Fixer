@@ -1,5 +1,12 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-27, VCALLMSR and the VU memory window (`maint/20261127-vu-window-fixes`, on `main` `c5a7148`):** two
+hardware-semantics fixes ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 16). Windows/MSVC (VS 2022 Build Tools),
+`build_all.ps1` from an empty build folder with the pinned dependencies linked from another checkout: kzvu, pcsx2gs and
+PS2Recomp (including `ps2EntryRunner`) built; `ps2x_tests` 466 cases, 442 passed, 24 named known differences (the same
+list as the entries below; the two new cases are the added passes); IOP suites 6/6; GS cache 45/45. The patch-series
+parity check passes with the new delta (see the autocrlf note in the maintenance entry below). No game was run.
+
 **2026-11-12, run-time code overlays (`feature/overlay-registry`, on `main` `eff29a5`):** opt-in overlay registry and
 `[overlay]` recompiler input ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 14). Fresh clone of `ccdde21` with an LF
 checkout, pinned dependencies added, `build_all.ps1` from an empty build folder (VS 2022 Build Tools, default
