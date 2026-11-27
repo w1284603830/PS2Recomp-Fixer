@@ -1,5 +1,15 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-27, IOP module-entry WaitEventFlag and unified IOP arena (`maint/20261127-iop-fixes`, on `main` `26e7523`):**
+two IOP fixes ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 17). Windows/MSVC (VS 2022 Build Tools), `build_all.ps1` with the
+pinned dependencies linked from another checkout: kzvu, pcsx2gs and PS2Recomp (including `ps2EntryRunner`) built;
+`ps2x_tests` 466 cases, 442 passed, 24 named known differences (the same list as the entries below). A first run had one
+extra failure, the SIF IOP-heap DMA case, which hard-coded the old heap start `0x00120000`; it now expects the unified
+arena and passes. IOP suites 6/6 (the new synthetic-IRX cases: module-entry wait signalled, cleared in the same slice,
+deleted while waiting, a busy worker, and the arena cases); GS cache 45/45. The patch-series parity check passes with the
+new delta. No game was run: the arena change moves the addresses `AllocSysMemory` returns for every game and has only
+synthetic coverage on this base.
+
 **2026-11-27, cross-device compatibility and runtime overhead (`maint/20261127-ultraman-harvest`, on `main` `c5a7148`):**
 shared host services and fixes from one port's audit ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 15). Windows/MSVC
 (VS 2022 Build Tools), `build_all.ps1` run twice from the committed tree (an empty build folder, then again after
