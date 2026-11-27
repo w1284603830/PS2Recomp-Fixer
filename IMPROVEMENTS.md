@@ -234,3 +234,21 @@ neither has been run against a game on this base.
 
 Not included: the same source patch's VBlank-handler guard. This base's `iop_vblank` does not deliver handlers (it only
 implements the Wait calls), so there is nothing to guard until that delivery is brought over separately.
+
+## 18. 2026-11-27: VIF1 V3-32 upload path, address check, run result, MPEG ingress bound
+
+Selected from a classification of the DoD and Onimusha 3 port trees against this base (most of their differences are
+the base having moved on, or game content; the larger items below were left out on purpose). Patch delta:
+`patches/PS2Recomp_vif_hostsvc_20261127.diff`.
+
+| Where | What | Why / reference |
+|---|---|---|
+| `ps2xRuntime` `dod_vif1_unpack.h` | UNPACK V3-32 with the mask bit, when XYZ is unmasked in every MASK row (skipping mode, STMOD off): 12-byte copy per vector, W from data, ROW or COL per write cycle as selected | Same bytes, addresses and write-cycle stepping as the general loop; VU1 vertex streams use it. `tools/diag/vif1_unpack_diff` now has a `v3` mode that aims at this path (random masks almost never leave XYZ unmasked): 3,000,000 focused trials equal, and a deliberately wrong W source is caught on the 110th |
+| `ps2xRuntime` `runtime/ps2_address.h` | `Ps2IsSpecialAddress` answers "below 32 MB" first | Every special region (BIOS, scratchpad, I/O, GS registers, VU window, kseg2/3) lies above RAM, so the result is unchanged. Test `special-address RAM early-out keeps the full classification` compares against the full classification over the 4 GB space and the region edges. Not forced inline (see the note in `ps2_runtime_macros.h`) |
+| `ps2xRuntime` `PS2Runtime::executionFailed()`, `generic_runner` | True once a run hit a guest exception or executed a function the image does not contain (even when the missing-function policy continues); the generic runner exits 1 then | A caught guest exception was reported to the shell as a successful exit. Treating an executed missing target as a failure is a policy choice; a port that wants the old behaviour ignores the accessor. Not covered by an automated test |
+| `ps2xRuntime` `dod_mpeg_dma_ingress.h`, `dod_to_ipu_dma.h` | `capacity()` and `DOD_MPEG_INGRESS_KB` (64..8192) for the MPEG DMA ingress bound; the CH4 gather uses the same bound as the queue. The default stays 2 MB | One port needed a 384 KB bound so its movie library stops a whole-ring CH4 chain and sends only what the next picture needs; that is a per-game finding, so only the mechanism is taken |
+
+Reviewed and not taken (reasons in the classification): the two-player input and per-player rumble (about 600 lines that
+must be re-merged into this base's input model), the in-game menu (depends on a newer GS menu table and on the
+two-player work), the bounded IOP lead in the EE-stall watchdog (reverses this base's design; at most an opt-in policy),
+the lazy VIF1 chain memo (performance only; its differential test lives in the port), and port-specific diagnostics.

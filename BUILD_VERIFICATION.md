@@ -1,5 +1,15 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-27, VIF1 V3-32 path, address check, run result and MPEG ingress bound (`maint/20261127-vif-hostsvc`, on `main`
+`296e57b`):** four small items selected from the DoD and Onimusha 3 trees ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 18).
+Windows/MSVC (VS 2022 Build Tools), `build_all.ps1` from an empty build folder with the pinned dependencies linked from
+another checkout: kzvu, pcsx2gs and PS2Recomp (including `ps2EntryRunner`) built; `ps2x_tests` 467 cases, 443 passed, 24
+named known differences (the same list as the entries below; the new address-check case is the added pass); IOP suites
+6/6; GS cache 45/45. The VIF1 UNPACK differential harness (`tools/diag/vif1_unpack_diff`, MSVC /O2): the default mix
+3,000,000 trials equal, and the new `v3` mode 3,000,000 trials equal, with a deliberately wrong W source caught on
+trial 110. Python suites in an LF clone pass, including the patch-series parity check. The generic runner's new exit code
+(`PS2Runtime::executionFailed()`) and the `DOD_MPEG_INGRESS_KB` override have no automated test. No game was run.
+
 **2026-11-27, IOP module-entry WaitEventFlag and unified IOP arena (`maint/20261127-iop-fixes`, on `main` `26e7523`):**
 two IOP fixes ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 17). Windows/MSVC (VS 2022 Build Tools), `build_all.ps1` with the
 pinned dependencies linked from another checkout: kzvu, pcsx2gs and PS2Recomp (including `ps2EntryRunner`) built;

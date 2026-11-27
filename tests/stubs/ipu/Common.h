@@ -83,4 +83,5 @@ public:
     bool initialize(const char *) { std::fprintf(stderr, "[test-runtime] initialize\n"); return true; }
     bool loadELF(const std::string &) { ps2_stubs::resetIpuInitConfig(); return true; }
     void run() { std::fprintf(stderr, "[test-runtime] ipu=%d\n", ps2_stubs::hasValidIpuInitConfig()); }
+    bool executionFailed() const noexcept { return false; }
 };

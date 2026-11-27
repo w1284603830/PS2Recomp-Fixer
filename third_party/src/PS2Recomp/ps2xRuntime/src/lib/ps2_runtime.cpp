@@ -1509,6 +1509,9 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
                                        GuestBranchKind kind,
                                        const char *debugName)
 {
+    // A missing target that was actually executed is a failed run, even if the configured policy continues for
+    // diagnostics and the player later quits.
+    m_executionFailed.store(true, std::memory_order_release);
     const MissingFunctionPolicy policy = missingFunctionPolicy();
     const bool firstReport = !m_missingFunctionReported.exchange(true, std::memory_order_acq_rel);
 
@@ -2924,6 +2927,7 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
 
 void PS2Runtime::run()
 {
+    m_executionFailed.store(false, std::memory_order_relaxed);
     m_stopRequested.store(false, std::memory_order_relaxed);
     ps2_stubs::resetSifState();
     resetIop();
@@ -2970,10 +2974,12 @@ void PS2Runtime::run()
         }
         catch (const std::exception &e)
         {
+            m_executionFailed.store(true, std::memory_order_release);
             std::cerr << "Error during program execution: " << e.what() << std::endl;
         }
         catch (...)
         {
+            m_executionFailed.store(true, std::memory_order_release);
             std::cerr << "Error during program execution: unknown exception" << std::endl;
         }
         gameThreadFinished.store(true, std::memory_order_release); });

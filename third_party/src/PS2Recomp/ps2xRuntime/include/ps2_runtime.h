@@ -394,6 +394,10 @@ public:
 
     void requestStop();
     bool isStopRequested() const;
+    // True once a run hit a guest exception or executed a function the recompiled image does not contain (even when
+    // the missing-function policy continues for diagnostics). A runner reads it after run() returns so that such a run
+    // is not reported to the shell as a successful exit.
+    bool executionFailed() const noexcept { return m_executionFailed.load(std::memory_order_acquire); }
 
     EeScheduler &eeScheduler();
     const EeScheduler &eeScheduler() const;
@@ -524,6 +528,7 @@ private:
     std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
     std::atomic<bool> m_missingFunctionReported{false};
     std::atomic<bool> m_stopRequested{false};
+    std::atomic<bool> m_executionFailed{false};
     DebugUiCallback m_debugUiInitCallback = nullptr;
     DebugUiCallback m_debugUiDrawCallback = nullptr;
     DebugUiCallback m_debugUiShutdownCallback = nullptr;

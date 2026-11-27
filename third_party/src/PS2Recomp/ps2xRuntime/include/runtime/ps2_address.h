@@ -55,8 +55,14 @@ static inline constexpr bool Ps2IsPhysicalSpecialAddress(uint32_t physAddr)
            (physAddr >= PS2_VU0_CODE_BASE && physAddr < (PS2_VU1_DATA_BASE + PS2_VU1_DATA_SIZE));
 }
 
+// Every READ*/WRITE* of the generated code asks this. Ordinary RAM (below 32 MB) is answered first: every special
+// region (BIOS, scratchpad, I/O, GS privileged registers, the VU window, kseg2/3) lies above it, so the answer is the
+// same and the common case is one compare. Not forced inline: see the note on the fast RAM helpers in
+// ps2_runtime_macros.h (forcing inline doubled the largest generated function's frame).
 static inline constexpr bool Ps2IsSpecialAddress(uint32_t addr)
 {
+    if (addr < PS2_RAM_SIZE)
+        return false;
     if (Ps2IsKseg23Address(addr))
         return true;
 
