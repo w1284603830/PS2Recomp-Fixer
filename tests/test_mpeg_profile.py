@@ -27,6 +27,7 @@ class MpegProfileTests(unittest.TestCase):
         for name in ("Common.h", "dod_hd_cg.h"):
             shutil.copyfile(ROOT / "tests/stubs/mpeg" / name, stubs / name)
         shutil.copyfile(ROOT / "tests/stubs/mpeg/dod_pcsx2_gs.h", gs / "dod_pcsx2_gs.h")
+        shutil.copyfile(LIB / "gs/dod_perf.h", gs / "dod_perf.h")  # MPEG.cpp's DOD_PERF decode counter
         for name in ("ps2_stubs.h", "runtime/ee_scheduler.h", "Syscalls/Helpers/State.h"):
             (directory / name).write_text('#pragma once\n#include "Common.h"\n')
         cls.exe = directory / "mpeg_tests"

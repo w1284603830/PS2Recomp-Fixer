@@ -24,3 +24,14 @@ shared where their inputs determine the addresses.
 For failure triage, capture consumed input and the first differing EE/VU/GIF state, then use
 [REGRESSION_TESTING.md](../docs/REGRESSION_TESTING.md). Opcode counts, missing-map counts or an empty smoke runner
 cannot establish full-game correctness.
+
+## Performance and compatibility (`tools/perf/`)
+
+Game-neutral, Windows x64, read-only except `cpu_cap.py` (a Job Object CPU cap on the process it is given). See
+[docs/CROSS_DEVICE_OPTIMIZATION.md](../docs/CROSS_DEVICE_OPTIMIZATION.md).
+
+- `thread_cpu_sample.py`: CPU % per named thread per interval (mean / p95 / max).
+- `thread_profile.py`: RIP sampling of one named thread, symbolized with the EXE `/MAP` (and `--map` for DLLs).
+- `cpu_cap.py`: weak-host simulation on a schedule (attach to a running port by process id).
+- `isa_scan.py`, `frame_sizes.py`: AVX/AVX2/FMA/BMI instruction counts and per-function stack frames (dumpbin; set
+  `DUMPBIN` or use a Visual Studio developer prompt).

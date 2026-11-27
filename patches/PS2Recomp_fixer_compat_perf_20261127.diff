@@ -1,0 +1,2008 @@
+diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
+index b121fde..d53a6be 100644
+--- a/ps2xRuntime/CMakeLists.txt
++++ b/ps2xRuntime/CMakeLists.txt
+@@ -429,0 +430,3 @@ add_library(ps2_runtime STATIC
++    src/lib/ps2_host_cpu.cpp
++    src/lib/ps2_host_os.cpp
++    src/lib/ps2_host_report.cpp
+@@ -556,0 +560,21 @@ endif()
++# [Fixer] Release code generation. ps2_runtime is built with link-time code generation: the scheduler, memory and
++# timer paths call each other across files on every guest block (EeScheduler::accountCycles ->
++# PS2Memory::advanceEeTimers / PS2Runtime::advanceIopEeCycles), which only LTCG can inline. Generated code is not:
++# 10k files would make every link a whole-program build. Generated code drops /GS (no buffer-overrun cookies in
++# translated guest code); main.cpp keeps it.
++option(PS2X_RUNTIME_LTCG "Link-time code generation for ps2_runtime (MSVC Release)" ON)
++if(MSVC)
++    if(PS2X_RUNTIME_LTCG)
++        set_property(TARGET ps2_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
++        target_link_options(ps2EntryRunner PRIVATE $<$<CONFIG:Release>:/LTCG>)
++    endif()
++    target_compile_options(ps2EntryRunner PRIVATE /GS-)
++    # 16 MB default thread stack reserve (address space only; pages are committed as used). Some generated functions
++    # have frames of 0.7 MB (measured in one port), so one nested call of two of them overflowed the
++    # 1 MB default; guest call chains run as native recursion on the EE thread.
++    target_link_options(ps2EntryRunner PRIVATE /STACK:16777216)
++    if(EXISTS "${RUNNER_MAIN_CPP}")
++        set_source_files_properties("${RUNNER_MAIN_CPP}" PROPERTIES COMPILE_OPTIONS /GS)
++    endif()
++endif()
++
+diff --git a/ps2xRuntime/include/ps2_host_cpu.h b/ps2xRuntime/include/ps2_host_cpu.h
+new file mode 100644
+index 0000000..592ab5a
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_host_cpu.h
+@@ -0,0 +1,37 @@
++#ifndef PS2_HOST_CPU_H
++#define PS2_HOST_CPU_H
++
++// [Fixer] Host CPU capability report, read before anything ISA-specific runs.
++//
++// The runtime, the generated code and pcsx2gs.dll use SSE4.1 (blendv, pmaxsd, PCSX2's baseline). AVX/AVX2 are only
++// used behind run-time checks (microVU JIT, CRT, FFmpeg). A host without SSE4.1 cannot run the port at all; checking
++// first turns the illegal-instruction crash into a readable message. The report also names the host for user logs
++// ("old Xeon cannot start" reports): brand, logical cores and which vector ISA the OS actually enables (AVX needs
++// OSXSAVE + XCR0 YMM state, not only the CPUID bit).
++
++#include <string>
++
++namespace ps2host
++{
++    struct CpuReport
++    {
++        std::string vendor;
++        std::string brand;
++        unsigned logicalCores = 0;
++        bool sse41 = false;
++        bool sse42 = false;
++        bool popcnt = false;
++        bool osAvx = false; // CPUID AVX + OSXSAVE + XCR0[2:1] == 11b
++        bool avx2 = false;  // only meaningful with osAvx
++        bool fma = false;   // only meaningful with osAvx
++        bool bmi2 = false;
++    };
++
++    CpuReport cpuReport();
++
++    // Logs one "[cpu] ..." line to stderr and returns whether the host meets the runtime's baseline (SSE4.1).
++    // `missing` receives a short user-facing reason when it does not.
++    bool cpuMeetsBaseline(std::string *missing = nullptr);
++}
++
++#endif
+diff --git a/ps2xRuntime/include/ps2_host_os.h b/ps2xRuntime/include/ps2_host_os.h
+new file mode 100644
+index 0000000..9cf6690
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_host_os.h
+@@ -0,0 +1,60 @@
++#ifndef PS2_HOST_OS_H
++#define PS2_HOST_OS_H
++
++// [Fixer] Host OS scheduling and crash reporting, game-neutral.
++//
++// Power throttling: Windows 10/11 may run a process under EcoQoS (lower clocks, efficiency cores on hybrid CPUs)
++// when its window is not in the foreground, on battery or in power-saver plans, and Windows 11 may also ignore its
++// timer-resolution request while the window is hidden. The emulated EE has a real-time budget per field, so the port
++// opts out of both (SetProcessInformation(ProcessPowerThrottling), as games and media players do).
++// Thread roles: the EE (game) and GS threads run one step above normal priority on hosts with at least 4 logical
++// CPUs, so background work does not preempt them mid-field; on smaller hosts they stay normal so the window, audio and
++// IOP threads are never starved. PS2_THREAD_PRIORITY=0 keeps every thread normal.
++// Crash reports: an unhandled exception writes logs\crash-<time>.dmp (a minidump: threads, stacks, modules) and one
++// "[crash]" line with the exception code and module+offset, so "it closes on my PC" reports carry evidence.
++
++#include <cstdint>
++#include <string>
++
++namespace ps2host
++{
++    enum class ThreadRole
++    {
++        Game, // the EE thread (generated code, scheduler)
++        Gs,   // the GS worker (pcsx2gs.dll)
++        Iop,  // the threaded IOP
++    };
++
++    // Once per process; logs one "[host] ..." line. Safe to call more than once.
++    void configureHostProcess();
++    // Applies the role's priority to the calling thread (see above).
++    void setCurrentThreadRole(ThreadRole role);
++    // Installs the unhandled-exception minidump writer (Windows). Safe to call more than once.
++    void installCrashHandler();
++    // Number of crash dumps written by this process (0 normally); for diagnostics exports.
++    uint32_t crashDumpsWritten();
++    // CPU time (user + kernel, seconds) of the last thread that took this role; negative when none did (perf overlay).
++    double threadCpuSeconds(ThreadRole role);
++
++    // [Fixer] The GPU the PCSX2 GS renders with: the adapter named in the GS options (adapter=..., the launcher's GPU
++    // choice) when present, else the first hardware adapter by Windows' high-performance preference (the GS's own
++    // automatic choice, D3D::GetAdapterByName), else DXGI adapter 0 (Windows before 10 1803).
++    struct GpuReport
++    {
++        bool found = false;
++        std::string name;
++        uint32_t vendorId = 0;
++        uint64_t dedicatedBytes = 0; // DXGI DedicatedVideoMemory: integrated GPUs report 128-512 MB
++        bool software = false;       // Microsoft Basic Render Driver (no GPU driver)
++        bool umaKnown = false;       // D3D12 answered the architecture query
++        bool uma = false;            // unified memory: an integrated GPU
++    };
++    GpuReport gpuReport(const std::string &adapterName = std::string());
++    // Ceiling for gs_scale = auto by GPU class: 4 on a discrete GPU (5x and more at 4K costs a lot for little), 2 on an
++    // integrated GPU (D3D12 reports unified memory; without D3D12: under 1 GiB dedicated memory), 1 on the software
++    // renderer. tier receives "discrete" / "integrated" / "software". PS2_GPU_TIER=integrated|discrete|software
++    // replaces the detected class (tests).
++    int autoScaleCap(const GpuReport &gpu, const char **tier = nullptr);
++}
++
++#endif
+diff --git a/ps2xRuntime/include/ps2_host_report.h b/ps2xRuntime/include/ps2_host_report.h
+new file mode 100644
+index 0000000..b31dc92
+--- /dev/null
++++ b/ps2xRuntime/include/ps2_host_report.h
+@@ -0,0 +1,36 @@
++#ifndef PS2_HOST_REPORT_H
++#define PS2_HOST_REPORT_H
++
++// [Fixer] Player-facing performance overlay and diagnostics package, game-neutral (generic host service).
++//
++// Overlay: once a second the window thread samples the fields presented, the game's own frames (DISPFB changes),
++// and the CPU time of the EE and GS threads, and (when on) shows one line at the bottom left of the image through the
++// GS's on-screen text: "30 fps (60 fields/s) | EE 48% | GS 10% | D3D11 3x". With it a player's screenshot tells
++// whether a slowdown is the CPU (EE near 100 % of a core), the GPU/driver (GS high, EE low) or the game itself
++// (frames halved, fields steady). Shown only by the PCSX2 GS (the CPU raster has no text layer).
++// Diagnostics package: <exe>\logs\diagnostics-<time>.zip (stored, no compression) with summary.txt (CPU, OS,
++// memory, GPU, renderer, the last samples, crash dumps), logs\last-run.log, logs\gpu.txt, the port's settings file
++// and the two newest crash dumps. Saves and game data are never included. Written on a worker thread.
++// PS2_PERF_OVERLAY=1 turns the overlay on at start (tests).
++
++#include <string>
++
++namespace ps2_host_report
++{
++    // Window thread: overlay on / off (the port's saved setting, the in-game menu).
++    void setOverlay(bool on);
++    bool overlay();
++    // Window thread, once per host frame (after the menu's tick): samples, updates the overlay.
++    void hostTick();
++    // Any thread: the last sample as one line ("" before the first second).
++    std::string lastSample();
++    // Any thread: CPU / GPU / renderer lines for the menu's status page.
++    std::string hostSummary();
++    // Any thread: starts writing the package (ignored while one is being written); settingsFile is the port's
++    // settings file name next to the EXE ("game.ini"; empty = none).
++    void exportDiagnostics(const std::string &settingsFile);
++    // Any thread: "" before any export, else a short user-facing status (busy / written to ... / failed).
++    std::string exportStatus();
++}
++
++#endif
+diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
+index 9e93770..b79e99c 100644
+--- a/ps2xRuntime/include/ps2_runtime_macros.h
++++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -444,0 +445,5 @@ inline __m128 ps2_vmul(__m128 a, __m128 b)
++// [Fixer] The rare access that wraps past the end of RAM goes to an out-of-line copy (by value: no address-taken local
++// in the caller), which keeps its small byte array (and the /GS cookie it brought) out of generated code. Same bytes,
++// same order as before. Not forced inline: measured on the hottest generated function (sub_264350, 32k lines),
++// __forceinline on these helpers doubled its code (477k -> 937k instructions) and its stack frame (689 KB -> 1.6 MB,
++// a stack overflow on a 1 MB thread stack); MSVC's own inlining limit in huge functions protects code size.
+@@ -450 +455,2 @@ static inline bool Ps2FastRangeIsContiguous(uint32_t offset, uint32_t bytes)
+-static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
++template <typename T>
++PS2_FLOAT_NOINLINE inline T Ps2FastReadWrapped(const uint8_t *rdram, uint32_t offset)
+@@ -452 +458,6 @@ static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
+-    return rdram[addr & PS2_RAM_MASK];
++    uint8_t bytes[sizeof(T)];
++    for (uint32_t i = 0; i < sizeof(T); ++i)
++        bytes[i] = rdram[(offset + i) & PS2_RAM_MASK];
++    T value;
++    std::memcpy(&value, bytes, sizeof(T));
++    return value;
+@@ -455 +466 @@ static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
+-static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
++PS2_FLOAT_NOINLINE inline void Ps2FastWriteWrapped(uint8_t *rdram, uint32_t offset, uint64_t lo, uint64_t hi, uint32_t size)
+@@ -457,12 +468,6 @@ static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
+-    {
+-        uint8_t wrapped[sizeof(uint16_t)];
+-        for (uint32_t i = 0; i < sizeof(uint16_t); ++i)
+-        {
+-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
+-        }
+-        uint16_t value;
+-        std::memcpy(&value, wrapped, sizeof(value));
+-        return value;
+-    }
++    uint8_t bytes[16];
++    std::memcpy(bytes, &lo, 8);
++    std::memcpy(bytes + 8, &hi, 8);
++    for (uint32_t i = 0; i < size; ++i)
++        rdram[(offset + i) & PS2_RAM_MASK] = bytes[i];
++}
+@@ -470,2 +475,8 @@ static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
+-    uint16_t value;
+-    std::memcpy(&value, rdram + offset, sizeof(value));
++template <typename T>
++static inline T Ps2FastReadT(const uint8_t *rdram, uint32_t addr)
++{
++    const uint32_t offset = addr & PS2_RAM_MASK;
++    if (!Ps2FastRangeIsContiguous(offset, sizeof(T)))
++        return Ps2FastReadWrapped<T>(rdram, offset);
++    T value;
++    std::memcpy(&value, rdram + offset, sizeof(T));
+@@ -475 +486,2 @@ static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
+-static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
++template <typename T>
++static inline void Ps2FastWriteT(uint8_t *rdram, uint32_t addr, T value)
+@@ -478 +490 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
++    if (!Ps2FastRangeIsContiguous(offset, sizeof(T)))
+@@ -480,8 +492,3 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
+-        uint8_t wrapped[sizeof(uint32_t)];
+-        for (uint32_t i = 0; i < sizeof(uint32_t); ++i)
+-        {
+-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
+-        }
+-        uint32_t value;
+-        std::memcpy(&value, wrapped, sizeof(value));
+-        return value;
++        uint64_t half[2] = {0, 0};
++        std::memcpy(half, &value, sizeof(T));
++        Ps2FastWriteWrapped(rdram, offset, half[0], half[1], sizeof(T));
+@@ -488,0 +496,3 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
++    else
++        std::memcpy(rdram + offset, &value, sizeof(T));
++}
+@@ -490,3 +500,3 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
+-    uint32_t value;
+-    std::memcpy(&value, rdram + offset, sizeof(value));
+-    return value;
++static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
++{
++    return rdram[addr & PS2_RAM_MASK];
+@@ -495 +505 @@ static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
+-static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
++static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
+@@ -497,12 +507,2 @@ static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
+-    {
+-        uint8_t wrapped[sizeof(uint64_t)];
+-        for (uint32_t i = 0; i < sizeof(uint64_t); ++i)
+-        {
+-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
+-        }
+-        uint64_t value;
+-        std::memcpy(&value, wrapped, sizeof(value));
+-        return value;
+-    }
++    return Ps2FastReadT<uint16_t>(rdram, addr);
++}
+@@ -510,3 +510,3 @@ static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
+-    uint64_t value;
+-    std::memcpy(&value, rdram + offset, sizeof(value));
+-    return value;
++static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
++{
++    return Ps2FastReadT<uint32_t>(rdram, addr);
+@@ -515 +515 @@ static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
+-static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
++static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
+@@ -517,12 +517,2 @@ static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(__m128i)))
+-    {
+-        alignas(16) uint8_t wrapped[sizeof(__m128i)];
+-        for (uint32_t i = 0; i < sizeof(__m128i); ++i)
+-        {
+-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
+-        }
+-        __m128i value;
+-        std::memcpy(&value, wrapped, sizeof(value));
+-        return value;
+-    }
++    return Ps2FastReadT<uint64_t>(rdram, addr);
++}
+@@ -530,3 +520,3 @@ static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
+-    __m128i value;
+-    std::memcpy(&value, rdram + offset, sizeof(value));
+-    return value;
++static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
++{
++    return Ps2FastReadT<__m128i>(rdram, addr);
+@@ -542,12 +532 @@ static inline void Ps2FastWrite16(uint8_t *rdram, uint32_t addr, uint16_t value)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
+-    {
+-        uint8_t wrapped[sizeof(uint16_t)];
+-        std::memcpy(wrapped, &value, sizeof(value));
+-        for (uint32_t i = 0; i < sizeof(uint16_t); ++i)
+-        {
+-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
+-        }
+-        return;
+-    }
+-    std::memcpy(rdram + offset, &value, sizeof(value));
++    Ps2FastWriteT<uint16_t>(rdram, addr, value);
+@@ -558,12 +537 @@ static inline void Ps2FastWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
+-    {
+-        uint8_t wrapped[sizeof(uint32_t)];
+-        std::memcpy(wrapped, &value, sizeof(value));
+-        for (uint32_t i = 0; i < sizeof(uint32_t); ++i)
+-        {
+-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
+-        }
+-        return;
+-    }
+-    std::memcpy(rdram + offset, &value, sizeof(value));
++    Ps2FastWriteT<uint32_t>(rdram, addr, value);
+@@ -574,12 +542 @@ static inline void Ps2FastWrite64(uint8_t *rdram, uint32_t addr, uint64_t value)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
+-    {
+-        uint8_t wrapped[sizeof(uint64_t)];
+-        std::memcpy(wrapped, &value, sizeof(value));
+-        for (uint32_t i = 0; i < sizeof(uint64_t); ++i)
+-        {
+-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
+-        }
+-        return;
+-    }
+-    std::memcpy(rdram + offset, &value, sizeof(value));
++    Ps2FastWriteT<uint64_t>(rdram, addr, value);
+@@ -590,12 +547 @@ static inline void Ps2FastWrite128(uint8_t *rdram, uint32_t addr, __m128i value)
+-    const uint32_t offset = addr & PS2_RAM_MASK;
+-    if (!Ps2FastRangeIsContiguous(offset, sizeof(__m128i)))
+-    {
+-        alignas(16) uint8_t wrapped[sizeof(__m128i)];
+-        std::memcpy(wrapped, &value, sizeof(value));
+-        for (uint32_t i = 0; i < sizeof(__m128i); ++i)
+-        {
+-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
+-        }
+-        return;
+-    }
+-    std::memcpy(rdram + offset, &value, sizeof(value));
++    Ps2FastWriteT<__m128i>(rdram, addr, value);
+diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+index fc074c3..31446cf 100644
+--- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
++++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
+@@ -956 +956,6 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+-    static const uint32_t scale = []() -> uint32_t {
++    // [Fixer] Plain statics read on the first call: this runs at every checkpoint (nearly every guest call and
++    // backward branch), where a guarded function-local static costs a TLS epoch check per switch. The EE thread is the
++    // only caller in practice; a racing first read would store the same value.
++    static uint32_t scale = 0u;
++    if (scale == 0u)
++    {
+@@ -959,2 +964,2 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+-        return static_cast<uint32_t>(std::clamp<long>(s, 5, 400));
+-    }();
++        scale = static_cast<uint32_t>(std::clamp<long>(s, 5, 400));
++    }
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
+index c2b3084..5558124 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
+@@ -21,0 +22 @@ extern "C"
++#include "../../gs/dod_perf.h"
+@@ -23,0 +25,4 @@ extern "C"
++#include <algorithm>
++#include <cstring>
++#include <thread>
++#include <vector>
+@@ -104,0 +110 @@ namespace ps2_stubs
++                dodperf::Scope decodeTime(dodperf::MpegDecode); // [Fixer] DOD_PERF
+@@ -115 +121,8 @@ namespace ps2_stubs
+-                const uint8_t *cursor = data;
++                // [Fixer] FFmpeg's parsers may read up to AV_INPUT_BUFFER_PADDING_SIZE bytes past the input (SIMD start
++                // code scans); the guest buffer ends where the game says. Parse from a reused, zero-padded copy, as the
++                // HD CG path (dod_hd_cg.h) already does, so a read past the end never touches unmapped or stale memory.
++                if (m_padded.size() < size + AV_INPUT_BUFFER_PADDING_SIZE)
++                    m_padded.resize(size + AV_INPUT_BUFFER_PADDING_SIZE);
++                std::memcpy(m_padded.data(), data, size);
++                std::memset(m_padded.data() + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
++                const uint8_t *cursor = m_padded.data();
+@@ -286 +299,12 @@ namespace ps2_stubs
+-                m_codecCtx->thread_count = 1;
++                // [Fixer] Slice threads only: MPEG-1/2 decode each slice row independently and the output is
++                // bit-identical to one thread, with no extra frame of latency (frame threading would add delay
++                // and change when sceMpegGetPicture sees a picture). Single-thread decode of full-screen CG ran on
++                // the game thread and was a large share of a slow core. PS2_MPEG_THREADS=<n> overrides (1 = old).
++                {
++                    int threads = static_cast<int>(std::thread::hardware_concurrency());
++                    threads = threads >= 4 ? std::min(4, threads / 2) : 1;
++                    if (const char *v = std::getenv("PS2_MPEG_THREADS"))
++                        threads = std::clamp(std::atoi(v), 1, 16);
++                    m_codecCtx->thread_count = threads;
++                    m_codecCtx->thread_type = threads > 1 ? FF_THREAD_SLICE : 0;
++                }
+@@ -455,0 +480 @@ namespace ps2_stubs
++            std::vector<uint8_t> m_padded; // [Fixer] padded parser input (feed)
+diff --git a/ps2xRuntime/src/lib/dod_vif1_unpack.h b/ps2xRuntime/src/lib/dod_vif1_unpack.h
+index ee09388..3d7ea92 100644
+--- a/ps2xRuntime/src/lib/dod_vif1_unpack.h
++++ b/ps2xRuntime/src/lib/dod_vif1_unpack.h
+@@ -43,0 +44,23 @@ namespace dod_vif1_unpack
++            // [Fixer] V4-32 without mask or STMOD (the bulk of VU1 vertex uploads; 1 % of the battle EE thread): when
++            // every source vector is present, each one is a straight 16-byte copy. Same bytes, same address and
++            // write-cycle stepping as the general loop below (skipping mode; filling mode keeps the general loop).
++            if constexpr (VNVL == 12u && !MASK && MODE == 0u)
++            {
++                if (!isFill && static_cast<uint64_t>(num) * 16u <= dataBytes)
++                {
++                    uint32_t cycle = 0u;
++                    for (uint32_t n = 0; n < num; ++n)
++                    {
++                        std::memcpy(vuMem + (addr & memMask), data + n * 16u, 16u);
++                        addr += 16u;
++                        if (++cycle >= wl)
++                        {
++                            addr += skipBytes;
++                            cycle = 0u;
++                        }
++                    }
++                    regs.num = 0u;
++                    return;
++                }
++            }
++
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+index cdd1ace..9b21c31 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.cpp
+@@ -5,0 +6,2 @@
++#include "dod_perf.h"
++#include "ps2_host_os.h"
+@@ -81,0 +84 @@ namespace
++    std::atomic<uint64_t> g_flips{0u}; // [Fixer] DISPFB changes (game frames shown), for the perf overlay
+@@ -85,0 +89 @@ namespace
++    std::atomic<int> g_currentScale{1};
+@@ -91,0 +96 @@ namespace
++    std::atomic<bool> g_openProbe{false}; // [Fixer] attach() is probing the open; a failure falls back
+@@ -187 +192,4 @@ namespace
+-        g_open = g_api->open(&params) != 0;
++        // [Fixer] PS2_GS_TEST_OPEN_FAIL=1 (tests only): behave as if device/swap-chain creation failed, to exercise
++        // the fallback without a broken GPU.
++        static const bool s_testOpenFail = std::getenv("PS2_GS_TEST_OPEN_FAIL") != nullptr;
++        g_open = !s_testOpenFail && g_api->open(&params) != 0;
+@@ -188,0 +197,2 @@ namespace
++        // [Fixer] During attach()'s probe the caller falls back to the CPU raster; only a lazy open without the probe
++        // (DOD_GS_THREAD=0) still leaves the port with nothing to draw.
+@@ -190 +200,2 @@ namespace
+-            std::fprintf(stderr, "[pcsx2-gs] the GS failed to open; nothing will be drawn\n");
++            std::fprintf(stderr, g_openProbe.load() ? "[pcsx2-gs] GS open failed (device or swap chain creation)\n"
++                                                    : "[pcsx2-gs] the GS failed to open; nothing will be drawn\n");
+@@ -197,0 +209 @@ namespace dodpcsx2
++    bool probeGsOpen(); // defined after the GS thread
+@@ -206,0 +219 @@ namespace dodpcsx2
++        g_currentScale.store(std::clamp(scale, 1, 8), std::memory_order_relaxed);
+@@ -269,0 +283,13 @@ namespace dodpcsx2
++        // [Fixer] Open the GS before the game starts. A device/swap-chain failure (old GPU, missing feature level,
++        // remote session, broken driver) used to leave the port drawing nothing forever: the host had already given
++        // presentation to the child window and the built-in raster received no packets. Now it falls back for real.
++        if (!probeGsOpen())
++        {
++            std::fprintf(stderr, "[pcsx2-gs] the GS could not open on this system (see the pcsx2gs log lines above); "
++                                 "falling back to the built-in CPU raster\n");
++            shutdown();
++            DestroyWindow(g_child);
++            g_child = nullptr;
++            g_api = nullptr;
++            return false;
++        }
+@@ -399,0 +426 @@ namespace dodpcsx2
++                g_flips.fetch_add(1u, std::memory_order_relaxed);
+@@ -534,0 +562 @@ namespace dodpcsx2
++            kOpenProbe = 7, // [Fixer] no-op after ensureOpen(); signals probeOpen()
+@@ -536,0 +565,37 @@ namespace dodpcsx2
++        // [Fixer] Main thread, before the game thread exists: open the GS on this worker now (the first chunk would
++        // do it anyway) and wait for the outcome while servicing cross-thread window messages, because DXGI may send
++        // the parent window synchronous messages while it creates the swap chain. Returns false only when the open
++        // definitely failed (device/swap chain creation); a slow open past the timeout continues asynchronously.
++        bool probeOpen(DWORD timeoutMs)
++        {
++            m_probeEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++            if (!m_probeEvent)
++                return true;
++            push(kOpenProbe, 0u, nullptr, 0u);
++            publish();
++            const ULONGLONG deadline = GetTickCount64() + timeoutMs;
++            bool signalled = false;
++            for (;;)
++            {
++                const ULONGLONG now = GetTickCount64();
++                const DWORD left = now >= deadline ? 0u : static_cast<DWORD>(deadline - now);
++                const DWORD r = MsgWaitForMultipleObjects(1, &m_probeEvent, FALSE, left, QS_SENDMESSAGE);
++                if (r == WAIT_OBJECT_0)
++                {
++                    signalled = true;
++                    break;
++                }
++                if (r != WAIT_OBJECT_0 + 1)
++                    break; // timeout or wait failure: let the open finish on its own
++                MSG message;
++                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
++            }
++            if (!signalled)
++            {
++                std::fprintf(stderr, "[pcsx2-gs] GS open still running after %lu ms; continuing\n",
++                             static_cast<unsigned long>(timeoutMs));
++                return true;
++            }
++            return !g_failed;
++        }
++
+@@ -631,0 +697 @@ namespace dodpcsx2
++            ps2host::setCurrentThreadRole(ps2host::ThreadRole::Gs); // [Fixer] also names it "dod GS"
+@@ -671,0 +738,6 @@ namespace dodpcsx2
++                if (header[0] == kOpenProbe)
++                {
++                    if (m_probeEvent)
++                        SetEvent(m_probeEvent);
++                    continue;
++                }
+@@ -748,0 +821 @@ namespace dodpcsx2
++        HANDLE m_probeEvent = nullptr; // [Fixer] probeOpen(); intentionally not closed (the worker may still signal it)
+@@ -779,0 +853,14 @@ namespace dodpcsx2
++    // [Fixer] attach(): opens the GS ahead of the game thread. With the GS on the game thread (DOD_GS_THREAD=0, tests)
++    // the open stays lazy as before.
++    bool probeGsOpen()
++    {
++        if (GsThread *thread = gsThread())
++        {
++            g_openProbe.store(true);
++            const bool ok = thread->probeOpen(60000u);
++            g_openProbe.store(false);
++            return ok;
++        }
++        return true;
++    }
++
+@@ -867,0 +955,2 @@ namespace dodpcsx2
++        // [Fixer] DOD_PERF: game-thread time blocked on a GS readback (queue drain + GPU copy + Map).
++        dodperf::Scope readbackTime(dodperf::GsReadback);
+@@ -884,0 +974,5 @@ namespace dodpcsx2
++    int scale()
++    {
++        return g_currentScale.load(std::memory_order_relaxed);
++    }
++
+@@ -889,0 +984,12 @@ namespace dodpcsx2
++    uint64_t flips()
++    {
++        return g_flips.load(std::memory_order_relaxed);
++    }
++
++    void setOsdLine(const char *text)
++    {
++        // set_osd may be called from any thread (pcsx2gs_api.h); the DLL keeps its own copy of the text.
++        if (g_api && g_api->set_osd)
++            g_api->set_osd(nullptr, 0u, 0.0f, text);
++    }
++
+@@ -1004,0 +1111 @@ namespace dodpcsx2
++    int scale() { return 1; }
+@@ -1006,0 +1114,2 @@ namespace dodpcsx2
++    uint64_t flips() { return 0u; }
++    void setOsdLine(const char *) {}
+diff --git a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
+index 36cb673..94d98db 100644
+--- a/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
++++ b/ps2xRuntime/src/lib/gs/dod_pcsx2_gs.h
+@@ -52,0 +53,2 @@ namespace dodpcsx2
++    // [Fixer] The internal resolution multiplier in use (any thread).
++    int scale();
+@@ -59,0 +62,4 @@ namespace dodpcsx2
++    // [Fixer] Game frames shown so far (DISPFB changes; any thread).
++    uint64_t flips();
++    // [Fixer] Any thread: one line of text at the bottom left of the image (the perf overlay); null or "" hides it.
++    void setOsdLine(const char *text);
+diff --git a/ps2xRuntime/src/lib/gs/dod_perf.h b/ps2xRuntime/src/lib/gs/dod_perf.h
+index b9b5233..71db937 100644
+--- a/ps2xRuntime/src/lib/gs/dod_perf.h
++++ b/ps2xRuntime/src/lib/gs/dod_perf.h
+@@ -13 +13,2 @@ enum Stage { HostFrame, Upload, Latch, StateWait, BackendWait, VramWait,
+-             VramCopy, Convert, RecordWait, Draw, Transfer, EndDrawing, Export, GsInterrupt, IpuRun, Count };
++             VramCopy, Convert, RecordWait, Draw, Transfer, EndDrawing, Export, GsInterrupt, IpuRun,
++             GsReadback, MpegDecode, Count };
+@@ -16 +17,2 @@ inline constexpr const char *names[Count] = {"host_frame", "upload", "gs_latch",
+-    "transfer", "end_drawing", "frame_export", "gs_interrupt", "ipu_run"};
++    "transfer", "end_drawing", "frame_export", "gs_interrupt", "ipu_run",
++    "gs_readback", "mpeg_decode"};
+diff --git a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+index f9e7413..d0e4782 100644
+--- a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
+@@ -49,0 +50,12 @@ namespace
++                // [Fixer] Only A+D descriptors (0xE) can address SIGNAL/FINISH/LABEL/TRXDIR. Most PACKED tags (vertex
++                // data: RGBAQ/ST/XYZ...) have none, so skip their nloop * nreg qwords without visiting each one. The
++                // per-qword loop below returned false when the data ran out; skipping past the end ends the outer
++                // loop with the same result.
++                bool hasAd = false;
++                for (uint32_t r = 0; r < nreg; ++r)
++                    hasAd |= ((hi >> (4u * r)) & 0xFu) == 0xEu;
++                if (!hasAd)
++                {
++                    q += nloop * nreg;
++                    continue;
++                }
+diff --git a/ps2xRuntime/src/lib/ipu/ps2_ipu.c b/ps2xRuntime/src/lib/ipu/ps2_ipu.c
+index a602434..702a700 100644
+--- a/ps2xRuntime/src/lib/ipu/ps2_ipu.c
++++ b/ps2xRuntime/src/lib/ipu/ps2_ipu.c
+@@ -348,0 +349,27 @@ static double idct_c[8][8];
++/* [Fixer] DOD_PERF: IPU cost counters, reported every 5 s (time in commands, restarts after starvation,
++ * IDCT blocks and how many of them were sparse). Diagnostics only. */
++#include <time.h>
++static int perf_on = -1;
++static unsigned long long perf_ns, perf_cmds, perf_restarts, perf_blocks, perf_rows_skipped, perf_dc_only;
++static unsigned long long perf_last_ns, perf_mb_ns, perf_csc_ns, perf_mbs, perf_idct_ns;
++static unsigned long long perf_now(void) {
++    struct timespec ts;
++    timespec_get(&ts, TIME_UTC);
++    return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
++}
++static int perf_enabled(void) {
++    if (perf_on < 0) perf_on = getenv("DOD_PERF") != NULL;
++    return perf_on;
++}
++static void perf_report(unsigned long long now) {
++    if (!perf_last_ns) perf_last_ns = now;
++    if (now - perf_last_ns < 5000000000ull) return;
++    ps2_log("perf: %.1fs ipu_ms=%.1f (macroblock decode %.1f, idct %.1f, csc+out %.1f) cmds=%llu restarts=%llu "
++            "macroblocks=%llu idct_blocks=%llu dc_only=%llu zero_rows_skipped=%llu",
++            (now - perf_last_ns) / 1e9, perf_ns / 1e6, perf_mb_ns / 1e6, perf_idct_ns / 1e6, perf_csc_ns / 1e6,
++            perf_cmds, perf_restarts, perf_mbs, perf_blocks, perf_dc_only, perf_rows_skipped);
++    perf_last_ns = now;
++    perf_ns = perf_cmds = perf_restarts = perf_blocks = perf_rows_skipped = perf_dc_only = 0;
++    perf_mb_ns = perf_csc_ns = perf_mbs = perf_idct_ns = 0;
++}
++
+@@ -357 +384 @@ static void idct_init(void) {
+-static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
++static void idct_8x8_ref(const s16 *in, s16 *out, int lo, int hi) {
+@@ -378,0 +406,44 @@ static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
++/* [Fixer] Same arithmetic as idct_8x8_ref, bit for bit, with the work of all-zero coefficient rows skipped.
++ * A zero input row gives tmp = +0.0 for that row, and adding (+/-)0.0 to a running double sum never changes it
++ * (the sum starts at +0.0 and cannot become -0.0), so leaving those terms out of the column pass keeps every
++ * output identical while the non-zero rows are still summed in ascending order. MPEG intra blocks are mostly
++ * sparse (often DC or a few low-frequency rows), which makes the column pass 2-8x cheaper. PS2_IPU_IDCT_REF=1
++ * selects the reference loop for A/B checks. */
++static int idct_use_ref = -1;
++static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
++    double tmp[64];
++    int rows[8];
++    int nrows = 0, y, x, u, k;
++    if (idct_use_ref < 0) idct_use_ref = getenv("PS2_IPU_IDCT_REF") != NULL;
++    perf_blocks++;
++    if (idct_use_ref) { idct_8x8_ref(in, out, lo, hi); return; }
++    for (y = 0; y < 8; y++) {
++        const s16 *row = in + y * 8;
++        int nz = 0;
++        for (u = 0; u < 8; u++) if (row[u]) { nz = 1; break; }
++        if (!nz) { perf_rows_skipped++; continue; }
++        rows[nrows++] = y;
++        for (x = 0; x < 8; x++) {
++            double s = 0.0;
++            for (u = 0; u < 8; u++) if (row[u]) s += idct_c[u][x] * row[u];
++            tmp[y * 8 + x] = s * 0.5;
++        }
++    }
++    if (nrows == 1 && rows[0] == 0) {
++        int dc = 1;
++        for (u = 1; u < 8; u++) if (in[u]) { dc = 0; break; }
++        if (dc) perf_dc_only++;
++    }
++    for (x = 0; x < 8; x++)
++        for (y = 0; y < 8; y++) {
++            double s = 0.0;
++            int r;
++            for (k = 0; k < nrows; k++) s += idct_c[rows[k]][y] * tmp[rows[k] * 8 + x];
++            s *= 0.5;
++            r = (int)(s < 0 ? s - 0.5 : s + 0.5);
++            if (r < lo) r = lo;
++            if (r > hi) r = hi;
++            out[y * 8 + x] = (s16)r;
++        }
++}
++
+@@ -480 +551,5 @@ static int decode_block(s16 *out, int cc, int intra, u32 qsc) {
+-    idct_8x8(coef, out, intra ? 0 : -256, intra ? 255 : 255);
++    {
++        const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
++        idct_8x8(coef, out, intra ? 0 : -256, intra ? 255 : 255);
++        if (t0) perf_idct_ns += perf_now() - t0;
++    }
+@@ -695,0 +771,17 @@ static void cmd_bdec(u32 opt) {
++/* [Fixer] Resumable IDEC. The decoder used to restart a starved IDEC from its first macroblock on every new piece
++ * of input (snapshot at command start), so a frame streamed in N pieces was decoded about N/2 times over (3-4x the
++ * work in measured CG, close to a full core on slower CPUs). idec_ck is the state at the last macroblock boundary:
++ * bit position, DC predictors, quantiser scale, the first-macroblock flag and the output length. Output up to it
++ * is final and identical; PS2_IPU_IDEC_RESTART=1 restores the old full restart for A/B checks. */
++static struct {
++    int valid;
++    u32 opt;
++    u64 in_bit;
++    u32 out_len;
++    s32 dc_pred[3];
++    u32 qsc;
++    int first;
++} idec_ck;
++static int ipu_resuming;
++static int idec_restart_mode = -1;
++
+@@ -706,3 +798,14 @@ static void cmd_idec(u32 opt) {
+-    bit_skip(fb);
+-    dc_pred_reset();
+-    out_reset();
++    if (ipu_resuming && idec_ck.valid && idec_ck.opt == opt) {
++        /* [Fixer] Continue a starved IDEC at its last complete macroblock instead of decoding it again from the
++         * first one (see idec_ck). */
++        in_bit = idec_ck.in_bit;
++        if (out_len > idec_ck.out_len) out_len = idec_ck.out_len;
++        memcpy(dc_pred, idec_ck.dc_pred, sizeof dc_pred);
++        qsc = idec_ck.qsc;
++        first = idec_ck.first;
++    } else {
++        bit_skip(fb);
++        dc_pred_reset();
++        out_reset();
++    }
++    idec_ck.valid = 0;
+@@ -711,0 +815,7 @@ static void cmd_idec(u32 opt) {
++        /* [Fixer] Macroblock boundary: everything before it is final output. */
++        idec_ck.opt = opt;
++        idec_ck.in_bit = in_bit;
++        idec_ck.out_len = out_len;
++        memcpy(idec_ck.dc_pred, dc_pred, sizeof dc_pred);
++        idec_ck.qsc = qsc;
++        idec_ck.first = first;
+@@ -724,2 +834,7 @@ static void cmd_idec(u32 opt) {
+-        if (!decode_macroblock(y, cb, cr, 1, 0x3Fu, qsc, field)) break;
+-        emit_rgb(y, cb, cr, ofm, dte, sgn);
++        {
++            const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
++            if (!decode_macroblock(y, cb, cr, 1, 0x3Fu, qsc, field)) break;
++            if (t0) { const unsigned long long t1 = perf_now(); perf_mb_ns += t1 - t0; perf_mbs++;
++                      emit_rgb(y, cb, cr, ofm, dte, sgn); perf_csc_ns += perf_now() - t1; }
++            else emit_rgb(y, cb, cr, ofm, dte, sgn);
++        }
+@@ -731,0 +847,9 @@ static void cmd_idec(u32 opt) {
++    if (ipu_starved) {
++        /* [Fixer] Rewind to the last complete macroblock; ipu_command keeps this state instead of the command-start
++         * snapshot, and the next run (more input) resumes from here. A macroblock emitted from a short read is
++         * dropped with it, exactly as the full restart dropped it. */
++        in_bit = idec_ck.in_bit;
++        out_len = idec_ck.out_len;
++        memcpy(dc_pred, idec_ck.dc_pred, sizeof dc_pred);
++        idec_ck.valid = 1;
++    }
+@@ -881 +1005 @@ static void cmd_log_report(void) {
+-static void ipu_command(u32 cmd) {
++static void ipu_command_ex(u32 cmd, int resume) {
+@@ -884,0 +1009,2 @@ static void ipu_command(u32 cmd) {
++    if (idec_restart_mode < 0) idec_restart_mode = getenv("PS2_IPU_IDEC_RESTART") != NULL;
++    if (!resume) idec_ck.valid = 0;
+@@ -889,0 +1016 @@ static void ipu_command(u32 cmd) {
++        ipu_resuming = resume && !idec_restart_mode;
+@@ -891 +1018,10 @@ static void ipu_command(u32 cmd) {
+-        ipu_run(cmd);
++        {
++            const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
++            ipu_run(cmd);
++            if (t0) {
++                const unsigned long long t1 = perf_now();
++                perf_ns += t1 - t0;
++                perf_cmds++;
++                perf_report(t1);
++            }
++        }
+@@ -911 +1047,8 @@ static void ipu_command(u32 cmd) {
+-        snap_restore(&cmd_snap);
++        if ((cmd >> 28) == IPU_IDEC && idec_ck.valid && !idec_restart_mode) {
++            /* keep the rewound macroblock-boundary state (cmd_idec); input pulled meanwhile stays as before */
++            if (in_len < cmd_snap.in_len) in_len = cmd_snap.in_len;
++        } else {
++            snap_restore(&cmd_snap);
++            perf_restarts++;
++        }
++        resume = 1;
+@@ -975,0 +1119 @@ void ps2_ipu_init(void) {
++    idec_ck.valid = 0;
+@@ -1020 +1164 @@ void ps2_ipu_write32(u32 a, u32 v) {
+-    case 0x00: ipu_command(v); return;
++    case 0x00: ipu_command_ex(v, 0); return;
+@@ -1022,0 +1167 @@ void ps2_ipu_write32(u32 a, u32 v) {
++            idec_ck.valid = 0; /* [Fixer] RST drops the input the checkpoint refers to */
+@@ -1097 +1242,2 @@ void ps2_ipu_dma_in(const void *qw, u32 n) {
+-        ipu_command(ipu_pending_cmd);
++        if (!((ipu_pending_cmd >> 28) == IPU_IDEC && idec_ck.valid && !idec_restart_mode)) perf_restarts++;
++        ipu_command_ex(ipu_pending_cmd, 1);
+@@ -1106,0 +1253,12 @@ void ps2_ipu_dma_out(void *dst, u32 n) {
++    if (perf_enabled() && take) {
++        /* [Fixer] DOD_PERF: FNV-1a of the bytes the game receives, logged at every 16 MiB, so two runs (e.g.
++         * PS2_IPU_IDCT_REF=1 against the default) can be compared at identical byte counts. */
++        static unsigned long long hash = 1469598103934665603ull, delivered = 0ull;
++        const u8 *b = out_buf + out_pos;
++        u32 i;
++        for (i = 0; i < take; i++) {
++            hash = (hash ^ b[i]) * 1099511628211ull;
++            if ((++delivered & ((16ull << 20) - 1ull)) == 0ull)
++                ps2_log("perf: output milestone %llu MiB hash %016llX", delivered >> 20, hash);
++        }
++    }
+diff --git a/ps2xRuntime/src/lib/ps2_host_cpu.cpp b/ps2xRuntime/src/lib/ps2_host_cpu.cpp
+new file mode 100644
+index 0000000..4c3f550
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_cpu.cpp
+@@ -0,0 +1,113 @@
++// [Fixer] Host CPU capability report (ps2_host_cpu.h). Plain CPUID/XGETBV only: this file must not contain any
++// instruction beyond the x64 baseline, because it runs before the SSE4.1 check passes.
++#include "ps2_host_cpu.h"
++
++#include <cstdio>
++#include <cstring>
++#include <thread>
++
++#if defined(_MSC_VER)
++#include <intrin.h>
++#elif defined(__x86_64__) || defined(__i386__)
++#include <cpuid.h>
++#endif
++
++namespace
++{
++    void cpuid(int out[4], int leaf, int subleaf = 0)
++    {
++#if defined(_MSC_VER)
++        __cpuidex(out, leaf, subleaf);
++#elif defined(__x86_64__) || defined(__i386__)
++        unsigned a = 0, b = 0, c = 0, d = 0;
++        __cpuid_count(leaf, subleaf, a, b, c, d);
++        out[0] = static_cast<int>(a);
++        out[1] = static_cast<int>(b);
++        out[2] = static_cast<int>(c);
++        out[3] = static_cast<int>(d);
++#else
++        out[0] = out[1] = out[2] = out[3] = 0;
++#endif
++    }
++
++    unsigned long long xgetbv0()
++    {
++#if defined(_MSC_VER)
++        return _xgetbv(0);
++#elif defined(__x86_64__) || defined(__i386__)
++        unsigned eax = 0, edx = 0;
++        __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(0));
++        return (static_cast<unsigned long long>(edx) << 32) | eax;
++#else
++        return 0;
++#endif
++    }
++}
++
++namespace ps2host
++{
++    CpuReport cpuReport()
++    {
++        CpuReport r;
++        r.logicalCores = std::thread::hardware_concurrency();
++#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
++        int regs[4] = {};
++        cpuid(regs, 0);
++        const int maxLeaf = regs[0];
++        char vendor[13] = {};
++        std::memcpy(vendor + 0, &regs[1], 4);
++        std::memcpy(vendor + 4, &regs[3], 4);
++        std::memcpy(vendor + 8, &regs[2], 4);
++        r.vendor = vendor;
++        if (maxLeaf >= 1)
++        {
++            cpuid(regs, 1);
++            const unsigned ecx = static_cast<unsigned>(regs[2]);
++            r.sse41 = (ecx >> 19) & 1u;
++            r.sse42 = (ecx >> 20) & 1u;
++            r.popcnt = (ecx >> 23) & 1u;
++            const bool fmaBit = (ecx >> 12) & 1u;
++            const bool osxsave = (ecx >> 27) & 1u;
++            const bool avxBit = (ecx >> 28) & 1u;
++            r.osAvx = avxBit && osxsave && (xgetbv0() & 6ull) == 6ull;
++            r.fma = r.osAvx && fmaBit;
++            if (maxLeaf >= 7)
++            {
++                cpuid(regs, 7, 0);
++                const unsigned ebx = static_cast<unsigned>(regs[1]);
++                r.avx2 = r.osAvx && ((ebx >> 5) & 1u);
++                r.bmi2 = (ebx >> 8) & 1u;
++            }
++        }
++        cpuid(regs, static_cast<int>(0x80000000u));
++        if (static_cast<unsigned>(regs[0]) >= 0x80000004u)
++        {
++            char brand[49] = {};
++            for (int i = 0; i < 3; ++i)
++            {
++                cpuid(regs, static_cast<int>(0x80000002u + i));
++                std::memcpy(brand + 16 * i, regs, 16);
++            }
++            const char *start = brand;
++            while (*start == ' ')
++                ++start;
++            r.brand = start;
++        }
++#endif
++        return r;
++    }
++
++    bool cpuMeetsBaseline(std::string *missing)
++    {
++        const CpuReport r = cpuReport();
++        std::fprintf(stderr, "[cpu] %s | %s | %u logical | SSE4.1 %s SSE4.2 %s AVX(OS) %s AVX2 %s FMA %s BMI2 %s\n",
++                     r.brand.empty() ? "?" : r.brand.c_str(), r.vendor.c_str(), r.logicalCores,
++                     r.sse41 ? "yes" : "NO", r.sse42 ? "yes" : "no", r.osAvx ? "yes" : "no", r.avx2 ? "yes" : "no",
++                     r.fma ? "yes" : "no", r.bmi2 ? "yes" : "no");
++        if (r.sse41)
++            return true;
++        if (missing)
++            *missing = "CPU lacks SSE4.1 (" + (r.brand.empty() ? r.vendor : r.brand) + ")";
++        return false;
++    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_host_os.cpp b/ps2xRuntime/src/lib/ps2_host_os.cpp
+new file mode 100644
+index 0000000..a516b32
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_os.cpp
+@@ -0,0 +1,408 @@
++// [Fixer] Host OS scheduling and crash reporting (ps2_host_os.h). Windows only; other hosts get no-ops.
++#include "ps2_host_os.h"
++
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <cwchar>
++#include <thread>
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <dbghelp.h>
++#include <dxgi1_6.h>
++#include <d3d12.h>
++#include <exception>
++#include <string>
++#include <vector>
++#include <algorithm>
++#endif
++
++#if defined(_WIN32)
++// [Fixer] Dual-GPU laptops: ask the NVIDIA Optimus / AMD PowerXpress drivers for the discrete GPU. The PCSX2 GS already
++// picks the high-performance adapter through DXGI on Windows 10 1803+; these exports cover older systems and the
++// OpenGL host presentation used by the CPU-raster fallback. Exported from the EXE (this object is always linked).
++extern "C"
++{
++    __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
++    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
++}
++#endif
++
++namespace
++{
++    std::atomic<uint32_t> g_dumpsWritten{0};
++#if defined(_WIN32)
++    std::atomic<HANDLE> g_roleThreads[3] = {}; // ThreadRole -> a handle of the thread that took it (perf overlay)
++#endif
++
++    bool priorityRaiseAllowed()
++    {
++        const char *v = std::getenv("PS2_THREAD_PRIORITY");
++        if (v && v[0] == '0')
++            return false;
++        return std::thread::hardware_concurrency() >= 4u;
++    }
++
++#if defined(_WIN32)
++    // Win32 output without the CRT stream locks (a crash may happen while one is held).
++    void writeStderr(const char *text)
++    {
++        const HANDLE err = GetStdHandle(STD_ERROR_HANDLE);
++        if (err && err != INVALID_HANDLE_VALUE)
++        {
++            DWORD written = 0;
++            WriteFile(err, text, static_cast<DWORD>(std::strlen(text)), &written, nullptr);
++        }
++    }
++
++    using MiniDumpWriteDumpFn = BOOL(WINAPI *)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
++                                               PMINIDUMP_EXCEPTION_INFORMATION, PMINIDUMP_USER_STREAM_INFORMATION,
++                                               PMINIDUMP_CALLBACK_INFORMATION);
++    MiniDumpWriteDumpFn g_writeDump = nullptr;
++    wchar_t g_dumpDir[MAX_PATH] = {};
++    std::atomic<bool> g_inCrash{false};
++    std::atomic<bool> g_crashInstalled{false};
++    LPTOP_LEVEL_EXCEPTION_FILTER g_previousFilter = nullptr;
++    constexpr size_t kKeepDumps = 4u; // a crash loop must not fill the disk
++
++    void pruneOldDumps()
++    {
++        std::wstring pattern = std::wstring(g_dumpDir) + L"\\crash-*.dmp";
++        WIN32_FIND_DATAW data;
++        const HANDLE find = FindFirstFileW(pattern.c_str(), &data);
++        if (find == INVALID_HANDLE_VALUE)
++            return;
++        std::vector<std::wstring> names;
++        do
++            names.emplace_back(data.cFileName);
++        while (FindNextFileW(find, &data));
++        FindClose(find);
++        std::sort(names.begin(), names.end()); // crash-YYYYMMDD-HHMMSS: name order is time order
++        while (names.size() >= kKeepDumps)
++        {
++            DeleteFileW((std::wstring(g_dumpDir) + L"\\" + names.front()).c_str());
++            names.erase(names.begin());
++        }
++    }
++
++    void writeDump(EXCEPTION_POINTERS *exception, const char *reason)
++    {
++        char line[512];
++        if (exception && exception->ExceptionRecord)
++        {
++            const EXCEPTION_RECORD &record = *exception->ExceptionRecord;
++            const void *address = record.ExceptionAddress;
++            HMODULE module = nullptr;
++            wchar_t modulePath[MAX_PATH] = L"?";
++            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
++                                   static_cast<LPCWSTR>(address), &module) && module)
++                GetModuleFileNameW(module, modulePath, MAX_PATH);
++            const wchar_t *base = modulePath;
++            for (const wchar_t *p = modulePath; *p; ++p)
++                if (*p == L'\\' || *p == L'/')
++                    base = p + 1;
++            std::snprintf(line, sizeof(line), "[crash] %s: exception 0x%08lX at %ls+0x%llX (thread %lu)\n", reason,
++                          static_cast<unsigned long>(record.ExceptionCode), base,
++                          static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
++                                                          reinterpret_cast<uintptr_t>(module)),
++                          static_cast<unsigned long>(GetCurrentThreadId()));
++        }
++        else
++        {
++            std::snprintf(line, sizeof(line), "[crash] %s (thread %lu)\n", reason,
++                          static_cast<unsigned long>(GetCurrentThreadId()));
++        }
++        writeStderr(line);
++        if (!g_writeDump || !g_dumpDir[0])
++            return;
++        CreateDirectoryW(g_dumpDir, nullptr);
++        pruneOldDumps();
++        SYSTEMTIME now;
++        GetLocalTime(&now);
++        wchar_t path[MAX_PATH + 64];
++        swprintf(path, sizeof(path) / sizeof(path[0]), L"%ls\\crash-%04u%02u%02u-%02u%02u%02u.dmp", g_dumpDir,
++                 now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
++        const HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
++        if (file == INVALID_HANDLE_VALUE)
++            return;
++        MINIDUMP_EXCEPTION_INFORMATION info{};
++        info.ThreadId = GetCurrentThreadId();
++        info.ExceptionPointers = exception;
++        info.ClientPointers = FALSE;
++        const MINIDUMP_TYPE type = static_cast<MINIDUMP_TYPE>(MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules |
++                                                              MiniDumpWithIndirectlyReferencedMemory);
++        const BOOL ok = g_writeDump(GetCurrentProcess(), GetCurrentProcessId(), file, type,
++                                    exception ? &info : nullptr, nullptr, nullptr);
++        CloseHandle(file);
++        if (ok)
++        {
++            g_dumpsWritten.fetch_add(1u, std::memory_order_relaxed);
++            std::snprintf(line, sizeof(line), "[crash] minidump: %ls\n", path);
++        }
++        else
++        {
++            DeleteFileW(path);
++            std::snprintf(line, sizeof(line), "[crash] minidump failed (error %lu)\n",
++                          static_cast<unsigned long>(GetLastError()));
++        }
++        writeStderr(line);
++    }
++
++    LONG WINAPI crashFilter(EXCEPTION_POINTERS *exception)
++    {
++        if (!g_inCrash.exchange(true))
++            writeDump(exception, "unhandled exception");
++        return g_previousFilter ? g_previousFilter(exception) : EXCEPTION_CONTINUE_SEARCH;
++    }
++
++    [[noreturn]] void onTerminate()
++    {
++        if (!g_inCrash.exchange(true))
++            writeDump(nullptr, "std::terminate (uncaught C++ exception)");
++        std::abort();
++    }
++#endif
++}
++
++namespace ps2host
++{
++    void configureHostProcess()
++    {
++#if defined(_WIN32)
++        static std::atomic<bool> done{false};
++        if (done.exchange(true))
++            return;
++        // PROCESS_POWER_THROTTLING_STATE; constants spelled out for older SDKs.
++        struct PowerThrottlingState
++        {
++            ULONG Version, ControlMask, StateMask;
++        };
++        constexpr int kProcessPowerThrottling = 4;
++        constexpr ULONG kExecutionSpeed = 0x1u, kIgnoreTimerResolution = 0x4u;
++        using SetProcessInformationFn = BOOL(WINAPI *)(HANDLE, int, LPVOID, DWORD);
++        const auto setInfo = reinterpret_cast<SetProcessInformationFn>(
++            GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessInformation"));
++        const char *result = "unavailable (Windows 7/8)";
++        if (setInfo)
++        {
++            PowerThrottlingState state{1u, kExecutionSpeed | kIgnoreTimerResolution, 0u};
++            if (setInfo(GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state)))
++                result = "off (no EcoQoS, timer resolution kept when hidden)";
++            else
++            {
++                state.ControlMask = kExecutionSpeed; // Windows 10 before 21H2 rejects the timer flag
++                result = setInfo(GetCurrentProcess(), kProcessPowerThrottling, &state, sizeof(state))
++                             ? "off (no EcoQoS)"
++                             : "unchanged (SetProcessInformation failed)";
++            }
++        }
++        std::fprintf(stderr, "[host] power throttling %s; EE/GS threads %s priority\n", result,
++                     priorityRaiseAllowed() ? "above-normal" : "normal");
++#endif
++    }
++
++    void setCurrentThreadRole(ThreadRole role)
++    {
++#if defined(_WIN32)
++        if ((role == ThreadRole::Game || role == ThreadRole::Gs) && priorityRaiseAllowed())
++            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
++        HANDLE self = nullptr;
++        if (DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self,
++                            THREAD_QUERY_LIMITED_INFORMATION, FALSE, 0))
++        {
++            if (const HANDLE previous = g_roleThreads[static_cast<int>(role)].exchange(self))
++                CloseHandle(previous);
++        }
++        if (role == ThreadRole::Gs) // named for per-thread reports (the EE and IOP threads name themselves)
++        {
++            using SetThreadDescriptionFn = HRESULT(WINAPI *)(HANDLE, PCWSTR);
++            if (const auto describe = reinterpret_cast<SetThreadDescriptionFn>(
++                    GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetThreadDescription")))
++                describe(GetCurrentThread(), L"dod GS");
++        }
++#else
++        (void)role;
++#endif
++    }
++
++    void installCrashHandler()
++    {
++#if defined(_WIN32)
++        if (g_crashInstalled.exchange(true))
++            return;
++        // Loaded now: LoadLibrary inside a crashing process can deadlock on the loader lock.
++        if (const HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll"))
++            g_writeDump = reinterpret_cast<MiniDumpWriteDumpFn>(GetProcAddress(dbghelp, "MiniDumpWriteDump"));
++        // <exe folder>\logs, where the launcher keeps last-run.log (the working directory may differ).
++        const DWORD n = GetModuleFileNameW(nullptr, g_dumpDir, MAX_PATH - 8);
++        wchar_t *slash = nullptr;
++        for (wchar_t *p = g_dumpDir; n > 0 && n < MAX_PATH - 8 && *p; ++p)
++            if (*p == L'\\' || *p == L'/')
++                slash = p;
++        if (slash)
++            wcscpy_s(slash, MAX_PATH - static_cast<size_t>(slash - g_dumpDir), L"\\logs");
++        else
++            g_dumpDir[0] = 0;
++        g_previousFilter = SetUnhandledExceptionFilter(crashFilter);
++        std::set_terminate(onTerminate);
++        // PS2_TEST_CRASH=<seconds> (tests only): an access violation on a worker thread after that many seconds.
++        if (const char *v = std::getenv("PS2_TEST_CRASH"); v && std::atoi(v) > 0)
++        {
++            const int seconds = std::atoi(v);
++            std::thread([seconds] {
++                std::this_thread::sleep_for(std::chrono::seconds(seconds));
++                volatile int *const nowhere = nullptr;
++                *nowhere = 1;
++            }).detach();
++        }
++#endif
++    }
++
++    uint32_t crashDumpsWritten()
++    {
++        return g_dumpsWritten.load(std::memory_order_relaxed);
++    }
++
++    GpuReport gpuReport(const std::string &adapterName)
++    {
++        GpuReport r;
++#if defined(_WIN32)
++        using CreateFactoryFn = HRESULT(WINAPI *)(REFIID, void **);
++        const HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
++        const auto create = dxgi ? reinterpret_cast<CreateFactoryFn>(GetProcAddress(dxgi, "CreateDXGIFactory1")) : nullptr;
++        IDXGIFactory1 *factory = nullptr;
++        if (!create || FAILED(create(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(&factory))) || !factory)
++            return r;
++        const auto utf8 = [](const wchar_t *text) {
++            char out[256] = {};
++            WideCharToMultiByte(CP_UTF8, 0, text, -1, out, sizeof(out) - 1, nullptr, nullptr);
++            std::string s(out);
++            while (!s.empty() && s.back() == ' ')
++                s.pop_back();
++            while (!s.empty() && s.front() == ' ')
++                s.erase(s.begin());
++            return s;
++        };
++        IDXGIAdapter1 *chosen = nullptr;
++        const auto take = [&](IDXGIAdapter1 *adapter) {
++            DXGI_ADAPTER_DESC1 desc{};
++            if (FAILED(adapter->GetDesc1(&desc)))
++                return false;
++            adapter->AddRef();
++            chosen = adapter;
++            r.found = true;
++            r.name = utf8(desc.Description);
++            r.vendorId = desc.VendorId;
++            r.dedicatedBytes = desc.DedicatedVideoMemory;
++            r.software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
++            return true;
++        };
++        std::string wanted = adapterName;
++        if (wanted == "auto")
++            wanted.clear();
++        for (UINT i = 0; !wanted.empty() && !r.found; ++i)
++        {
++            IDXGIAdapter1 *adapter = nullptr;
++            if (FAILED(factory->EnumAdapters1(i, &adapter)))
++                break;
++            DXGI_ADAPTER_DESC1 desc{};
++            if (SUCCEEDED(adapter->GetDesc1(&desc)) && utf8(desc.Description) == wanted)
++                take(adapter);
++            adapter->Release();
++        }
++        IDXGIFactory6 *factory6 = nullptr;
++        if (!r.found && SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory6), reinterpret_cast<void **>(&factory6))))
++        {
++            for (UINT i = 0; !r.found; ++i)
++            {
++                IDXGIAdapter1 *adapter = nullptr;
++                if (FAILED(factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
++                                                                __uuidof(IDXGIAdapter1), reinterpret_cast<void **>(&adapter))))
++                    break;
++                DXGI_ADAPTER_DESC1 desc{};
++                if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE))
++                    take(adapter);
++                adapter->Release();
++            }
++            factory6->Release();
++        }
++        if (!r.found)
++        {
++            IDXGIAdapter1 *adapter = nullptr;
++            if (SUCCEEDED(factory->EnumAdapters1(0, &adapter)))
++            {
++                take(adapter);
++                adapter->Release();
++            }
++        }
++        // Integrated GPUs share system memory (UMA). DXGI has no such flag and an APU may report a 2 GB BIOS carve-out as
++        // "dedicated", so ask D3D12 when it is available (Windows 10); the 1 GiB rule is the fallback.
++        if (chosen && !r.software)
++        {
++            using CreateDeviceFn = HRESULT(WINAPI *)(IUnknown *, D3D_FEATURE_LEVEL, REFIID, void **);
++            const HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
++            const auto createDevice =
++                d3d12 ? reinterpret_cast<CreateDeviceFn>(GetProcAddress(d3d12, "D3D12CreateDevice")) : nullptr;
++            ID3D12Device *device = nullptr;
++            if (createDevice && SUCCEEDED(createDevice(chosen, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
++                                                       reinterpret_cast<void **>(&device))) && device)
++            {
++                D3D12_FEATURE_DATA_ARCHITECTURE arch{};
++                if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE, &arch, sizeof(arch))))
++                {
++                    r.umaKnown = true;
++                    r.uma = arch.UMA != FALSE;
++                }
++                device->Release();
++            }
++        }
++        if (chosen)
++            chosen->Release();
++        factory->Release();
++#else
++        (void)adapterName;
++#endif
++        return r;
++    }
++
++    int autoScaleCap(const GpuReport &gpu, const char **tier)
++    {
++        const char *kind = !gpu.found ? "discrete" // unknown: keep the display-based choice up to 4x
++                           : gpu.software ? "software"
++                           : gpu.umaKnown ? (gpu.uma ? "integrated" : "discrete")
++                           : gpu.dedicatedBytes < (1ull << 30) ? "integrated"
++                                                                : "discrete";
++        if (const char *v = std::getenv("PS2_GPU_TIER"); v && *v)
++            kind = std::strcmp(v, "integrated") == 0 ? "integrated" : std::strcmp(v, "software") == 0 ? "software"
++                                                                                                       : "discrete";
++        if (tier)
++            *tier = kind;
++        return std::strcmp(kind, "software") == 0 ? 1 : std::strcmp(kind, "integrated") == 0 ? 2 : 4;
++    }
++
++    double threadCpuSeconds(ThreadRole role)
++    {
++#if defined(_WIN32)
++        const HANDLE thread = g_roleThreads[static_cast<int>(role)].load();
++        FILETIME created, exited, kernel, user;
++        if (!thread || !GetThreadTimes(thread, &created, &exited, &kernel, &user))
++            return -1.0;
++        const auto seconds = [](const FILETIME &t) {
++            return static_cast<double>((static_cast<uint64_t>(t.dwHighDateTime) << 32) | t.dwLowDateTime) * 1e-7;
++        };
++        return seconds(kernel) + seconds(user);
++#else
++        (void)role;
++        return -1.0;
++#endif
++    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_host_report.cpp b/ps2xRuntime/src/lib/ps2_host_report.cpp
+new file mode 100644
+index 0000000..d3ec523
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_report.cpp
+@@ -0,0 +1,463 @@
++// [Fixer] Performance overlay and diagnostics package (ps2_host_report.h). No raylib here (windows.h is included).
++#include "ps2_host_report.h"
++
++#include "gs/dod_pcsx2_gs.h"
++#include "ps2_host_cpu.h"
++#include "ps2_host_os.h"
++
++#include <algorithm>
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++#include <deque>
++#include <filesystem>
++#include <fstream>
++#include <iterator>
++#include <mutex>
++#include <string>
++#include <thread>
++#include <utility>
++#include <vector>
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
++namespace ps2_host_report
++{
++    namespace
++    {
++        namespace fs = std::filesystem;
++        using Clock = std::chrono::steady_clock;
++
++        std::atomic<bool> g_overlay{false};
++        bool g_overlayShown = false; // window thread
++        bool g_envChecked = false;   // window thread
++        std::mutex g_lock;
++        std::string g_last;
++        std::deque<std::string> g_history; // the last minute of samples, for the package
++        std::string g_status;
++        std::atomic<bool> g_busy{false};
++        std::string g_summary; // the menu's status lines, refreshed with each sample (the menu draws every frame)
++        std::string g_gpu;     // window thread: the GPU line once logs\gpu.txt exists
++
++        struct Sampler
++        {
++            bool started = false;
++            Clock::time_point at;
++            uint64_t presents = 0, flips = 0;
++            double ee = -1.0, gs = -1.0;
++        } g_sampler;
++
++        fs::path exeDir()
++        {
++#if defined(_WIN32)
++            wchar_t path[MAX_PATH] = {};
++            const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
++            if (n > 0 && n < MAX_PATH)
++                return fs::path(path).parent_path();
++#endif
++            std::error_code ec;
++            return fs::current_path(ec);
++        }
++
++        std::string readFile(const fs::path &path, size_t limit = static_cast<size_t>(-1));
++        std::string cpuLine();
++
++        std::string percent(double cpuNow, double cpuThen, double seconds)
++        {
++            if (cpuNow < 0.0 || cpuThen < 0.0 || seconds <= 0.0)
++                return "?";
++            char text[16];
++            std::snprintf(text, sizeof(text), "%.0f%%", std::max(0.0, (cpuNow - cpuThen) / seconds * 100.0));
++            return text;
++        }
++
++        void sample()
++        {
++            const Clock::time_point now = Clock::now();
++            const uint64_t presents = dodpcsx2::presents();
++            const uint64_t flips = dodpcsx2::flips();
++            const double ee = ps2host::threadCpuSeconds(ps2host::ThreadRole::Game);
++            const double gs = ps2host::threadCpuSeconds(ps2host::ThreadRole::Gs);
++            if (g_sampler.started)
++            {
++                const double seconds = std::chrono::duration<double>(now - g_sampler.at).count();
++                char line[160];
++                std::snprintf(line, sizeof(line), "%.0f fps (%.0f fields/s) | EE %s | GS %s | %s %dx",
++                              static_cast<double>(flips - g_sampler.flips) / seconds,
++                              static_cast<double>(presents - g_sampler.presents) / seconds,
++                              percent(ee, g_sampler.ee, seconds).c_str(), percent(gs, g_sampler.gs, seconds).c_str(),
++                              dodpcsx2::active() ? "D3D11" : "CPU raster", dodpcsx2::scale());
++                std::lock_guard<std::mutex> lock(g_lock);
++                g_last = line;
++                g_history.push_back(line);
++                while (g_history.size() > 60u)
++                    g_history.pop_front();
++            }
++            g_sampler = Sampler{true, now, presents, flips, ee, gs};
++            static const std::string cpu = cpuLine();
++            if (g_gpu.empty())
++            {
++                std::string text = readFile(exeDir() / "logs" / "gpu.txt", 2048);
++                if (const size_t cut = text.find_first_of("\r\n"); cut != std::string::npos)
++                    text.resize(cut);
++                g_gpu = text;
++            }
++            std::string summary = "CPU: " + cpu + "\nGPU: " + (g_gpu.empty() ? std::string("?") : g_gpu) + "\n" +
++                                  (dodpcsx2::active() ? "D3D11" : "CPU raster") + " " +
++                                  std::to_string(dodpcsx2::scale()) + "x";
++            std::lock_guard<std::mutex> lock(g_lock);
++            g_summary = std::move(summary);
++        }
++
++        std::string readFile(const fs::path &path, size_t limit)
++        {
++            std::ifstream in(path, std::ios::binary); // MSVC opens shared (the launcher keeps last-run.log open)
++            if (!in)
++                return {};
++            std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
++            if (data.size() > limit)
++                data.erase(0, data.size() - limit); // keep the end of a long log
++            return data;
++        }
++
++        std::string osLine()
++        {
++#if defined(_WIN32)
++            struct OsVersion
++            {
++                ULONG size, major, minor, build, platform;
++                WCHAR csd[128];
++            } v{};
++            v.size = sizeof(v);
++            using RtlGetVersionFn = LONG(WINAPI *)(OsVersion *);
++            if (const auto get = reinterpret_cast<RtlGetVersionFn>(
++                    GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion")))
++            {
++                if (get(&v) == 0)
++                {
++                    char text[64];
++                    std::snprintf(text, sizeof(text), "Windows %lu.%lu build %lu", v.major, v.minor, v.build);
++                    return text;
++                }
++            }
++            return "Windows (version unknown)";
++#else
++            return "non-Windows host";
++#endif
++        }
++
++        std::string memoryLine()
++        {
++#if defined(_WIN32)
++            MEMORYSTATUSEX m{};
++            m.dwLength = sizeof(m);
++            if (GlobalMemoryStatusEx(&m))
++            {
++                char text[80];
++                std::snprintf(text, sizeof(text), "%.1f GB total, %.1f GB available",
++                              m.ullTotalPhys / 1073741824.0, m.ullAvailPhys / 1073741824.0);
++                return text;
++            }
++#endif
++            return "unknown";
++        }
++
++        std::string cpuLine()
++        {
++            const ps2host::CpuReport r = ps2host::cpuReport();
++            char text[256];
++            std::snprintf(text, sizeof(text), "%s | %u logical | SSE4.1 %s AVX %s AVX2 %s",
++                          r.brand.empty() ? r.vendor.c_str() : r.brand.c_str(), r.logicalCores,
++                          r.sse41 ? "yes" : "NO", r.osAvx ? "yes" : "no", r.avx2 ? "yes" : "no");
++            return text;
++        }
++
++        std::string gpuLines(const fs::path &dir)
++        {
++            std::string text = readFile(dir / "logs" / "gpu.txt", 2048);
++            while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
++                text.pop_back();
++            return text.empty() ? "unknown (logs\\gpu.txt not written yet)" : text;
++        }
++
++        std::string timestamp(bool forFileName)
++        {
++            const std::time_t t = std::time(nullptr);
++            std::tm local{};
++#if defined(_WIN32)
++            localtime_s(&local, &t);
++#else
++            localtime_r(&t, &local);
++#endif
++            char text[32];
++            std::strftime(text, sizeof(text), forFileName ? "%Y%m%d-%H%M%S" : "%Y-%m-%d %H:%M:%S", &local);
++            return text;
++        }
++
++        // ---- ZIP (stored entries, UTF-8 names), enough for a support package.
++        uint32_t crc32(const std::string &data)
++        {
++            static uint32_t table[256];
++            static bool ready = false;
++            if (!ready)
++            {
++                for (uint32_t i = 0; i < 256u; ++i)
++                {
++                    uint32_t c = i;
++                    for (int k = 0; k < 8; ++k)
++                        c = (c & 1u) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
++                    table[i] = c;
++                }
++                ready = true;
++            }
++            uint32_t crc = 0xFFFFFFFFu;
++            for (const unsigned char byte : data)
++                crc = table[(crc ^ byte) & 0xFFu] ^ (crc >> 8);
++            return crc ^ 0xFFFFFFFFu;
++        }
++
++        void put16(std::string &out, uint32_t v)
++        {
++            out.push_back(static_cast<char>(v & 0xFFu));
++            out.push_back(static_cast<char>((v >> 8) & 0xFFu));
++        }
++
++        void put32(std::string &out, uint32_t v)
++        {
++            put16(out, v & 0xFFFFu);
++            put16(out, v >> 16);
++        }
++
++        bool writeZip(const fs::path &path, const std::vector<std::pair<std::string, std::string>> &files)
++        {
++            const std::time_t t = std::time(nullptr);
++            std::tm local{};
++#if defined(_WIN32)
++            localtime_s(&local, &t);
++#else
++            localtime_r(&t, &local);
++#endif
++            const uint32_t dosTime = (local.tm_hour << 11) | (local.tm_min << 5) | (local.tm_sec / 2);
++            const uint32_t dosDate = ((local.tm_year + 1900 - 1980) << 9) | ((local.tm_mon + 1) << 5) | local.tm_mday;
++            std::ofstream out(path, std::ios::binary | std::ios::trunc);
++            if (!out)
++                return false;
++            std::string central;
++            uint32_t offset = 0;
++            for (const auto &[name, data] : files)
++            {
++                const uint32_t crc = crc32(data);
++                const uint32_t size = static_cast<uint32_t>(data.size());
++                std::string header;
++                put32(header, 0x04034B50u);
++                put16(header, 20u);
++                put16(header, 0x0800u); // UTF-8 names
++                put16(header, 0u);      // stored
++                put16(header, dosTime);
++                put16(header, dosDate);
++                put32(header, crc);
++                put32(header, size);
++                put32(header, size);
++                put16(header, static_cast<uint32_t>(name.size()));
++                put16(header, 0u);
++                header += name;
++                out.write(header.data(), static_cast<std::streamsize>(header.size()));
++                out.write(data.data(), static_cast<std::streamsize>(data.size()));
++                put32(central, 0x02014B50u);
++                put16(central, 20u);
++                put16(central, 20u);
++                put16(central, 0x0800u);
++                put16(central, 0u);
++                put16(central, dosTime);
++                put16(central, dosDate);
++                put32(central, crc);
++                put32(central, size);
++                put32(central, size);
++                put16(central, static_cast<uint32_t>(name.size()));
++                put16(central, 0u);
++                put16(central, 0u);
++                put16(central, 0u);
++                put16(central, 0u);
++                put32(central, 0u);
++                put32(central, offset);
++                central += name;
++                offset += static_cast<uint32_t>(header.size()) + size;
++            }
++            std::string end;
++            put32(end, 0x06054B50u);
++            put16(end, 0u);
++            put16(end, 0u);
++            put16(end, static_cast<uint32_t>(files.size()));
++            put16(end, static_cast<uint32_t>(files.size()));
++            put32(end, static_cast<uint32_t>(central.size()));
++            put32(end, offset);
++            put16(end, 0u);
++            out.write(central.data(), static_cast<std::streamsize>(central.size()));
++            out.write(end.data(), static_cast<std::streamsize>(end.size()));
++            return static_cast<bool>(out);
++        }
++
++        void setStatus(const std::string &text)
++        {
++            std::lock_guard<std::mutex> lock(g_lock);
++            g_status = text;
++        }
++
++        void writePackage(const std::string &settingsFile)
++        {
++            const fs::path dir = exeDir();
++            const fs::path logs = dir / "logs";
++            std::error_code ec;
++            fs::create_directories(logs, ec);
++            std::vector<std::pair<std::string, std::string>> files;
++
++            std::string summary = "PS2Recomp-Fixer diagnostics package\n";
++            summary += "written: " + timestamp(false) + " (local time)\n";
++            {
++                std::error_code e2;
++                const fs::path exe = [] {
++#if defined(_WIN32)
++                    wchar_t path[MAX_PATH] = {};
++                    GetModuleFileNameW(nullptr, path, MAX_PATH);
++                    return fs::path(path);
++#else
++                    return fs::path();
++#endif
++                }();
++                const auto bytes = fs::file_size(exe, e2);
++                summary += "exe: " + exe.filename().string() + " (" + std::to_string(e2 ? 0 : bytes) + " bytes)\n";
++            }
++            summary += "cpu: " + cpuLine() + "\n";
++            summary += "os: " + osLine() + "\n";
++            summary += "memory: " + memoryLine() + "\n";
++            summary += std::string("renderer: ") + (dodpcsx2::active() ? "D3D11 (pcsx2gs.dll)" : "CPU raster") +
++                       ", internal scale " + std::to_string(dodpcsx2::scale()) + "x\n";
++            summary += std::string("perf overlay: ") + (g_overlay.load() ? "on" : "off") + "\n";
++            summary += "crash dumps written by this run: " + std::to_string(ps2host::crashDumpsWritten()) + "\n";
++            {
++                std::lock_guard<std::mutex> lock(g_lock);
++                summary += "last samples (one per second, newest last):\n";
++                for (const std::string &line : g_history)
++                    summary += "  " + line + "\n";
++            }
++            summary += "gpu.txt:\n  " + gpuLines(dir) + "\n";
++            files.emplace_back("summary.txt", summary);
++
++            const auto add = [&](const fs::path &path, const std::string &name, size_t limit) {
++                std::error_code e3;
++                if (!fs::is_regular_file(path, e3))
++                    return;
++                std::string data = readFile(path, limit);
++                if (!data.empty())
++                    files.emplace_back(name, std::move(data));
++            };
++            add(logs / "last-run.log", "logs/last-run.log", 16u << 20);
++            add(logs / "gpu.txt", "logs/gpu.txt", 1u << 20);
++            if (!settingsFile.empty())
++                add(dir / settingsFile, settingsFile, 1u << 20);
++            std::vector<fs::path> dumps;
++            for (const auto &entry : fs::directory_iterator(logs, ec))
++            {
++                const std::string name = entry.path().filename().string();
++                if (name.rfind("crash-", 0) == 0 && entry.path().extension() == ".dmp")
++                    dumps.push_back(entry.path());
++            }
++            std::sort(dumps.begin(), dumps.end());
++            for (size_t i = dumps.size() > 2u ? dumps.size() - 2u : 0u; i < dumps.size(); ++i)
++                add(dumps[i], "logs/" + dumps[i].filename().string(), 256u << 20);
++
++            const std::string name = "diagnostics-" + timestamp(true) + ".zip";
++            if (writeZip(logs / name, files))
++            {
++                setStatus("Written to logs\\" + name);
++                std::fprintf(stderr, "[report] diagnostics package logs\\%s (%zu files)\n", name.c_str(), files.size());
++            }
++            else
++            {
++                setStatus("Export failed: cannot write the logs folder");
++                std::fprintf(stderr, "[report] diagnostics package failed (logs folder not writable)\n");
++            }
++        }
++    }
++
++    void setOverlay(bool on)
++    {
++        g_overlay.store(on);
++        g_envChecked = true; // an explicit choice wins over PS2_PERF_OVERLAY
++    }
++
++    bool overlay()
++    {
++        return g_overlay.load();
++    }
++
++    void hostTick()
++    {
++        if (!g_envChecked)
++        {
++            g_envChecked = true;
++            const char *v = std::getenv("PS2_PERF_OVERLAY");
++            if (v && v[0] == '1')
++                g_overlay.store(true);
++        }
++        const Clock::time_point now = Clock::now();
++        if (!g_sampler.started || now - g_sampler.at >= std::chrono::seconds(1))
++        {
++            sample();
++            if (g_overlay.load())
++            {
++                const std::string line = lastSample();
++                if (!line.empty())
++                {
++                    dodpcsx2::setOsdLine(line.c_str());
++                    g_overlayShown = true;
++                }
++            }
++        }
++        if (!g_overlay.load() && g_overlayShown)
++        {
++            dodpcsx2::setOsdLine("");
++            g_overlayShown = false;
++        }
++    }
++
++    std::string lastSample()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        return g_last;
++    }
++
++    std::string hostSummary()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        return g_summary;
++    }
++
++    void exportDiagnostics(const std::string &settingsFile)
++    {
++        if (g_busy.exchange(true))
++            return;
++        setStatus("Writing the diagnostics package...");
++        std::thread([settingsFile] {
++            writePackage(settingsFile);
++            g_busy.store(false);
++        }).detach();
++    }
++
++    std::string exportStatus()
++    {
++        std::lock_guard<std::mutex> lock(g_lock);
++        return g_status;
++    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
+index 250e444..b3b1ce7 100644
+--- a/ps2xRuntime/src/lib/ps2_memory.cpp
++++ b/ps2xRuntime/src/lib/ps2_memory.cpp
+@@ -582 +582,13 @@ namespace
+-    inline void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
++#if defined(_MSC_VER)
++#define PS2_FIXER_NOINLINE __declspec(noinline)
++#define PS2_FIXER_FORCEINLINE __forceinline
++#else
++#define PS2_FIXER_NOINLINE __attribute__((noinline))
++#define PS2_FIXER_FORCEINLINE inline __attribute__((always_inline))
++#endif
++    [[noreturn]] PS2_FIXER_NOINLINE void outOfRange(const char *op, uint32_t address)
++    {
++        throw std::runtime_error(std::string(op) + " out-of-bounds at address: 0x" + std::to_string(address));
++    }
++    // [Fixer] Hot bounds check kept inline; the throw path (string building) moved out of line.
++    PS2_FIXER_FORCEINLINE void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
+@@ -585,3 +597 @@ namespace
+-        {
+-            throw std::runtime_error(std::string(op) + " out-of-bounds at address: 0x" + std::to_string(address));
+-        }
++            outOfRange(op, address);
+@@ -791,8 +801,6 @@ namespace
+-    inline bool dodLazyEeTimersEnabled()
+-    {
+-        static const bool enabled = []() {
+-            const char *v = std::getenv("DOD_EE_TIMER_LAZY");
+-            return !(v && v[0] == '0');
+-        }();
+-        return enabled;
+-    }
++    // [Fixer] Read once at start-up (hot path: every EE timer access); a function-local static paid a guard check.
++    const bool g_dodLazyEeTimersEnabled = []() {
++        const char *v = std::getenv("DOD_EE_TIMER_LAZY");
++        return !(v && v[0] == '0');
++    }();
++    inline bool dodLazyEeTimersEnabled() { return g_dodLazyEeTimersEnabled; }
+diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
+index 2b012c8..58e5c53 100644
+--- a/ps2xRuntime/src/lib/ps2_runtime.cpp
++++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
+@@ -14,0 +15,2 @@
++#include "ps2_host_os.h"
++#include "ps2_host_report.h"
+@@ -773 +775,3 @@ void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
+-    static const uint64_t batch = []() -> uint64_t {
++    static uint64_t batch = 0u; // [Fixer] plain static, read on the first call (see EeScheduler::accountCycles)
++    if (batch == 0u)
++    {
+@@ -775,2 +779,2 @@ void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
+-        return v ? std::max<uint64_t>(1u, std::strtoull(v, nullptr, 10)) : 4096u;
+-    }();
++        batch = v ? std::max<uint64_t>(1u, std::strtoull(v, nullptr, 10)) : 4096u;
++    }
+@@ -921 +925 @@ bool PS2Runtime::syncCoreSubsystems()
+-    resetIop();
++    m_iopSubsystem->reset();
+@@ -1253 +1257 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+-    m_iopSubsystem->reset();
++    resetIop();
+@@ -1678,0 +1683,42 @@ namespace
++// [DoD] DOD_RAM_DUMP_CALL=<target>:<first field>:<count>: once the field counter reaches <first field>, dump EE RAM
++// (DOD_RAM_DUMP dir, DOD_RAM_DUMP_RANGE part) at each of the next <count> calls to <target>, e.g. the game's frame
++// flip, so consecutive dumps are exactly one logic tick apart (the guest is stopped while the file is written).
++static std::atomic<uint64_t> g_dodField{0};
++// [Fixer] Evaluated once at start-up: dispatchGuestBranch runs for every guest call, so the disabled diagnostic
++// must cost a predictable branch, not a call plus a thread-safe static guard.
++static const bool g_dodRamDumpCallOn = std::getenv("DOD_RAM_DUMP_CALL") != nullptr && std::getenv("DOD_RAM_DUMP") != nullptr;
++static void dodRamDumpAtCall(uint8_t *rdram, uint32_t target)
++{
++    static const struct Cfg { uint32_t target = 0; uint64_t first = 0, count = 0; uint32_t lo = 0, hi = 0x2000000u; const char *dir = nullptr; } cfg = []() {
++        Cfg c;
++        const char *v = std::getenv("DOD_RAM_DUMP_CALL");
++        c.dir = std::getenv("DOD_RAM_DUMP");
++        if (v && c.dir)
++        {
++            char *end = nullptr;
++            c.target = static_cast<uint32_t>(std::strtoul(v, &end, 0));
++            if (*end == ':') c.first = std::strtoull(end + 1, &end, 10);
++            if (*end == ':') c.count = std::strtoull(end + 1, &end, 10);
++        }
++        if (const char *r = std::getenv("DOD_RAM_DUMP_RANGE"))
++        {
++            char *end = nullptr;
++            const uint32_t a = static_cast<uint32_t>(std::strtoul(r, &end, 0));
++            if (*end == '-') { const uint32_t b = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)); if (a < b && b <= 0x2000000u) c.lo = a, c.hi = b; }
++        }
++        return c;
++    }();
++    static uint64_t done = 0;
++    if (cfg.count == 0 || target != cfg.target || done >= cfg.count || g_dodField.load(std::memory_order_relaxed) < cfg.first)
++        return;
++    char path[512];
++    std::snprintf(path, sizeof(path), "%s/call_%03llu.bin", cfg.dir, static_cast<unsigned long long>(done));
++    if (FILE *f = std::fopen(path, "wb"))
++    {
++        std::fwrite(rdram + cfg.lo, 1, cfg.hi - cfg.lo, f);
++        std::fclose(f);
++    }
++    std::fprintf(stderr, "[ram-dump] call %llu at field %llu\n", static_cast<unsigned long long>(done),
++                 static_cast<unsigned long long>(g_dodField.load()));
++    ++done;
++}
+@@ -1680,0 +1727 @@ void dodCallHistTick(uint64_t field)
++    g_dodField.store(field, std::memory_order_relaxed);
+@@ -1715 +1762,3 @@ void dodCallHistTick(uint64_t field)
+-        for (size_t i = 0; i < rows.size() && printed < 200; ++i)
++        // DOD_CALL_HIST_LIMIT=<n>: print up to n rows (default 200).
++        static const size_t limit = []() { const char *v = std::getenv("DOD_CALL_HIST_LIMIT"); return v ? std::strtoull(v, nullptr, 10) : 200ull; }();
++        for (size_t i = 0; i < rows.size() && printed < limit; ++i)
+@@ -1738,0 +1788,2 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
++    if (g_dodRamDumpCallOn)
++        dodRamDumpAtCall(rdram, targetPc);
+@@ -1766 +1817,10 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-    if (!hasFunction(targetPc))
++    // [Fixer] Direct hit in the generated function table (nearly every call): the same function and dispatch-history
++    // entry hasFunction() + lookupFunction() would give, with one table probe instead of two.
++    RecompiledFunction targetFn = nullptr;
++    uint32_t directSlot = 0u;
++    if (generatedFunctionTableSlot(targetPc, directSlot) &&
++        (targetFn = g_ps2RecompiledFunctionTable[directSlot]) != nullptr)
++    {
++        pushDispatchPc(targetPc);
++    }
++    else if (!hasFunction(targetPc))
+@@ -1790 +1850,2 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-    RecompiledFunction targetFn = lookupFunction(targetPc);
++    if (targetFn == nullptr)
++        targetFn = lookupFunction(targetPc);
+@@ -1795,3 +1856,12 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-    static const int vu0Trace = []() { const char *v = std::getenv("DOD_VU0_TRACE"); return v ? std::atoi(v) : 0; }();
+-    static const std::pair<uint32_t, uint32_t> vu0TraceRange = []() {
+-        uint32_t first = 0u, last = 0u;
++    // [Fixer] Plain statics read on the first call (this runs for every guest call; a guarded static costs a TLS check).
++    static int vu0Trace = -1;
++    if (vu0Trace < 0)
++    {
++        const char *v = std::getenv("DOD_VU0_TRACE");
++        vu0Trace = v ? std::max(0, std::atoi(v)) : 0;
++    }
++    static std::pair<uint32_t, uint32_t> vu0TraceRange{0u, 0u};
++    static bool vu0TraceRangeRead = false;
++    if (vu0Trace > 0 && !vu0TraceRangeRead)
++    {
++        vu0TraceRangeRead = true;
+@@ -1801 +1871 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-            first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
++            vu0TraceRange.first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
+@@ -1803 +1873 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-                last = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
++                vu0TraceRange.second = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
+@@ -1805,2 +1875 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+-        return std::make_pair(first, last);
+-    }();
++    }
+@@ -2882,0 +2952,3 @@ void PS2Runtime::run()
++    // [Fixer] No EcoQoS for the port, a minidump on crashes (ps2_host_os.h); before any worker thread exists.
++    ps2host::configureHostProcess();
++    ps2host::installCrashHandler();
+@@ -2889,0 +2962 @@ void PS2Runtime::run()
++        ps2host::setCurrentThreadRole(ps2host::ThreadRole::Game);
+@@ -2990,0 +3064 @@ void PS2Runtime::run()
++        ps2_host_report::hostTick(); // [Fixer] perf overlay samples (ps2_host_report.h)

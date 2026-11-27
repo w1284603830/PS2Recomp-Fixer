@@ -47,6 +47,18 @@ namespace
                 nreg = 16u;
             if (flg == 0u)
             {
+                // [Fixer] Only A+D descriptors (0xE) can address SIGNAL/FINISH/LABEL/TRXDIR. Most PACKED tags (vertex
+                // data: RGBAQ/ST/XYZ...) have none, so skip their nloop * nreg qwords without visiting each one. The
+                // per-qword loop below returned false when the data ran out; skipping past the end ends the outer
+                // loop with the same result.
+                bool hasAd = false;
+                for (uint32_t r = 0; r < nreg; ++r)
+                    hasAd |= ((hi >> (4u * r)) & 0xFu) == 0xEu;
+                if (!hasAd)
+                {
+                    q += nloop * nreg;
+                    continue;
+                }
                 for (uint32_t l = 0; l < nloop; ++l)
                     for (uint32_t r = 0; r < nreg; ++r, ++q)
                     {

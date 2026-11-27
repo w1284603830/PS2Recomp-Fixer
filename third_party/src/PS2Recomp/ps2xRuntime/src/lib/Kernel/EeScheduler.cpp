@@ -953,11 +953,16 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
 {
     // [DoD] DOD_EE_CYCLE_SCALE=<percent>: scale the cycles generated code reports (32 per backward branch, 8 per call,
     // whatever the block length) - like PCSX2's EE cycle rate setting.
-    static const uint32_t scale = []() -> uint32_t {
+    // [Fixer] Plain statics read on the first call: this runs at every checkpoint (nearly every guest call and
+    // backward branch), where a guarded function-local static costs a TLS epoch check per switch. The EE thread is the
+    // only caller in practice; a racing first read would store the same value.
+    static uint32_t scale = 0u;
+    if (scale == 0u)
+    {
         const char *v = std::getenv("DOD_EE_CYCLE_SCALE");
         const long s = v ? std::atol(v) : 100;
-        return static_cast<uint32_t>(std::clamp<long>(s, 5, 400));
-    }();
+        scale = static_cast<uint32_t>(std::clamp<long>(s, 5, 400));
+    }
     if (scale != 100u)
     {
         static uint32_t remainder = 0;

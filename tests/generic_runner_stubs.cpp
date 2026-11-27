@@ -1,4 +1,11 @@
 #include "Common.h"
+#include "ps2_host_cpu.h"
+#include "ps2_host_os.h"
+namespace ps2host
+{
+    bool cpuMeetsBaseline(std::string *) { return true; }
+    void installCrashHandler() {}
+}
 bool dodKzvuInstall(PS2Runtime &, const char *) { return true; }
 void dodConfigureGamepad(bool) {}
 void dodRequestPadRumble(int, uint8_t, uint8_t) {}

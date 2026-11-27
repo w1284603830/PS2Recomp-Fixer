@@ -427,6 +427,9 @@ add_library(ps2_runtime STATIC
     src/lib/ps2_vfs.cpp
     src/lib/ps2_runtime.cpp
     src/lib/dod_host_pacer.cpp
+    src/lib/ps2_host_cpu.cpp
+    src/lib/ps2_host_os.cpp
+    src/lib/ps2_host_report.cpp
     src/lib/ps2_vif1_interpreter.cpp
     src/lib/vu/ps2_vu1_core.cpp
     src/lib/vu/ps2_vu1_upper.cpp
@@ -552,6 +555,27 @@ if(PS2X_DEFAULT_BOOT_ELF_DEFINE)
     target_compile_definitions(ps2EntryRunner PRIVATE
         PS2X_DEFAULT_BOOT_ELF="${PS2X_DEFAULT_BOOT_ELF_DEFINE}"
     )
+endif()
+
+# [Fixer] Release code generation. ps2_runtime is built with link-time code generation: the scheduler, memory and
+# timer paths call each other across files on every guest block (EeScheduler::accountCycles ->
+# PS2Memory::advanceEeTimers / PS2Runtime::advanceIopEeCycles), which only LTCG can inline. Generated code is not:
+# 10k files would make every link a whole-program build. Generated code drops /GS (no buffer-overrun cookies in
+# translated guest code); main.cpp keeps it.
+option(PS2X_RUNTIME_LTCG "Link-time code generation for ps2_runtime (MSVC Release)" ON)
+if(MSVC)
+    if(PS2X_RUNTIME_LTCG)
+        set_property(TARGET ps2_runtime PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        target_link_options(ps2EntryRunner PRIVATE $<$<CONFIG:Release>:/LTCG>)
+    endif()
+    target_compile_options(ps2EntryRunner PRIVATE /GS-)
+    # 16 MB default thread stack reserve (address space only; pages are committed as used). Some generated functions
+    # have frames of 0.7 MB (measured in one port), so one nested call of two of them overflowed the
+    # 1 MB default; guest call chains run as native recursion on the EE thread.
+    target_link_options(ps2EntryRunner PRIVATE /STACK:16777216)
+    if(EXISTS "${RUNNER_MAIN_CPP}")
+        set_source_files_properties("${RUNNER_MAIN_CPP}" PROPERTIES COMPILE_OPTIONS /GS)
+    endif()
 endif()
 
 if(MSVC)

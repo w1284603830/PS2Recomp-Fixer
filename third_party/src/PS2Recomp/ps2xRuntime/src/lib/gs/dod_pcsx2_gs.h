@@ -50,6 +50,8 @@ namespace dodpcsx2
     void readFifo(uint8_t *dst, uint32_t sizeBytes);
     // Any thread: write the image shown at the next vsync as a 24-bit .bmp.
     void requestSnapshot(const char *path);
+    // [Fixer] The internal resolution multiplier in use (any thread).
+    int scale();
     // Any thread (diagnostics, the DOD_LINE_CAPTURE_DIR hotkey): into dir, snapshots of the next 30 fields (every 3rd;
     // light: one), the draw table with each draw's effect kind and PCSX2's dump of the next frames (dir\draws; light:
     // the frame output only) and info.txt (gameInfo's lines, fields, scale, GS options, GPU).
@@ -57,6 +59,10 @@ namespace dodpcsx2
     void requestLineCapture(const char *dir, bool light, bool ab, const char *gameInfo);
     // Fields presented so far (any thread).
     uint64_t presents();
+    // [Fixer] Game frames shown so far (DISPFB changes; any thread).
+    uint64_t flips();
+    // [Fixer] Any thread: one line of text at the bottom left of the image (the perf overlay); null or "" hides it.
+    void setOsdLine(const char *text);
     // Game thread only: consume measured producer waits, once per pacing update.
     uint64_t takeGuestWaitNs();
     // Game thread only: fields queued but not yet presented (zero in synchronous mode).

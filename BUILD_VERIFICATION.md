@@ -1,5 +1,16 @@
 # Build verification (2026-10-27, repeated 2026-10-28)
 
+**2026-11-27, cross-device compatibility and runtime overhead (`maint/20261127-ultraman-harvest`, on `main` `c5a7148`):**
+shared host services and fixes from one port's audit ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 15). Windows/MSVC
+(VS 2022 Build Tools), `build_all.ps1` run twice from the committed tree (an empty build folder, then again after
+the last source edit) with the pinned dependencies linked from another checkout: kzvu, pcsx2gs and PS2Recomp (including
+`ps2EntryRunner`) built; `ps2x_tests` 464 cases, 440 passed, 24 named known differences (the same list as the entries
+below; nothing new fails); IOP suites 6/6; GS cache 45/45. `tests/` CTest with MSVC in an LF clone: 62/62. Python suites
+in the LF clone pass, including the upstream patch-series parity check with the new delta (on a Windows machine with
+global `core.autocrlf=true` run it with `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=false`);
+the g++ suites run in CI only. No game was run for this entry: the IPU, MPEG, GS-open fallback, scheduling and crash
+paths compile and link but are not exercised here, and the pre-AVX behaviour rests on the source port's Intel SDE runs
+(one host: i5-12400F, discrete GPU, Windows 10), not on a real old CPU or an integrated GPU.
 **2026-11-27, VCALLMSR and the VU memory window (`maint/20261127-vu-window-fixes`, on `main` `c5a7148`):** two
 hardware-semantics fixes ([IMPROVEMENTS.md](IMPROVEMENTS.md) section 16). Windows/MSVC (VS 2022 Build Tools),
 `build_all.ps1` from an empty build folder with the pinned dependencies linked from another checkout: kzvu, pcsx2gs and

@@ -23,6 +23,8 @@
 //
 // Per-game GS settings (PCSX2's GameIndex.yaml fixes such as half_pixel_offset / native_scaling / blending) go in
 // gs_options; nothing is applied by default.
+#include "ps2_host_cpu.h"
+#include "ps2_host_os.h"
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 #include "../lib/gs/dod_pcsx2_gs.h"
@@ -144,6 +146,18 @@ int main(int argc, char *argv[])
             ini[key.substr(2)] = argv[i + 1];
         }
         const auto get = [&](const char *key, const char *fallback) { return ini.count(key) ? ini[key] : std::string(fallback); };
+
+        // The runtime, generated code and pcsx2gs.dll need SSE4.1. Check before anything uses it so an old CPU gets a
+        // message instead of an illegal-instruction crash, and log the host (ps2_host_cpu.h) for support reports.
+        {
+            std::string missing;
+            if (!ps2host::cpuMeetsBaseline(&missing))
+            {
+                std::cerr << "[runner] fatal: " << missing << std::endl;
+                return 3;
+            }
+        }
+        ps2host::installCrashHandler(); // logs\crash-*.dmp and a [crash] line on unhandled exceptions (ps2_host_os.h)
 
         const fs::path elf = resolveFrom(exeDir, get("elf", "game/boot.elf"));
         const fs::path iso = resolveFrom(exeDir, get("iso", ""));

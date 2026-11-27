@@ -237,10 +237,13 @@ void kzvuVu1CodeChanged(uint32_t offset, uint32_t size)
 	u32 nnow = 0;
 	for (u32 i = 0; i < slots; i += 2)
 	{
-		// two 16-byte slots at once; the program pointer is the second qword of each
-		const __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(&mVU.prog.quick[i]));
-		const __m256i m = _mm256_set_epi64x(-1, 0, -1, 0);
-		if (_mm256_testz_si256(v, m))
+		// two 16-byte slots at once; the program pointer is the second qword of each.
+		// [Fixer] SSE4.1 (PCSX2's baseline), not AVX: this runs whenever a game uploads VU1 code, and the 256-bit
+		// version stopped pre-AVX CPUs (Nehalem/Westmere Xeons) at the first 3D scene. Same test: both pointers zero.
+		const __m128i a = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&mVU.prog.quick[i]));
+		const __m128i b = _mm_loadu_si128(reinterpret_cast<const __m128i*>(&mVU.prog.quick[i + 1]));
+		const __m128i progs = _mm_unpackhi_epi64(a, b);
+		if (_mm_testz_si128(progs, progs))
 			continue;
 		for (u32 j = i; j < i + 2; j++)
 			if (microProgram* p = mVU.prog.quick[j].prog)

@@ -41,6 +41,29 @@ namespace dod_vif1_unpack
             const uint32_t skipBytes = isFill ? 0u : (cl - wl) * 16u;
             const uint32_t memMask = vuMemSize - 16u;
 
+            // [Fixer] V4-32 without mask or STMOD (the bulk of VU1 vertex uploads; 1 % of the battle EE thread): when
+            // every source vector is present, each one is a straight 16-byte copy. Same bytes, same address and
+            // write-cycle stepping as the general loop below (skipping mode; filling mode keeps the general loop).
+            if constexpr (VNVL == 12u && !MASK && MODE == 0u)
+            {
+                if (!isFill && static_cast<uint64_t>(num) * 16u <= dataBytes)
+                {
+                    uint32_t cycle = 0u;
+                    for (uint32_t n = 0; n < num; ++n)
+                    {
+                        std::memcpy(vuMem + (addr & memMask), data + n * 16u, 16u);
+                        addr += 16u;
+                        if (++cycle >= wl)
+                        {
+                            addr += skipBytes;
+                            cycle = 0u;
+                        }
+                    }
+                    regs.num = 0u;
+                    return;
+                }
+            }
+
             auto element = [&](uint32_t offset, uint32_t index) -> uint32_t
             {
                 const uint32_t at = offset + index * (4u >> (VNVL & 3u));
