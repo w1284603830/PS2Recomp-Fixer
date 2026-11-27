@@ -4523,13 +4523,16 @@ bool GSTextureCache::PrepareDownloadTexture(u32 width, u32 height, GSTexture::Fo
 	// In the case of oddly sized texture reads, we'll keep the larger dimension.
 	const u32 new_width = ctex ? std::max(ctex->GetWidth(), width) : width;
 	const u32 new_height = ctex ? std::max(ctex->GetHeight(), height) : height;
-	tex->reset();
-	*tex = g_gs_device->CreateDownloadTexture(new_width, new_height, format);
-	if (!tex)
+	// [Fixer] Upstream checked `tex` (the address of the unique_ptr, never null) instead of the new object, so a failed
+	// staging allocation (low VRAM, device removed) returned success and the caller dereferenced null. Create into a
+	// temporary first: on failure keep the previous texture and report the failure; on success replace it.
+	std::unique_ptr<GSDownloadTexture> created = g_gs_device->CreateDownloadTexture(new_width, new_height, format);
+	if (!created)
 	{
-		Console.WriteLn("TC: Failed to create %ux%u download texture", new_width, new_height);
+		Console.Error("TC: Failed to create %ux%u download texture", new_width, new_height);
 		return false;
 	}
+	*tex = std::move(created);
 
 #ifdef PCSX2_DEVBUILD
 	(*tex)->SetDebugName(TinyString::from_format("Texture Cache {}x{} {} Readback",

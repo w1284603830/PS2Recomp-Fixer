@@ -12,6 +12,8 @@
 #include "gs/dod_perf.h"
 #include "runtime/ee_scheduler.h"
 #include "ThreadNaming.h"
+#include "ps2_host_os.h"
+#include "ps2_host_report.h"
 #include "Kernel/Stubs/Audio.h"
 #include "Kernel/Stubs/Font.h"
 #include "Kernel/Stubs/GS.h"
@@ -770,10 +772,12 @@ void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
     // scheduling cost. The cycles are handed over in 4096-cycle quanta (upstream PR #328, GoW port #118; IOP time is
     // unchanged, only its service granularity, ~14 us). KillzoneRecomp kept batching off because file reads hung with
     // it; that hang was WaitSema outside an IOP thread (upstream PR #266, fixed here). DOD_IOP_BATCH=<EE cycles>.
-    static const uint64_t batch = []() -> uint64_t {
+    static uint64_t batch = 0u; // [Fixer] plain static, read on the first call (see EeScheduler::accountCycles)
+    if (batch == 0u)
+    {
         const char *v = std::getenv("DOD_IOP_BATCH");
-        return v ? std::max<uint64_t>(1u, std::strtoull(v, nullptr, 10)) : 4096u;
-    }();
+        batch = v ? std::max<uint64_t>(1u, std::strtoull(v, nullptr, 10)) : 4096u;
+    }
     static uint64_t pending = 0;
     // [DoD] DOD_FPS statistics: one writer (this thread); a plain load/store, not a locked add on every checkpoint.
     g_dodIopEeCyclesTotal.store(g_dodIopEeCyclesTotal.load(std::memory_order_relaxed) + eeCycles, std::memory_order_relaxed);
@@ -918,7 +922,7 @@ bool PS2Runtime::syncCoreSubsystems()
                                          (cpuContext->vu0_vpu_stat & ~0x0600u) |
                                          (m_vu1.state().stoppedByD ? 0x0200u : 0u) |
                                          (m_vu1.state().stoppedByT ? 0x0400u : 0u); });
-    resetIop();
+    m_iopSubsystem->reset();
     m_vu0.reset();
     m_vu1.reset();
 
@@ -1250,7 +1254,7 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
         return false;
     }
 
-    m_iopSubsystem->reset();
+    resetIop();
 
     ps2_game_overrides::applyMatching(*this,
                                       elfPath,
@@ -1676,8 +1680,51 @@ namespace
     bool g_dodCallHistByThread = std::getenv("DOD_CALL_HIST_THREAD") != nullptr; // key = (target, thread id)
     std::unordered_map<uint64_t, uint64_t> g_dodCallHist;
 }
+// [DoD] DOD_RAM_DUMP_CALL=<target>:<first field>:<count>: once the field counter reaches <first field>, dump EE RAM
+// (DOD_RAM_DUMP dir, DOD_RAM_DUMP_RANGE part) at each of the next <count> calls to <target>, e.g. the game's frame
+// flip, so consecutive dumps are exactly one logic tick apart (the guest is stopped while the file is written).
+static std::atomic<uint64_t> g_dodField{0};
+// [Fixer] Evaluated once at start-up: dispatchGuestBranch runs for every guest call, so the disabled diagnostic
+// must cost a predictable branch, not a call plus a thread-safe static guard.
+static const bool g_dodRamDumpCallOn = std::getenv("DOD_RAM_DUMP_CALL") != nullptr && std::getenv("DOD_RAM_DUMP") != nullptr;
+static void dodRamDumpAtCall(uint8_t *rdram, uint32_t target)
+{
+    static const struct Cfg { uint32_t target = 0; uint64_t first = 0, count = 0; uint32_t lo = 0, hi = 0x2000000u; const char *dir = nullptr; } cfg = []() {
+        Cfg c;
+        const char *v = std::getenv("DOD_RAM_DUMP_CALL");
+        c.dir = std::getenv("DOD_RAM_DUMP");
+        if (v && c.dir)
+        {
+            char *end = nullptr;
+            c.target = static_cast<uint32_t>(std::strtoul(v, &end, 0));
+            if (*end == ':') c.first = std::strtoull(end + 1, &end, 10);
+            if (*end == ':') c.count = std::strtoull(end + 1, &end, 10);
+        }
+        if (const char *r = std::getenv("DOD_RAM_DUMP_RANGE"))
+        {
+            char *end = nullptr;
+            const uint32_t a = static_cast<uint32_t>(std::strtoul(r, &end, 0));
+            if (*end == '-') { const uint32_t b = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0)); if (a < b && b <= 0x2000000u) c.lo = a, c.hi = b; }
+        }
+        return c;
+    }();
+    static uint64_t done = 0;
+    if (cfg.count == 0 || target != cfg.target || done >= cfg.count || g_dodField.load(std::memory_order_relaxed) < cfg.first)
+        return;
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/call_%03llu.bin", cfg.dir, static_cast<unsigned long long>(done));
+    if (FILE *f = std::fopen(path, "wb"))
+    {
+        std::fwrite(rdram + cfg.lo, 1, cfg.hi - cfg.lo, f);
+        std::fclose(f);
+    }
+    std::fprintf(stderr, "[ram-dump] call %llu at field %llu\n", static_cast<unsigned long long>(done),
+                 static_cast<unsigned long long>(g_dodField.load()));
+    ++done;
+}
 void dodCallHistTick(uint64_t field)
 {
+    g_dodField.store(field, std::memory_order_relaxed);
     static uint64_t first = 0, length = 300;
     static int state = -1;
     if (state < 0)
@@ -1712,7 +1759,9 @@ void dodCallHistTick(uint64_t field)
                 rangeHi = static_cast<uint32_t>(std::strtoul(dash + 1, nullptr, 16));
         }
         size_t printed = 0;
-        for (size_t i = 0; i < rows.size() && printed < 200; ++i)
+        // DOD_CALL_HIST_LIMIT=<n>: print up to n rows (default 200).
+        static const size_t limit = []() { const char *v = std::getenv("DOD_CALL_HIST_LIMIT"); return v ? std::strtoull(v, nullptr, 10) : 200ull; }();
+        for (size_t i = 0; i < rows.size() && printed < limit; ++i)
         {
             const uint32_t target = static_cast<uint32_t>(rows[i].first >> 32);
             if (rangeHi != 0u ? (target < rangeLo || target >= rangeHi) : i >= 60)
@@ -1736,6 +1785,8 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
                                      const char *debugName)
 {
     g_dodLastCtx = ctx; // [DoD] diagnostics: the guest context that ran last (ps2_memory.cpp I/O probes)
+    if (g_dodRamDumpCallOn)
+        dodRamDumpAtCall(rdram, targetPc);
     if (g_dodCallHistOn)
         ++g_dodCallHist[(static_cast<uint64_t>(targetPc) << 32) |
                         (g_dodCallHistByThread ? static_cast<uint32_t>(g_dodCurrentThreadId) : sourcePc)];
@@ -1763,7 +1814,16 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return false;
     }
 
-    if (!hasFunction(targetPc))
+    // [Fixer] Direct hit in the generated function table (nearly every call): the same function and dispatch-history
+    // entry hasFunction() + lookupFunction() would give, with one table probe instead of two.
+    RecompiledFunction targetFn = nullptr;
+    uint32_t directSlot = 0u;
+    if (generatedFunctionTableSlot(targetPc, directSlot) &&
+        (targetFn = g_ps2RecompiledFunctionTable[directSlot]) != nullptr)
+    {
+        pushDispatchPc(targetPc);
+    }
+    else if (!hasFunction(targetPc))
     {
         reportMissingFunction(rdram, ctx, targetPc, sourcePc, kind, debugName);
 
@@ -1787,23 +1847,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
         return false;
     }
 
-    RecompiledFunction targetFn = lookupFunction(targetPc);
+    if (targetFn == nullptr)
+        targetFn = lookupFunction(targetPc);
     const uint32_t entryPc = ctx->pc;
     // PS2_VU0_TRACE=<n>: the first n calls to each function in PS2_VU0_TRACE_RANGE=<first>-<last> (the game's libvu0,
     // e.g. 0x105050-0x105D94; without a range nothing is traced) with their register arguments, the 64 bytes at
     // a1/a2/a3 before and at a0 after.
-    static const int vu0Trace = []() { const char *v = std::getenv("DOD_VU0_TRACE"); return v ? std::atoi(v) : 0; }();
-    static const std::pair<uint32_t, uint32_t> vu0TraceRange = []() {
-        uint32_t first = 0u, last = 0u;
+    // [Fixer] Plain statics read on the first call (this runs for every guest call; a guarded static costs a TLS check).
+    static int vu0Trace = -1;
+    if (vu0Trace < 0)
+    {
+        const char *v = std::getenv("DOD_VU0_TRACE");
+        vu0Trace = v ? std::max(0, std::atoi(v)) : 0;
+    }
+    static std::pair<uint32_t, uint32_t> vu0TraceRange{0u, 0u};
+    static bool vu0TraceRangeRead = false;
+    if (vu0Trace > 0 && !vu0TraceRangeRead)
+    {
+        vu0TraceRangeRead = true;
         if (const char *v = std::getenv("DOD_VU0_TRACE_RANGE"))
         {
             char *end = nullptr;
-            first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
+            vu0TraceRange.first = static_cast<uint32_t>(std::strtoul(v, &end, 0));
             if (*end == '-')
-                last = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
+                vu0TraceRange.second = static_cast<uint32_t>(std::strtoul(end + 1, nullptr, 0));
         }
-        return std::make_pair(first, last);
-    }();
+    }
     if (vu0Trace > 0 && targetPc >= vu0TraceRange.first && targetPc < vu0TraceRange.second)
     {
         static std::unordered_map<uint32_t, int> counts;
@@ -2880,6 +2949,9 @@ void PS2Runtime::run()
 
     // [DoD] PCSX2's GS presents into a child window over this one (dod_pcsx2_gs.h); the host loop then only pumps
     // the window and input. Attached before the game thread sends its first GIF data.
+    // [Fixer] No EcoQoS for the port, a minidump on crashes (ps2_host_os.h); before any worker thread exists.
+    ps2host::configureHostProcess();
+    ps2host::installCrashHandler();
     const bool dodPcsx2Gs = dodpcsx2::attach(GetWindowHandle());
     if (dodPcsx2Gs)
         std::fprintf(stderr, "[display] Direct3D child is the sole presenter; host OpenGL swaps disabled\n");
@@ -2887,6 +2959,7 @@ void PS2Runtime::run()
     std::thread gameThread([&]()
                            {
         ThreadNaming::SetCurrentThreadName("GameThread");
+        ps2host::setCurrentThreadRole(ps2host::ThreadRole::Game);
         try
         {
             m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
@@ -2988,6 +3061,7 @@ void PS2Runtime::run()
             }
             EndDrawing();
         }
+        ps2_host_report::hostTick(); // [Fixer] perf overlay samples (ps2_host_report.h)
         // Optional host tools, both off by default (no-ops then): the F2 cheat menu and its RAM cheats (ps2_cheats.cpp),
         // then the F3 trainer panel (ps2_trainer.cpp), which yields to an open F2 panel.
         ps2CheatsHostTick(m_memory.getRDRAM());

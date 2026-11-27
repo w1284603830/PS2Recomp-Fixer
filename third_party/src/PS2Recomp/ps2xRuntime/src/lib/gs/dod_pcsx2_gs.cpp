@@ -3,6 +3,8 @@
 // taken per path where the runtime submits it (PS2Memory::submitGifPacket) instead of through a raster back end, so
 // the generated code's headers stay unchanged.
 #include "dod_pcsx2_gs.h"
+#include "dod_perf.h"
+#include "ps2_host_os.h"
 #include "ps2_gs_pacing.h"
 
 #include "runtime/ps2_memory.h"
@@ -79,16 +81,19 @@ namespace
     std::atomic<uint32_t> g_clientWidth{0u};
     std::atomic<uint32_t> g_clientHeight{0u};
     std::atomic<uint64_t> g_presents{0u};
+    std::atomic<uint64_t> g_flips{0u}; // [Fixer] DISPFB changes (game frames shown), for the perf overlay
     std::atomic<uint64_t> g_queuedVsyncs{0u};
 
     std::string g_renderer = "pcsx2";
     int g_scale = 1;
+    std::atomic<int> g_currentScale{1};
     int g_vsync = 2;
     std::string g_options;
 
     // Game-thread state.
     bool g_open = false;
     bool g_failed = false;
+    std::atomic<bool> g_openProbe{false}; // [Fixer] attach() is probing the open; a failure falls back
     uint32_t g_width = 0u, g_height = 0u;
     uint64_t g_gifBytes[4] = {};
     std::thread::id g_gsThread{};
@@ -184,10 +189,16 @@ namespace
         params.vsync = static_cast<uint32_t>(std::clamp(g_vsync, 0, 2));
         params.stretch = 0u; // the game's 4:3, as the launcher promises
         params.options = g_options.c_str();
-        g_open = g_api->open(&params) != 0;
+        // [Fixer] PS2_GS_TEST_OPEN_FAIL=1 (tests only): behave as if device/swap-chain creation failed, to exercise
+        // the fallback without a broken GPU.
+        static const bool s_testOpenFail = std::getenv("PS2_GS_TEST_OPEN_FAIL") != nullptr;
+        g_open = !s_testOpenFail && g_api->open(&params) != 0;
         g_failed = !g_open;
+        // [Fixer] During attach()'s probe the caller falls back to the CPU raster; only a lazy open without the probe
+        // (DOD_GS_THREAD=0) still leaves the port with nothing to draw.
         if (g_failed)
-            std::fprintf(stderr, "[pcsx2-gs] the GS failed to open; nothing will be drawn\n");
+            std::fprintf(stderr, g_openProbe.load() ? "[pcsx2-gs] GS open failed (device or swap chain creation)\n"
+                                                    : "[pcsx2-gs] the GS failed to open; nothing will be drawn\n");
         return g_open;
     }
 }
@@ -195,6 +206,7 @@ namespace
 
 namespace dodpcsx2
 {
+    bool probeGsOpen(); // defined after the GS thread
     void configure(const char *renderer, int scale, int vsync, const char *options)
     {
         if (renderer && *renderer)
@@ -204,6 +216,7 @@ namespace dodpcsx2
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         }
         g_scale = scale;
+        g_currentScale.store(std::clamp(scale, 1, 8), std::memory_order_relaxed);
         g_vsync = vsync;
         g_options = options ? options : "";
     }
@@ -267,6 +280,19 @@ namespace dodpcsx2
         g_active.store(true, std::memory_order_release);
         std::fprintf(stderr, "[pcsx2-gs] renderer: PCSX2 GS (pcsx2gs.dll), scale %d, vsync %d, window %ux%u\n", g_scale, g_vsync,
                      width, height);
+        // [Fixer] Open the GS before the game starts. A device/swap-chain failure (old GPU, missing feature level,
+        // remote session, broken driver) used to leave the port drawing nothing forever: the host had already given
+        // presentation to the child window and the built-in raster received no packets. Now it falls back for real.
+        if (!probeGsOpen())
+        {
+            std::fprintf(stderr, "[pcsx2-gs] the GS could not open on this system (see the pcsx2gs log lines above); "
+                                 "falling back to the built-in CPU raster\n");
+            shutdown();
+            DestroyWindow(g_child);
+            g_child = nullptr;
+            g_api = nullptr;
+            return false;
+        }
         return true;
     }
 
@@ -397,6 +423,7 @@ namespace dodpcsx2
             {
                 lastDispfb = dispfb;
                 ++flips;
+                g_flips.fetch_add(1u, std::memory_order_relaxed);
             }
             if (fpsLog && fields % 300u == 0u)
             {
@@ -532,7 +559,45 @@ namespace dodpcsx2
             kReadFifo = 4,
             kCgSubmit = 5,
             kHdCg = 6,
+            kOpenProbe = 7, // [Fixer] no-op after ensureOpen(); signals probeOpen()
         };
+
+        // [Fixer] Main thread, before the game thread exists: open the GS on this worker now (the first chunk would
+        // do it anyway) and wait for the outcome while servicing cross-thread window messages, because DXGI may send
+        // the parent window synchronous messages while it creates the swap chain. Returns false only when the open
+        // definitely failed (device/swap chain creation); a slow open past the timeout continues asynchronously.
+        bool probeOpen(DWORD timeoutMs)
+        {
+            m_probeEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!m_probeEvent)
+                return true;
+            push(kOpenProbe, 0u, nullptr, 0u);
+            publish();
+            const ULONGLONG deadline = GetTickCount64() + timeoutMs;
+            bool signalled = false;
+            for (;;)
+            {
+                const ULONGLONG now = GetTickCount64();
+                const DWORD left = now >= deadline ? 0u : static_cast<DWORD>(deadline - now);
+                const DWORD r = MsgWaitForMultipleObjects(1, &m_probeEvent, FALSE, left, QS_SENDMESSAGE);
+                if (r == WAIT_OBJECT_0)
+                {
+                    signalled = true;
+                    break;
+                }
+                if (r != WAIT_OBJECT_0 + 1)
+                    break; // timeout or wait failure: let the open finish on its own
+                MSG message;
+                PeekMessageW(&message, nullptr, 0, 0, PM_NOREMOVE);
+            }
+            if (!signalled)
+            {
+                std::fprintf(stderr, "[pcsx2-gs] GS open still running after %lu ms; continuing\n",
+                             static_cast<unsigned long>(timeoutMs));
+                return true;
+            }
+            return !g_failed;
+        }
 
         GsThread()
         {
@@ -629,6 +694,7 @@ namespace dodpcsx2
 
         void loop()
         {
+            ps2host::setCurrentThreadRole(ps2host::ThreadRole::Gs); // [Fixer] also names it "dod GS"
             for (;;)
             {
                 QwordChunk chunk;
@@ -669,6 +735,12 @@ namespace dodpcsx2
                 at += 1u + (static_cast<size_t>(header[2]) + 15u) / 16u;
                 if (header[3] != m_mxcsr)
                     _mm_setcsr(m_mxcsr = header[3]);
+                if (header[0] == kOpenProbe)
+                {
+                    if (m_probeEvent)
+                        SetEvent(m_probeEvent);
+                    continue;
+                }
                 if (!open)
                 {
                     if (header[0] == kVsync)
@@ -746,6 +818,7 @@ namespace dodpcsx2
         std::atomic<uint32_t> m_vsyncsInFlight{0u};
         ps2host::GsWaitTime m_waitTime;
         uint32_t m_mxcsr = 0u; // GS thread
+        HANDLE m_probeEvent = nullptr; // [Fixer] probeOpen(); intentionally not closed (the worker may still signal it)
         std::thread m_thread;
     };
 
@@ -775,6 +848,20 @@ namespace dodpcsx2
             return g_worker = new GsThread(); // explicitly stopped after the game thread joins
         }();
         return thread;
+    }
+
+    // [Fixer] attach(): opens the GS ahead of the game thread. With the GS on the game thread (DOD_GS_THREAD=0, tests)
+    // the open stays lazy as before.
+    bool probeGsOpen()
+    {
+        if (GsThread *thread = gsThread())
+        {
+            g_openProbe.store(true);
+            const bool ok = thread->probeOpen(60000u);
+            g_openProbe.store(false);
+            return ok;
+        }
+        return true;
     }
 
     void shutdown()
@@ -865,6 +952,8 @@ namespace dodpcsx2
     {
         if (!active() || !dst || sizeBytes == 0u || !onGsThread())
             return;
+        // [Fixer] DOD_PERF: game-thread time blocked on a GS readback (queue drain + GPU copy + Map).
+        dodperf::Scope readbackTime(dodperf::GsReadback);
         if (GsThread *thread = gsThread())
         {
             thread->push(GsThread::kReadFifo, sizeBytes, &dst, sizeof(dst));
@@ -882,9 +971,26 @@ namespace dodpcsx2
         g_snapshotPath = path;
     }
 
+    int scale()
+    {
+        return g_currentScale.load(std::memory_order_relaxed);
+    }
+
     uint64_t presents()
     {
         return g_presents.load(std::memory_order_relaxed);
+    }
+
+    uint64_t flips()
+    {
+        return g_flips.load(std::memory_order_relaxed);
+    }
+
+    void setOsdLine(const char *text)
+    {
+        // set_osd may be called from any thread (pcsx2gs_api.h); the DLL keeps its own copy of the text.
+        if (g_api && g_api->set_osd)
+            g_api->set_osd(nullptr, 0u, 0.0f, text);
     }
 
     void requestLineCapture(const char *dir, bool light, bool ab, const char *gameInfo)
@@ -1002,8 +1108,11 @@ namespace dodpcsx2
     void reset() {}
     void readFifo(uint8_t *, uint32_t) {}
     void requestSnapshot(const char *) {}
+    int scale() { return 1; }
     void requestLineCapture(const char *, bool, bool, const char *) {}
     uint64_t presents() { return 0u; }
+    uint64_t flips() { return 0u; }
+    void setOsdLine(const char *) {}
     void prefetchScene(uint32_t) {}
     uint64_t queuedVsyncs() { return 0u; }
     void cgSubmit(uint32_t, bool) {}

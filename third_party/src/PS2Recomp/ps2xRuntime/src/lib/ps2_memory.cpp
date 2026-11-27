@@ -579,12 +579,22 @@ void dodVif1Ensure(const uint8_t *data, uint32_t endOffset)
 
 namespace
 {
-    inline void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
+#if defined(_MSC_VER)
+#define PS2_FIXER_NOINLINE __declspec(noinline)
+#define PS2_FIXER_FORCEINLINE __forceinline
+#else
+#define PS2_FIXER_NOINLINE __attribute__((noinline))
+#define PS2_FIXER_FORCEINLINE inline __attribute__((always_inline))
+#endif
+    [[noreturn]] PS2_FIXER_NOINLINE void outOfRange(const char *op, uint32_t address)
+    {
+        throw std::runtime_error(std::string(op) + " out-of-bounds at address: 0x" + std::to_string(address));
+    }
+    // [Fixer] Hot bounds check kept inline; the throw path (string building) moved out of line.
+    PS2_FIXER_FORCEINLINE void inRange(uint32_t offset, size_t bytes, size_t regionSize, const char *op, uint32_t address)
     {
         if (static_cast<uint64_t>(offset) + static_cast<uint64_t>(bytes) > static_cast<uint64_t>(regionSize))
-        {
-            throw std::runtime_error(std::string(op) + " out-of-bounds at address: 0x" + std::to_string(address));
-        }
+            outOfRange(op, address);
     }
 
     template <typename T>
@@ -788,14 +798,12 @@ namespace
     };
     LazyEeTimers g_dodLazyEeTimers;
 
-    inline bool dodLazyEeTimersEnabled()
-    {
-        static const bool enabled = []() {
-            const char *v = std::getenv("DOD_EE_TIMER_LAZY");
-            return !(v && v[0] == '0');
-        }();
-        return enabled;
-    }
+    // [Fixer] Read once at start-up (hot path: every EE timer access); a function-local static paid a guard check.
+    const bool g_dodLazyEeTimersEnabled = []() {
+        const char *v = std::getenv("DOD_EE_TIMER_LAZY");
+        return !(v && v[0] == '0');
+    }();
+    inline bool dodLazyEeTimersEnabled() { return g_dodLazyEeTimersEnabled; }
 
     // Applies the pending cycles now (before the guest observes or changes timer state).
     inline void dodSettleEeTimersNow(PS2Memory &memory)

@@ -346,6 +346,33 @@ static const u8 qscale_nonlin[32] = {
 
 static double idct_c[8][8];
 
+/* [Fixer] DOD_PERF: IPU cost counters, reported every 5 s (time in commands, restarts after starvation,
+ * IDCT blocks and how many of them were sparse). Diagnostics only. */
+#include <time.h>
+static int perf_on = -1;
+static unsigned long long perf_ns, perf_cmds, perf_restarts, perf_blocks, perf_rows_skipped, perf_dc_only;
+static unsigned long long perf_last_ns, perf_mb_ns, perf_csc_ns, perf_mbs, perf_idct_ns;
+static unsigned long long perf_now(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (unsigned long long)ts.tv_sec * 1000000000ull + (unsigned long long)ts.tv_nsec;
+}
+static int perf_enabled(void) {
+    if (perf_on < 0) perf_on = getenv("DOD_PERF") != NULL;
+    return perf_on;
+}
+static void perf_report(unsigned long long now) {
+    if (!perf_last_ns) perf_last_ns = now;
+    if (now - perf_last_ns < 5000000000ull) return;
+    ps2_log("perf: %.1fs ipu_ms=%.1f (macroblock decode %.1f, idct %.1f, csc+out %.1f) cmds=%llu restarts=%llu "
+            "macroblocks=%llu idct_blocks=%llu dc_only=%llu zero_rows_skipped=%llu",
+            (now - perf_last_ns) / 1e9, perf_ns / 1e6, perf_mb_ns / 1e6, perf_idct_ns / 1e6, perf_csc_ns / 1e6,
+            perf_cmds, perf_restarts, perf_mbs, perf_blocks, perf_dc_only, perf_rows_skipped);
+    perf_last_ns = now;
+    perf_ns = perf_cmds = perf_restarts = perf_blocks = perf_rows_skipped = perf_dc_only = 0;
+    perf_mb_ns = perf_csc_ns = perf_mbs = perf_idct_ns = 0;
+}
+
 static void idct_init(void) {
     int u, x;
     for (u = 0; u < 8; u++)
@@ -354,7 +381,7 @@ static void idct_init(void) {
                          * cos((2.0 * x + 1.0) * u * 3.14159265358979323846 / 16.0);
 }
 
-static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
+static void idct_8x8_ref(const s16 *in, s16 *out, int lo, int hi) {
     double tmp[64];
     int y, x, u, v;
     for (y = 0; y < 8; y++)
@@ -368,6 +395,50 @@ static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
             double s = 0.0;
             int r;
             for (v = 0; v < 8; v++) s += idct_c[v][y] * tmp[v * 8 + x];
+            s *= 0.5;
+            r = (int)(s < 0 ? s - 0.5 : s + 0.5);
+            if (r < lo) r = lo;
+            if (r > hi) r = hi;
+            out[y * 8 + x] = (s16)r;
+        }
+}
+
+/* [Fixer] Same arithmetic as idct_8x8_ref, bit for bit, with the work of all-zero coefficient rows skipped.
+ * A zero input row gives tmp = +0.0 for that row, and adding (+/-)0.0 to a running double sum never changes it
+ * (the sum starts at +0.0 and cannot become -0.0), so leaving those terms out of the column pass keeps every
+ * output identical while the non-zero rows are still summed in ascending order. MPEG intra blocks are mostly
+ * sparse (often DC or a few low-frequency rows), which makes the column pass 2-8x cheaper. PS2_IPU_IDCT_REF=1
+ * selects the reference loop for A/B checks. */
+static int idct_use_ref = -1;
+static void idct_8x8(const s16 *in, s16 *out, int lo, int hi) {
+    double tmp[64];
+    int rows[8];
+    int nrows = 0, y, x, u, k;
+    if (idct_use_ref < 0) idct_use_ref = getenv("PS2_IPU_IDCT_REF") != NULL;
+    perf_blocks++;
+    if (idct_use_ref) { idct_8x8_ref(in, out, lo, hi); return; }
+    for (y = 0; y < 8; y++) {
+        const s16 *row = in + y * 8;
+        int nz = 0;
+        for (u = 0; u < 8; u++) if (row[u]) { nz = 1; break; }
+        if (!nz) { perf_rows_skipped++; continue; }
+        rows[nrows++] = y;
+        for (x = 0; x < 8; x++) {
+            double s = 0.0;
+            for (u = 0; u < 8; u++) if (row[u]) s += idct_c[u][x] * row[u];
+            tmp[y * 8 + x] = s * 0.5;
+        }
+    }
+    if (nrows == 1 && rows[0] == 0) {
+        int dc = 1;
+        for (u = 1; u < 8; u++) if (in[u]) { dc = 0; break; }
+        if (dc) perf_dc_only++;
+    }
+    for (x = 0; x < 8; x++)
+        for (y = 0; y < 8; y++) {
+            double s = 0.0;
+            int r;
+            for (k = 0; k < nrows; k++) s += idct_c[rows[k]][y] * tmp[rows[k] * 8 + x];
             s *= 0.5;
             r = (int)(s < 0 ? s - 0.5 : s + 0.5);
             if (r < lo) r = lo;
@@ -477,7 +548,11 @@ static int decode_block(s16 *out, int cc, int intra, u32 qsc) {
 
     if (!CTRL_MP1(ipu_ctrl) && !(sum & 1)) coef[63] ^= 1;
 
-    idct_8x8(coef, out, intra ? 0 : -256, intra ? 255 : 255);
+    {
+        const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
+        idct_8x8(coef, out, intra ? 0 : -256, intra ? 255 : 255);
+        if (t0) perf_idct_ns += perf_now() - t0;
+    }
     return 1;
 }
 
@@ -693,6 +768,23 @@ static void cmd_bdec(u32 opt) {
     in_compact();
 }
 
+/* [Fixer] Resumable IDEC. The decoder used to restart a starved IDEC from its first macroblock on every new piece
+ * of input (snapshot at command start), so a frame streamed in N pieces was decoded about N/2 times over (3-4x the
+ * work in measured CG, close to a full core on slower CPUs). idec_ck is the state at the last macroblock boundary:
+ * bit position, DC predictors, quantiser scale, the first-macroblock flag and the output length. Output up to it
+ * is final and identical; PS2_IPU_IDEC_RESTART=1 restores the old full restart for A/B checks. */
+static struct {
+    int valid;
+    u32 opt;
+    u64 in_bit;
+    u32 out_len;
+    s32 dc_pred[3];
+    u32 qsc;
+    int first;
+} idec_ck;
+static int ipu_resuming;
+static int idec_restart_mode = -1;
+
 static void cmd_idec(u32 opt) {
     s16 y[256], cb[64], cr[64];
     u32 fb  = opt & 0x3Fu;
@@ -703,12 +795,30 @@ static void cmd_idec(u32 opt) {
     int ofm = (int)((opt >> 27) & 1u);
     int first = 1;
 
-    bit_skip(fb);
-    dc_pred_reset();
-    out_reset();
+    if (ipu_resuming && idec_ck.valid && idec_ck.opt == opt) {
+        /* [Fixer] Continue a starved IDEC at its last complete macroblock instead of decoding it again from the
+         * first one (see idec_ck). */
+        in_bit = idec_ck.in_bit;
+        if (out_len > idec_ck.out_len) out_len = idec_ck.out_len;
+        memcpy(dc_pred, idec_ck.dc_pred, sizeof dc_pred);
+        qsc = idec_ck.qsc;
+        first = idec_ck.first;
+    } else {
+        bit_skip(fb);
+        dc_pred_reset();
+        out_reset();
+    }
+    idec_ck.valid = 0;
     for (;;) {
         s32 mbt = 0;
         int field = 0;
+        /* [Fixer] Macroblock boundary: everything before it is final output. */
+        idec_ck.opt = opt;
+        idec_ck.in_bit = in_bit;
+        idec_ck.out_len = out_len;
+        memcpy(idec_ck.dc_pred, dc_pred, sizeof dc_pred);
+        idec_ck.qsc = qsc;
+        idec_ck.first = first;
         if (at_start_code()) { ipu_scd = 1; align_to_start_code(); break; }
         if (!first) {
             s32 inc = 0;
@@ -721,13 +831,27 @@ static void cmd_idec(u32 opt) {
         if (dtd) field = (int)bit_get(1);
         if (mbt & 0x10) qsc = bit_get(5);
         if (ipu_starved) break;
-        if (!decode_macroblock(y, cb, cr, 1, 0x3Fu, qsc, field)) break;
-        emit_rgb(y, cb, cr, ofm, dte, sgn);
+        {
+            const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
+            if (!decode_macroblock(y, cb, cr, 1, 0x3Fu, qsc, field)) break;
+            if (t0) { const unsigned long long t1 = perf_now(); perf_mb_ns += t1 - t0; perf_mbs++;
+                      emit_rgb(y, cb, cr, ofm, dte, sgn); perf_csc_ns += perf_now() - t1; }
+            else emit_rgb(y, cb, cr, ofm, dte, sgn);
+        }
         if (ipu_starved) break;
         /* [DoD] Low input is not the end of the data: the hardware IDEC waits for the FIFO, and only a start code
          * ends it. Pull from the DMA here; with nothing more yet, the next macroblock starves and the command
          * resumes when toIPU brings more (it used to end with SCD set, which cut DoD's logo rows short). */
         if (bit_avail() < 1024u) ps2_dmac_ipu_pull();
+    }
+    if (ipu_starved) {
+        /* [Fixer] Rewind to the last complete macroblock; ipu_command keeps this state instead of the command-start
+         * snapshot, and the next run (more input) resumes from here. A macroblock emitted from a short read is
+         * dropped with it, exactly as the full restart dropped it. */
+        in_bit = idec_ck.in_bit;
+        out_len = idec_ck.out_len;
+        memcpy(dc_pred, idec_ck.dc_pred, sizeof dc_pred);
+        idec_ck.valid = 1;
     }
     {
         /* [DoD] DOD_IPU_IDEC_LOG=<n>: one line per IDEC (first n). */
@@ -878,17 +1002,29 @@ static void cmd_log_report(void) {
     }
 }
 
-static void ipu_command(u32 cmd) {
+static void ipu_command_ex(u32 cmd, int resume) {
     cmd_log_push(cmd);
     ipu_pending = 0;
     ipu_in_command = 1;
+    if (idec_restart_mode < 0) idec_restart_mode = getenv("PS2_IPU_IDEC_RESTART") != NULL;
+    if (!resume) idec_ck.valid = 0;
     for (;;) {
         u32 before;
         snap_save(&cmd_snap);
         ipu_starved = 0;
         ipu_need_qw = 0;
+        ipu_resuming = resume && !idec_restart_mode;
         ipu_cmd_active = 1;
-        ipu_run(cmd);
+        {
+            const unsigned long long t0 = perf_enabled() ? perf_now() : 0ull;
+            ipu_run(cmd);
+            if (t0) {
+                const unsigned long long t1 = perf_now();
+                perf_ns += t1 - t0;
+                perf_cmds++;
+                perf_report(t1);
+            }
+        }
         ipu_cmd_active = 0;
         if (!ipu_starved) {
             if (ipu_ecd && !ipu_said_err) {
@@ -908,7 +1044,14 @@ static void ipu_command(u32 cmd) {
             ps2_dmac_ipu_drain();
             return;
         }
-        snap_restore(&cmd_snap);
+        if ((cmd >> 28) == IPU_IDEC && idec_ck.valid && !idec_restart_mode) {
+            /* keep the rewound macroblock-boundary state (cmd_idec); input pulled meanwhile stays as before */
+            if (in_len < cmd_snap.in_len) in_len = cmd_snap.in_len;
+        } else {
+            snap_restore(&cmd_snap);
+            perf_restarts++;
+        }
+        resume = 1;
         ipu_pending = 1;
         before = in_len;
         ps2_dmac_ipu_pull();
@@ -973,6 +1116,7 @@ void ps2_ipu_init(void) {
     stat_mb = stat_err = 0;
     stat_starve = stat_resume = 0;
     ipu_pending = 0; ipu_pending_cmd = 0;
+    idec_ck.valid = 0;
     ipu_starved = 0; ipu_cmd_active = 0;
 }
 
@@ -1017,9 +1161,10 @@ u32 ps2_ipu_read32(u32 a) {
 
 void ps2_ipu_write32(u32 a, u32 v) {
     switch (a & 0x3Cu) {
-    case 0x00: ipu_command(v); return;
+    case 0x00: ipu_command_ex(v, 0); return;
     case 0x10:
         if (v & (1u << 30)) {
+            idec_ck.valid = 0; /* [Fixer] RST drops the input the checkpoint refers to */
             in_len = 0; in_bit = 0;
             out_reset();
             ipu_scd = ipu_ecd = 0;
@@ -1094,7 +1239,8 @@ void ps2_ipu_dma_in(const void *qw, u32 n) {
     in_len += n * 16u;
     if (ipu_pending && !ipu_in_command) {
         stat_resume++;
-        ipu_command(ipu_pending_cmd);
+        if (!((ipu_pending_cmd >> 28) == IPU_IDEC && idec_ck.valid && !idec_restart_mode)) perf_restarts++;
+        ipu_command_ex(ipu_pending_cmd, 1);
     }
 }
 
@@ -1104,6 +1250,18 @@ void ps2_ipu_dma_out(void *dst, u32 n) {
     u32 take = want < have ? want : have;
     memcpy(dst, out_buf + out_pos, take);
     if (take < want) memset((u8 *)dst + take, 0, want - take);
+    if (perf_enabled() && take) {
+        /* [Fixer] DOD_PERF: FNV-1a of the bytes the game receives, logged at every 16 MiB, so two runs (e.g.
+         * PS2_IPU_IDCT_REF=1 against the default) can be compared at identical byte counts. */
+        static unsigned long long hash = 1469598103934665603ull, delivered = 0ull;
+        const u8 *b = out_buf + out_pos;
+        u32 i;
+        for (i = 0; i < take; i++) {
+            hash = (hash ^ b[i]) * 1099511628211ull;
+            if ((++delivered & ((16ull << 20) - 1ull)) == 0ull)
+                ps2_log("perf: output milestone %llu MiB hash %016llX", delivered >> 20, hash);
+        }
+    }
     out_pos += take;
 }
 

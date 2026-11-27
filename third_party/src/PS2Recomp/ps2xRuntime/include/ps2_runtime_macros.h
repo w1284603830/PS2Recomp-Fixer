@@ -442,9 +442,59 @@ inline __m128 ps2_vmul(__m128 a, __m128 b)
 // Fast path: Direct RDRAM access (masked).
 // Slow path: Full runtime->Load/Store
 
+// [Fixer] The rare access that wraps past the end of RAM goes to an out-of-line copy (by value: no address-taken local
+// in the caller), which keeps its small byte array (and the /GS cookie it brought) out of generated code. Same bytes,
+// same order as before. Not forced inline: measured on the hottest generated function (sub_264350, 32k lines),
+// __forceinline on these helpers doubled its code (477k -> 937k instructions) and its stack frame (689 KB -> 1.6 MB,
+// a stack overflow on a 1 MB thread stack); MSVC's own inlining limit in huge functions protects code size.
 static inline bool Ps2FastRangeIsContiguous(uint32_t offset, uint32_t bytes)
 {
     return offset <= (PS2_RAM_SIZE - bytes);
+}
+
+template <typename T>
+PS2_FLOAT_NOINLINE inline T Ps2FastReadWrapped(const uint8_t *rdram, uint32_t offset)
+{
+    uint8_t bytes[sizeof(T)];
+    for (uint32_t i = 0; i < sizeof(T); ++i)
+        bytes[i] = rdram[(offset + i) & PS2_RAM_MASK];
+    T value;
+    std::memcpy(&value, bytes, sizeof(T));
+    return value;
+}
+
+PS2_FLOAT_NOINLINE inline void Ps2FastWriteWrapped(uint8_t *rdram, uint32_t offset, uint64_t lo, uint64_t hi, uint32_t size)
+{
+    uint8_t bytes[16];
+    std::memcpy(bytes, &lo, 8);
+    std::memcpy(bytes + 8, &hi, 8);
+    for (uint32_t i = 0; i < size; ++i)
+        rdram[(offset + i) & PS2_RAM_MASK] = bytes[i];
+}
+
+template <typename T>
+static inline T Ps2FastReadT(const uint8_t *rdram, uint32_t addr)
+{
+    const uint32_t offset = addr & PS2_RAM_MASK;
+    if (!Ps2FastRangeIsContiguous(offset, sizeof(T)))
+        return Ps2FastReadWrapped<T>(rdram, offset);
+    T value;
+    std::memcpy(&value, rdram + offset, sizeof(T));
+    return value;
+}
+
+template <typename T>
+static inline void Ps2FastWriteT(uint8_t *rdram, uint32_t addr, T value)
+{
+    const uint32_t offset = addr & PS2_RAM_MASK;
+    if (!Ps2FastRangeIsContiguous(offset, sizeof(T)))
+    {
+        uint64_t half[2] = {0, 0};
+        std::memcpy(half, &value, sizeof(T));
+        Ps2FastWriteWrapped(rdram, offset, half[0], half[1], sizeof(T));
+    }
+    else
+        std::memcpy(rdram + offset, &value, sizeof(T));
 }
 
 static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
@@ -454,82 +504,22 @@ static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
 
 static inline uint16_t Ps2FastRead16(const uint8_t *rdram, uint32_t addr)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
-    {
-        uint8_t wrapped[sizeof(uint16_t)];
-        for (uint32_t i = 0; i < sizeof(uint16_t); ++i)
-        {
-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
-        }
-        uint16_t value;
-        std::memcpy(&value, wrapped, sizeof(value));
-        return value;
-    }
-
-    uint16_t value;
-    std::memcpy(&value, rdram + offset, sizeof(value));
-    return value;
+    return Ps2FastReadT<uint16_t>(rdram, addr);
 }
 
 static inline uint32_t Ps2FastRead32(const uint8_t *rdram, uint32_t addr)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
-    {
-        uint8_t wrapped[sizeof(uint32_t)];
-        for (uint32_t i = 0; i < sizeof(uint32_t); ++i)
-        {
-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
-        }
-        uint32_t value;
-        std::memcpy(&value, wrapped, sizeof(value));
-        return value;
-    }
-
-    uint32_t value;
-    std::memcpy(&value, rdram + offset, sizeof(value));
-    return value;
+    return Ps2FastReadT<uint32_t>(rdram, addr);
 }
 
 static inline uint64_t Ps2FastRead64(const uint8_t *rdram, uint32_t addr)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
-    {
-        uint8_t wrapped[sizeof(uint64_t)];
-        for (uint32_t i = 0; i < sizeof(uint64_t); ++i)
-        {
-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
-        }
-        uint64_t value;
-        std::memcpy(&value, wrapped, sizeof(value));
-        return value;
-    }
-
-    uint64_t value;
-    std::memcpy(&value, rdram + offset, sizeof(value));
-    return value;
+    return Ps2FastReadT<uint64_t>(rdram, addr);
 }
 
 static inline __m128i Ps2FastRead128(const uint8_t *rdram, uint32_t addr)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(__m128i)))
-    {
-        alignas(16) uint8_t wrapped[sizeof(__m128i)];
-        for (uint32_t i = 0; i < sizeof(__m128i); ++i)
-        {
-            wrapped[i] = rdram[(offset + i) & PS2_RAM_MASK];
-        }
-        __m128i value;
-        std::memcpy(&value, wrapped, sizeof(value));
-        return value;
-    }
-
-    __m128i value;
-    std::memcpy(&value, rdram + offset, sizeof(value));
-    return value;
+    return Ps2FastReadT<__m128i>(rdram, addr);
 }
 
 static inline void Ps2FastWrite8(uint8_t *rdram, uint32_t addr, uint8_t value)
@@ -539,66 +529,22 @@ static inline void Ps2FastWrite8(uint8_t *rdram, uint32_t addr, uint8_t value)
 
 static inline void Ps2FastWrite16(uint8_t *rdram, uint32_t addr, uint16_t value)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint16_t)))
-    {
-        uint8_t wrapped[sizeof(uint16_t)];
-        std::memcpy(wrapped, &value, sizeof(value));
-        for (uint32_t i = 0; i < sizeof(uint16_t); ++i)
-        {
-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
-        }
-        return;
-    }
-    std::memcpy(rdram + offset, &value, sizeof(value));
+    Ps2FastWriteT<uint16_t>(rdram, addr, value);
 }
 
 static inline void Ps2FastWrite32(uint8_t *rdram, uint32_t addr, uint32_t value)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint32_t)))
-    {
-        uint8_t wrapped[sizeof(uint32_t)];
-        std::memcpy(wrapped, &value, sizeof(value));
-        for (uint32_t i = 0; i < sizeof(uint32_t); ++i)
-        {
-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
-        }
-        return;
-    }
-    std::memcpy(rdram + offset, &value, sizeof(value));
+    Ps2FastWriteT<uint32_t>(rdram, addr, value);
 }
 
 static inline void Ps2FastWrite64(uint8_t *rdram, uint32_t addr, uint64_t value)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(uint64_t)))
-    {
-        uint8_t wrapped[sizeof(uint64_t)];
-        std::memcpy(wrapped, &value, sizeof(value));
-        for (uint32_t i = 0; i < sizeof(uint64_t); ++i)
-        {
-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
-        }
-        return;
-    }
-    std::memcpy(rdram + offset, &value, sizeof(value));
+    Ps2FastWriteT<uint64_t>(rdram, addr, value);
 }
 
 static inline void Ps2FastWrite128(uint8_t *rdram, uint32_t addr, __m128i value)
 {
-    const uint32_t offset = addr & PS2_RAM_MASK;
-    if (!Ps2FastRangeIsContiguous(offset, sizeof(__m128i)))
-    {
-        alignas(16) uint8_t wrapped[sizeof(__m128i)];
-        std::memcpy(wrapped, &value, sizeof(value));
-        for (uint32_t i = 0; i < sizeof(__m128i); ++i)
-        {
-            rdram[(offset + i) & PS2_RAM_MASK] = wrapped[i];
-        }
-        return;
-    }
-    std::memcpy(rdram + offset, &value, sizeof(value));
+    Ps2FastWriteT<__m128i>(rdram, addr, value);
 }
 
 #define FAST_READ8(addr) Ps2FastRead8(rdram, (uint32_t)(addr))

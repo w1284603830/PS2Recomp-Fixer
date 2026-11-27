@@ -19,8 +19,13 @@ extern "C"
 #endif
 
 #include "../../gs/dod_pcsx2_gs.h"
+#include "../../gs/dod_perf.h"
 #include "dod_hd_cg.h"
 #include <deque>
+#include <algorithm>
+#include <cstring>
+#include <thread>
+#include <vector>
 #include <memory>
 
 #include "Syscalls/Helpers/State.h"
@@ -102,6 +107,7 @@ namespace ps2_stubs
                 {
                     return false;
                 }
+                dodperf::Scope decodeTime(dodperf::MpegDecode); // [Fixer] DOD_PERF
 
                 static uint32_t s_feedLogCount = 0u;
                 const bool shouldLog = (s_feedLogCount < 32u);
@@ -112,7 +118,14 @@ namespace ps2_stubs
                 size_t totalPacketsSent = 0u;
                 size_t framesBefore = frames.size();
 
-                const uint8_t *cursor = data;
+                // [Fixer] FFmpeg's parsers may read up to AV_INPUT_BUFFER_PADDING_SIZE bytes past the input (SIMD start
+                // code scans); the guest buffer ends where the game says. Parse from a reused, zero-padded copy, as the
+                // HD CG path (dod_hd_cg.h) already does, so a read past the end never touches unmapped or stale memory.
+                if (m_padded.size() < size + AV_INPUT_BUFFER_PADDING_SIZE)
+                    m_padded.resize(size + AV_INPUT_BUFFER_PADDING_SIZE);
+                std::memcpy(m_padded.data(), data, size);
+                std::memset(m_padded.data() + size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+                const uint8_t *cursor = m_padded.data();
                 size_t remaining = size;
                 int64_t parserPts = pts90k >= 0 ? pts90k : AV_NOPTS_VALUE;
                 int64_t parserDts = dts90k >= 0 ? dts90k : AV_NOPTS_VALUE;
@@ -283,7 +296,18 @@ namespace ps2_stubs
                     return false;
                 }
 
-                m_codecCtx->thread_count = 1;
+                // [Fixer] Slice threads only: MPEG-1/2 decode each slice row independently and the output is
+                // bit-identical to one thread, with no extra frame of latency (frame threading would add delay
+                // and change when sceMpegGetPicture sees a picture). Single-thread decode of full-screen CG ran on
+                // the game thread and was a large share of a slow core. PS2_MPEG_THREADS=<n> overrides (1 = old).
+                {
+                    int threads = static_cast<int>(std::thread::hardware_concurrency());
+                    threads = threads >= 4 ? std::min(4, threads / 2) : 1;
+                    if (const char *v = std::getenv("PS2_MPEG_THREADS"))
+                        threads = std::clamp(std::atoi(v), 1, 16);
+                    m_codecCtx->thread_count = threads;
+                    m_codecCtx->thread_type = threads > 1 ? FF_THREAD_SLICE : 0;
+                }
                 m_codecCtx->pkt_timebase = AVRational{1, 90000};
                 // feedElementaryStream() does not create the decoder until a valid
                 // MPEG sequence header has been found.  Dropping non-key pictures
@@ -453,6 +477,7 @@ namespace ps2_stubs
             }
 
             AVCodecParserContext *m_parser = nullptr;
+            std::vector<uint8_t> m_padded; // [Fixer] padded parser input (feed)
             AVCodecContext *m_codecCtx = nullptr;
             AVFrame *m_frame = nullptr;
             AVPacket *m_packet = nullptr;

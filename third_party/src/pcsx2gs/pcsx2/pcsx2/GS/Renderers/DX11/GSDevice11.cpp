@@ -1289,7 +1289,20 @@ void GSDevice11::EndPresent()
 
 	const UINT sync_interval = static_cast<UINT>(m_vsync_mode == GSVSyncMode::FIFO);
 	const UINT flags = (m_vsync_mode == GSVSyncMode::Disabled && m_using_allow_tearing) ? DXGI_PRESENT_ALLOW_TEARING : 0;
-	m_swap_chain->Present(sync_interval, flags);
+	// [Fixer] A removed/reset device used to fail silently (black window). Log the reason once for support reports.
+	const HRESULT present_hr = m_swap_chain->Present(sync_interval, flags);
+	if (FAILED(present_hr))
+	{
+		static bool s_logged = false;
+		if (!s_logged)
+		{
+			s_logged = true;
+			const HRESULT reason = (present_hr == DXGI_ERROR_DEVICE_REMOVED || present_hr == DXGI_ERROR_DEVICE_RESET) ?
+				m_dev->GetDeviceRemovedReason() : present_hr;
+			Console.Error("D3D11: Present failed: %08X (device removed reason %08X)", static_cast<unsigned>(present_hr),
+				static_cast<unsigned>(reason));
+		}
+	}
 
 	if (m_gpu_timing_enabled)
 		KickTimestampQuery();

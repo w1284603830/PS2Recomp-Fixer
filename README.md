@@ -62,6 +62,7 @@ maintenance deltas listed there. The checked-in vendored source already contains
 | `patches/` | Diff against upstream `eb8688b` |
 | `docs/GAME_PORTING.md`, `docs/CHEATS.md`, `docs/TRAINER.md` | Where each game-specific value goes; the optional F2 `cheats.ini` menu and F3 trainer |
 | `docs/ECOSYSTEM_SURVEY.md` | Survey of related recompilation / native-port projects: lineage, IOP routes, VU, GS |
+| `docs/CROSS_DEVICE_OPTIMIZATION.md` (+ `.zh-TW.md`), `tools/perf/` | Old CPUs, GPU class, movies, host scheduling, crash dumps, runtime hot paths and how to measure them on any port |
 | `docs/` | Development notes from the original port (Chinese): every patch's cause and verification, build notes, upstream test review |
 
 The sources reference each other through relative paths, so keep the `third_party/src/<module>` layout.

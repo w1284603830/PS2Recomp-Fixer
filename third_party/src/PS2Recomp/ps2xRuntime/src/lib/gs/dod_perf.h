@@ -10,10 +10,12 @@
 namespace dodperf
 {
 enum Stage { HostFrame, Upload, Latch, StateWait, BackendWait, VramWait,
-             VramCopy, Convert, RecordWait, Draw, Transfer, EndDrawing, Export, GsInterrupt, IpuRun, Count };
+             VramCopy, Convert, RecordWait, Draw, Transfer, EndDrawing, Export, GsInterrupt, IpuRun,
+             GsReadback, MpegDecode, Count };
 inline constexpr const char *names[Count] = {"host_frame", "upload", "gs_latch", "state_wait",
     "backend_wait", "vram_wait", "vram_copy", "scanout", "record_wait", "raster",
-    "transfer", "end_drawing", "frame_export", "gs_interrupt", "ipu_run"};
+    "transfer", "end_drawing", "frame_export", "gs_interrupt", "ipu_run",
+    "gs_readback", "mpeg_decode"};
 struct Counter { std::atomic<uint64_t> calls{0}, ns{0}, maxNs{0}; };
 inline std::array<Counter, Count> counters;
 inline std::array<std::atomic<uint64_t>, 1001> hostFrameHistogram{};

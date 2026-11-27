@@ -50,7 +50,12 @@ target_compile_definitions(kzvu_flags INTERFACE
 )
 target_compile_options(kzvu_flags INTERFACE
 	"$<$<COMPILE_LANGUAGE:CXX>:/Zc:externConstexpr;/Zc:__cplusplus;/permissive-;/Zc:preprocessor>"
-	"$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8;/Zo;/GS-;/fp:contract;/W1;/wd4005;/wd4996;/arch:AVX2>"
+	"$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8;/Zo;/GS-;/fp:contract;/W1;/wd4005;/wd4996>"
+	# [Fixer] No /arch:AVX2: the static C++ code (init, reset, interpreter, JIT front end) must run on SSE4.1-only and
+	# AVX-only hosts (Westmere, Sandy/Ivy Bridge Xeons). With /arch:AVX2 the compiler may emit AVX2/FMA/BMI anywhere,
+	# so kzvuInit crashed with an illegal instruction before any CPU check. The microVU JIT still picks SSE4/AVX/AVX2 at
+	# run time (shim/KzvuShims.cpp), PCSX2's own baseline is SSE4.1 (common/VectorIntrin.h -> _M_SSE 0x401), and no
+	# VU/emitter source branches on __AVX2__ at compile time.
 )
 target_include_directories(kzvu_flags INTERFACE
 	"${KZVU_ROOT}/shim/include"

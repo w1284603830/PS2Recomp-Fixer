@@ -134,3 +134,22 @@ IOP 推進、chain 緩衝池、getenv 快取（77）；計時器（118）；GS �
 | `ps2xRecomp` `elf_parser.[h,cpp]` | 原始映像：沒有 ELF 魔術字的檔案在記憶體裡呈現為 ELF（資料／`.text`／資料／`.bss`，位於載入位址），既有的函式探索、Ghidra 函式表與 `entry_points` 都照常運作 | |
 | `ps2xRecomp` `ps2_recompiler.cpp`、`code_generator.[h,cpp]`、`function_emitter.cpp`、`function_table_emitter.[h,cpp]` | overlay 輸出：命名空間 `ps2x_overlay_<名稱>`、檔名 `<名稱>_*` 並以相對路徑 include，不產生 ELF 啟動碼與密集函式表；`<名稱>_overlay.cpp/.h` 含入口表（與主表相同的入口、恢復點與 stub）、從映像讀出的簽章、`ps2x_register_overlay_<名稱>()` 與目錄項目。簽章必須是映像內已初始化的資料，每個函式都必須在映像範圍內 | 多個 guest 位址與函式名稱都相同的映像能連結進同一個執行檔 |
 | `ps2xTest/src/ps2_overlay_tests.cpp`、`tests/overlay_registry_tests.cpp`、`tests/test_overlay_registry.py` | `ps2x_tests` 16 項（登錄、`PS2Runtime` 派發與 `loadELF` 清空、`[overlay]` 解析、原始映像與 ELF 輸入、單檔與逐函式輸出、拒絕的輸入），以及獨立的登錄測試：CTest（MSVC）與 g++ ASan/UBSan 各跑一次，含讓常駐快取不斷換手的多執行緒查詢 | 只用合成的映像與位址 |
+
+## 十五、2026-11-27：跨裝置相容性與 runtime 額外負擔（共用主機服務）
+
+取自某個移植 2026-11-21 的審查與修正（完整說明：[docs/CROSS_DEVICE_OPTIMIZATION.zh-TW.md](docs/CROSS_DEVICE_OPTIMIZATION.zh-TW.md)）。該移植的累積差異裡還夾帶那個移植自己的改動（可重定位模組支援、EE 解譯器、遊戲內選單、貼圖邊緣規則、診斷工具），這些都沒有收進來，留下的每個區塊都先分類過。只在一台電腦上量測（12 執行緒 Alder Lake CPU、獨立顯卡、Windows 10）；舊 CPU（無 AVX）的行為是用 Intel SDE 檢查，不是真實舊 CPU。增量補丁：`patches/PS2Recomp_fixer_compat_perf_20261127.diff`。
+
+| 位置 | 內容 | 原因／依據 |
+|---|---|---|
+| `kzvu` `CMakeLists.txt`、`shim/unity/KzvuMicroVU.cpp`、`src/kzvu.cpp` | kzvu 不再用 `/arch:AVX2`；兩處明確的 256 位元寫法（`kzvuVu1CodeChanged`、`CopyVf31`）改成 128 位元 SSE4.1 | 沒有 AVX 的 CPU（Nehalem／Westmere）會在靜態初始化時遇到非法指令，第一個 VU1 程式又會再停一次。microVU JIT 仍在執行期選 SSE4／AVX／AVX2；PCSX2 自己的基線就是 SSE4.1 |
+| `ps2xRuntime` `ps2_host_cpu.[h,cpp]` | `cpuMeetsBaseline()`：記錄一行 `[cpu]`（型號、核心數、SSE4.1/4.2、有作業系統支援的 AVX、AVX2、FMA、BMI2），缺 SSE4.1 時回報而不是當機。`examples/generic_runner` 會呼叫 | 讀的是 OSXSAVE／XCR0，不只是 CPUID 位元 |
+| `ps2xRuntime` `gs/dod_pcsx2_gs.[h,cpp]` | `attach()` 在遊戲執行緒啟動前先在 GS 工作緒開啟 GS，裝置或交換鏈確定建立失敗時退回內建 CPU 光柵與主機端顯示。`PS2_GS_TEST_OPEN_FAIL=1` 模擬失敗。新增 `flips()`、`scale()`、`setOsdLine()` | 開啟失敗以前會讓視窗整個工作階段什麼都不畫 |
+| `pcsx2gs` `GSDevice11.cpp`、`GSTextureCache.cpp` | `EndPresent` 對失敗的 `Present` 只記錄一次並附裝置移除原因。`PrepareDownloadTexture` 檢查新建立的貼圖（上游檢查的是擁有者指標的位址，永遠非空），失敗時保留舊貼圖 | 暫存配置失敗卻回報成功，呼叫端會解參考空指標 |
+| `ps2xRuntime` `Kernel/Stubs/MPEG.cpp` | FFmpeg 解析器從可重用、尾端補零的副本讀取（`AV_INPUT_BUFFER_PADDING_SIZE`）；MPEG-1/2 切片多執行緒（4 核以上取 `min(4, 核心數/2)`，`PS2_MPEG_THREADS=1` 還原單執行緒）；新增 `mpeg_decode` 計數 | FFmpeg 要求輸入後面有可讀的補位。切片多執行緒輸出逐位元相同；沒有拿 MPEG-HLE 遊戲實測 |
+| `ps2xRuntime` `ipu/ps2_ipu.c` | 資料不足的 IDEC 從上一個 macroblock 邊界繼續，不再從第一個重新解整個畫面；IDCT 跳過全零係數列（運算與順序相同）。`PS2_IPU_IDEC_RESTART=1`／`PS2_IPU_IDCT_REF=1` 還原舊路徑 | `DOD_PERF` 下每 16 MiB 的 FNV-1a 輸出雜湊，到 352 MiB 的每個里程碑都與舊路徑一致；量測的 CG 上 IPU 時間約減半 |
+| `ps2xRuntime` `ps2_host_os.[h,cpp]` | `configureHostProcess()`（關閉 EcoQoS 節能降頻）、`setCurrentThreadRole()`（4 個以上邏輯 CPU 時 EE 與 GS 執行緒高一階，`PS2_THREAD_PRIORITY=0` 維持一般；GS 執行緒有名稱）、`installCrashHandler()`（`logs\crash-<時間>.dmp` 加一行 `[crash]`，保留最新 4 個）、`gpuReport()`／`autoScaleCap()`（內顯 2 倍、獨顯 4 倍；測試用 `PS2_GPU_TIER`） | 12 個背景程式滿載時，提高優先權讓遊戲維持 30 幀/秒，一般優先權則掉到 13-18 |
+| `ps2xRuntime` `ps2_host_report.[h,cpp]` | 效能顯示列（`30 fps (60 fields/s) | EE 48% | GS 10% | D3D11 3x`）與診斷 zip（摘要、執行記錄、GPU 記錄、設定檔、最新崩潰傾印；絕不含存檔）。移植呼叫 `setOverlay()`／`exportDiagnostics()` 才啟用；測試用 `PS2_PERF_OVERLAY=1` | 一張截圖就能分辨 CPU 不夠、GPU 不夠還是遊戲本身慢 |
+| `ps2xRuntime` `ps2_runtime.cpp`、`EeScheduler.cpp`、`ps2_memory.cpp`、`dod_vif1_unpack.h`、`gs/ps2_gif_arbiter.cpp`、`ps2_runtime_macros.h`、`CMakeLists.txt` | 行為不變的熱路徑減負：直接派發命中時只查一次表；每次呼叫都有保護的 static 改成普通 static；越界例外移到內聯之外；環繞的 RAM 存取移到內聯之外；VIF1 UNPACK V4-32（無遮罩、無 STMOD）改成 16 位元組複製；沒有 A+D 暫存器的 PACKED GIF tag 整段跳過。`ps2_runtime` 用 LTCG 連結（`PS2X_RUNTIME_LTCG`，預設開），runner 加 `/GS-` 與 16 MB 堆疊 | 用 VIF1 差異測試（3,000,000 次）與堆疊框大小掃描檢查；強制內聯試過後捨棄（最大函式的框大小加倍，預設堆疊會溢位） |
+| `tools/perf/` | `thread_cpu_sample.py`、`thread_profile.py`（搭配連結器 map 做 RIP 取樣）、`cpu_cap.py`（弱機 CPU 上限）、`isa_scan.py`、`frame_sizes.py` | 與遊戲無關的量測工具；用法見指南 |
+
+未涵蓋：真實的無 AVX 或內顯機器、MPEG-HLE 播放，以及其他遊戲的行為。指南列出開關與新移植的檢查清單。
